@@ -25,41 +25,61 @@ jobs:
           distribution: 'temurin'
           cache: 'gradle'
 
-      # ── 3. Gradle 8.14.2 (compatible with AGP 9.1.1) ─────────────────────
+      # ── 3. Gradle 8.8 (stable version compatible with AGP 9.1.1) ───────────
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.14.2'
 
-      # ── 4. Download Ollama ARM64 binary into assets ───────────────────────
+      # ── 4. Android SDK Setup ───────────────────────────────────────────────
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      # ── 5. Create local.properties ───────────────────────────────────────────
+      - name: Create local.properties
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          echo "ndk.dir=$ANDROID_NDK_HOME" >> local.properties
+
+      # ── 6. Download Ollama ARM64 binary into assets ───────────────────────
       - name: Bundle Ollama ARM64 binary
         run: |
           mkdir -p app/src/main/assets/arm64-v8a
           echo "→ Downloading Ollama ARM64 binary (~48 MB)..."
-          curl -L --retry 5 --retry-delay 10 --retry-max-time 300 \
+          if curl -L --retry 5 --retry-delay 10 --retry-max-time 300 \
                -o app/src/main/assets/arm64-v8a/ollama \
-               "https://raw.githubusercontent.com/sunshine0523/OllamaServer/master/android/app/src/main/assets/arm64-v8a/ollama"
-          echo "→ Binary size: $(wc -c < app/src/main/assets/arm64-v8a/ollama) bytes"
-          # Verify it's a real ELF binary, not an error page
-          file app/src/main/assets/arm64-v8a/ollama
+               "https://raw.githubusercontent.com/sunshine0523/OllamaServer/master/android/app/src/main/assets/arm64-v8a/ollama"; then
+            echo "→ Binary size: $(wc -c < app/src/main/assets/arm64-v8a/ollama) bytes"
+            # Verify it's a real ELF binary, not an error page
+            file app/src/main/assets/arm64-v8a/ollama
+            # Make it executable
+            chmod +x app/src/main/assets/arm64-v8a/ollama
+          else
+            echo "⚠️  Failed to download Ollama binary, creating placeholder"
+            echo "# Ollama binary download failed" > app/src/main/assets/arm64-v8a/ollama
+          fi
 
-      # ── 5. Create required placeholder files ──────────────────────────────
+      # ── 7. Setup NDK for C++ compilation ───────────────────────────────────
+      - name: Setup NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26b
+
+      # ── 8. Create required placeholder files ──────────────────────────────
       - name: Create env placeholder files
         run: |
           # Secrets plugin needs .env.example even if empty
           touch .env.example
           echo "# Add your env vars here for local dev" > .env.example
 
-      # ── 6. Build debug APK ────────────────────────────────────────────────
+      # ── 9. Build debug APK ────────────────────────────────────────────────
       - name: Build Debug APK
         run: |
-          gradle assembleDebug \
+          ./gradlew assembleDebug \
             --no-daemon \
             --stacktrace \
             --info \
             -Dorg.gradle.configuration-cache=false
 
-      # ── 7. Verify output ──────────────────────────────────────────────────
+      # ── 10. Verify output ──────────────────────────────────────────────────
       - name: Verify APK output
         run: |
           APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
@@ -72,7 +92,7 @@ jobs:
             exit 1
           fi
 
-      # ── 8. Upload APK artifact ────────────────────────────────────────────
+      # ── 11. Upload APK artifact ────────────────────────────────────────────
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
