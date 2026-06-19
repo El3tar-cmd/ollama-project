@@ -37,7 +37,6 @@ jobs:
       - name: Create local.properties
         run: |
           echo "sdk.dir=$ANDROID_HOME" > local.properties
-          echo "ndk.dir=$ANDROID_NDK_HOME" >> local.properties
 
       # ── 6. Download Ollama ARM64 binary into assets ───────────────────────
       - name: Bundle Ollama ARM64 binary
@@ -74,9 +73,7 @@ jobs:
       - name: Build Debug APK
         run: |
           ./gradlew assembleDebug \
-            --no-daemon \
             --stacktrace \
-            --info \
             -Dorg.gradle.configuration-cache=false
 
       # ── 10. Verify output ──────────────────────────────────────────────────
