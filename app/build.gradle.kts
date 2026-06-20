@@ -1,3 +1,6 @@
+import java.net.HttpURLConnection
+import java.net.URL
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -134,13 +137,16 @@ val downloadOllamaBinary by tasks.registering {
         jniDir.asFile.mkdirs()
         if (!outFile.exists()) {
             println("[Devhive] Downloading Ollama ARM64 binary (~48 MB)...")
-            val src = java.net.URL(
+            val conn = URL(
                 "https://github.com/sunshine0523/OllamaServer/raw/master/android/app/src/main/assets/arm64-v8a/ollama"
-            )
-            val conn = src.openConnection().also { it.connectTimeout = 30_000; it.readTimeout = 120_000 }
-            conn.getInputStream().use { input ->
+            ).openConnection() as HttpURLConnection
+            conn.connectTimeout = 30_000
+            conn.readTimeout    = 120_000
+            conn.connect()
+            conn.inputStream.use { input ->
                 outFile.outputStream().use { output -> input.copyTo(output) }
             }
+            conn.disconnect()
             outFile.setExecutable(true, false)
             println("[Devhive] Downloaded: ${outFile.length() / 1024 / 1024} MB → ${outFile.absolutePath}")
         } else {
