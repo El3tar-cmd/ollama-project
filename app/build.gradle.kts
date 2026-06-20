@@ -121,3 +121,34 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
+
+// ── Download Ollama ARM64 binary at build time ─────────────────────────────
+// The binary is bundled as libollama.so in jniLibs so the installer puts it
+// in nativeLibraryDir — the only directory Android always allows execution in
+// (not subject to SELinux noexec / Samsung Knox restrictions).
+val downloadOllamaBinary by tasks.registering {
+    val jniDir  = layout.projectDirectory.dir("src/main/jniLibs/arm64-v8a")
+    val outFile = jniDir.file("libollama.so").asFile
+    outputs.file(outFile)
+    doFirst {
+        jniDir.asFile.mkdirs()
+        if (!outFile.exists()) {
+            println("[Devhive] Downloading Ollama ARM64 binary (~48 MB)...")
+            val src = java.net.URL(
+                "https://github.com/sunshine0523/OllamaServer/raw/master/android/app/src/main/assets/arm64-v8a/ollama"
+            )
+            val conn = src.openConnection().also { it.connectTimeout = 30_000; it.readTimeout = 120_000 }
+            conn.getInputStream().use { input ->
+                outFile.outputStream().use { output -> input.copyTo(output) }
+            }
+            outFile.setExecutable(true, false)
+            println("[Devhive] Downloaded: ${outFile.length() / 1024 / 1024} MB → ${outFile.absolutePath}")
+        } else {
+            println("[Devhive] libollama.so already present (${outFile.length() / 1024 / 1024} MB), skipping download.")
+        }
+    }
+}
+
+afterEvaluate {
+    tasks.named("preBuild") { dependsOn(downloadOllamaBinary) }
+}
