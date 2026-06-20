@@ -4,7 +4,6 @@ import android.content.Context
 import android.util.Log
 import java.io.BufferedInputStream
 import java.io.File
-import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -13,49 +12,87 @@ import java.util.zip.GZIPInputStream
 
 class OllamaExecutor(private val context: Context) {
     private val TAG = "OllamaExecutor"
-    val binDir = File(context.filesDir, "bin")
-    val ollamaFile = File(binDir, "ollama")
+
+    val binDir    = File(context.filesDir, "bin")
     val modelsDir = File(context.filesDir, "ollama_models")
+
+    /**
+     * PRIMARY binary: libollama.so extracted by the package installer into
+     * nativeLibraryDir.  That directory lives on a dedicated exec-allowed
+     * partition and is never affected by noexec / SELinux app_data_file policy.
+     */
+    private val nativeBinary: File
+        get() = File(context.applicationInfo.nativeLibraryDir, "libollama.so")
+
+    /**
+     * FALLBACK binary: user-downloaded copy in internal filesDir.
+     * May be blocked by SELinux on Samsung/Knox devices.
+     */
+    val ollamaFile: File
+        get() = File(binDir, "ollama")
+
+    /** Returns the binary that actually exists and should be used. */
+    private fun resolveBinary(): File? {
+        if (nativeBinary.exists()) return nativeBinary
+        if (ollamaFile.exists())   return ollamaFile
+        return null
+    }
 
     fun setupEnvironment() {
         if (!binDir.exists()) binDir.mkdirs()
         if (!modelsDir.exists()) modelsDir.mkdirs()
+        // chmod only needed for the fallback copy in filesDir
         if (ollamaFile.exists()) {
             ollamaFile.setExecutable(true, false)
-            // Fallback: force chmod via shell if setExecutable was not enough
-            if (!ollamaFile.canExecute()) {
-                try {
-                    Runtime.getRuntime()
-                        .exec(arrayOf("chmod", "755", ollamaFile.absolutePath))
-                        .waitFor()
-                } catch (e: Exception) {
-                    Log.w(TAG, "chmod fallback failed: ${e.message}")
-                }
-            }
         }
     }
 
-    fun copyBinaryFromAssets(): Boolean {
+    /** Check whether a usable binary is present (native lib or downloaded). */
+    fun isBinaryInstalled(): Boolean = resolveBinary() != null
+
+    fun downloadBinary(
+        url: String = "https://github.com/El3tar-cmd/ollama-project/raw/main/app/src/main/jniLibs/arm64-v8a/libollama.so",
+        onProgress: (Int) -> Unit = {},
+        onLog: (String) -> Unit = {}
+    ): Boolean {
+        setupEnvironment()
+        // If the native lib is already present, skip download entirely
+        if (nativeBinary.exists()) {
+            onLog("Native binary ready at: ${nativeBinary.absolutePath}")
+            onProgress(100)
+            return true
+        }
         return try {
-            setupEnvironment()
-            context.assets.open("arm64-v8a/ollama").use { input ->
-                FileOutputStream(ollamaFile).use { output ->
-                    val buffer = ByteArray(16384)
-                    var bytesRead: Int
-                    while (input.read(buffer).also { bytesRead = it } != -1) {
-                        output.write(buffer, 0, bytesRead)
-                    }
-                }
+            onLog("Downloading Ollama binary...")
+            val connection = URL(url).openConnection() as HttpURLConnection
+            connection.connectTimeout = 15_000
+            connection.readTimeout    = 60_000
+            connection.connect()
+            val total = connection.contentLengthLong
+            var downloaded = 0L
+            val tmpFile = File(binDir, "ollama.tmp")
+            val input  = BufferedInputStream(connection.inputStream)
+            val output = FileOutputStream(tmpFile)
+            val buffer = ByteArray(32_768)
+            var n: Int
+            while (input.read(buffer).also { n = it } != -1) {
+                output.write(buffer, 0, n)
+                downloaded += n
+                if (total > 0) onProgress((downloaded * 100 / total).toInt())
             }
+            output.flush(); output.close(); input.close(); connection.disconnect()
+            tmpFile.renameTo(ollamaFile)
             ollamaFile.setExecutable(true, false)
+            onLog("Download complete: ${ollamaFile.absolutePath}")
             true
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to copy binary from assets: ${e.message}")
+            onLog("Download failed: ${e.message}")
+            Log.e(TAG, "Download failed", e)
             false
         }
     }
 
-    /** Build the common environment map for the Ollama process. */
+    /** Build env vars for the Ollama process. */
     private fun buildEnv(host: String, origins: String): Map<String, String> = mapOf(
         "OLLAMA_HOST"     to host,
         "OLLAMA_MODELS"   to modelsDir.absolutePath,
@@ -65,7 +102,11 @@ class OllamaExecutor(private val context: Context) {
         "LD_LIBRARY_PATH" to context.applicationInfo.nativeLibraryDir
     )
 
-    private fun startAndStream(command: List<String>, envMap: Map<String, String>, onLog: (String) -> Unit): Process {
+    private fun startAndStream(
+        command: List<String>,
+        envMap: Map<String, String>,
+        onLog: (String) -> Unit
+    ): Process {
         val pb = ProcessBuilder(command)
         pb.environment().putAll(envMap)
         pb.redirectErrorStream(true)
@@ -86,58 +127,69 @@ class OllamaExecutor(private val context: Context) {
         onLog: (String) -> Unit
     ): Process? {
         setupEnvironment()
-        if (!ollamaFile.exists()) {
-            onLog("Error: Ollama executable not found. Please click 'Install' first.")
+
+        val binary = resolveBinary()
+        if (binary == null) {
+            onLog("Error: Ollama binary not found. Tap Install to download it.")
             return null
         }
 
         val envMap = buildEnv(host, origins)
 
-        // Strategy 1: Direct execution (works on most devices)
+        // ── Strategy 0: native lib (always executable — no SELinux restriction) ──
+        if (binary == nativeBinary) {
+            onLog("Starting via nativeLibraryDir: ${binary.absolutePath}")
+            try {
+                return startAndStream(listOf(binary.absolutePath, "serve"), envMap, onLog)
+            } catch (e: Exception) {
+                onLog("Native lib exec failed: ${e.message}")
+                // fall through to other strategies with filesDir copy
+            }
+        }
+
+        // ── Strategy 1: Direct execution of downloaded binary ──
         try {
-            return startAndStream(listOf(ollamaFile.absolutePath, "serve"), envMap, onLog)
+            return startAndStream(listOf(binary.absolutePath, "serve"), envMap, onLog)
         } catch (e: Exception) {
             val msg = e.message ?: ""
             if (!msg.contains("error=13") && !msg.contains("Permission denied")) {
-                onLog("Failed to start Ollama executable: $msg")
+                onLog("Failed to start Ollama: $msg")
                 return null
             }
-            onLog("Direct exec denied (SELinux/noexec). Trying fallback strategies...")
+            onLog("Direct exec denied (SELinux/noexec). Trying fallbacks...")
         }
 
-        // Strategy 2: Copy binary to externalCacheDir (often on a different, exec-allowed partition)
-        val extCache = context.externalCacheDir
-        if (extCache != null) {
+        // ── Strategy 2: Copy to externalCacheDir (may be on exec-allowed fs) ──
+        context.externalCacheDir?.let { extCache ->
             try {
                 val extBin = File(extCache, "ollama")
-                ollamaFile.copyTo(extBin, overwrite = true)
+                binary.copyTo(extBin, overwrite = true)
                 extBin.setExecutable(true, false)
-                Runtime.getRuntime().exec(arrayOf("chmod", "755", extBin.absolutePath)).waitFor()
-                onLog("Trying execution from external cache: ${extBin.absolutePath}")
+                onLog("Trying external cache: ${extBin.absolutePath}")
                 return startAndStream(listOf(extBin.absolutePath, "serve"), envMap, onLog)
             } catch (e2: Exception) {
                 onLog("External cache fallback failed: ${e2.message}")
             }
         }
 
-        // Strategy 3: Run via /system/bin/sh wrapper (can bypass some SELinux restrictions)
-        try {
-            onLog("Trying /system/bin/sh wrapper...")
-            return startAndStream(
-                listOf("/system/bin/sh", "-c", "exec '${ollamaFile.absolutePath}' serve"),
-                envMap, onLog
-            )
-        } catch (e3: Exception) {
-            onLog("sh wrapper failed: ${e3.message}")
+        // ── Strategy 3: Android dynamic linker (bypasses some SELinux domains) ──
+        for (linker in listOf("/system/bin/linker64", "/apex/com.android.runtime/bin/linker64")) {
+            if (File(linker).exists()) {
+                try {
+                    onLog("Trying linker64: $linker")
+                    return startAndStream(listOf(linker, binary.absolutePath, "serve"), envMap, onLog)
+                } catch (e3: Exception) {
+                    onLog("linker64 fallback failed: ${e3.message}")
+                }
+            }
         }
 
-        // All strategies failed
-        onLog("⚠️ All execution strategies failed.")
-        onLog("  Your device's security policy (SELinux/Knox) prevents running")
-        onLog("  custom binaries from app storage. Try:")
-        onLog("  1. Disable Knox Manage if present")
-        onLog("  2. Try on a different Android device")
-        onLog("  3. Enable 'Install unknown apps' in Developer Options")
+        onLog("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        onLog("All execution strategies failed.")
+        onLog("Device SELinux policy blocks binary execution from user storage.")
+        onLog("• Reinstall the APK — the bundled libollama.so should fix this")
+        onLog("• Or try on a non-Knox Android device")
+        onLog("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         return null
     }
 
@@ -151,237 +203,26 @@ class OllamaExecutor(private val context: Context) {
 
     fun execOllamaCommand(vararg args: String, onLog: (String) -> Unit) {
         setupEnvironment()
-        if (!ollamaFile.exists()) {
-            onLog("Error: Ollama executable not found.")
+        val binary = resolveBinary()
+        if (binary == null) {
+            onLog("Error: Ollama binary not found.")
             return
         }
-
+        val envMap = buildEnv("127.0.0.1:11434", "*")
         Thread {
             try {
-                val pb = ProcessBuilder(ollamaFile.absolutePath, *args)
-                val env = pb.environment()
-                env["OLLAMA_MODELS"] = modelsDir.absolutePath
-                env["HOME"] = context.filesDir.absolutePath
-                env["TMPDIR"] = context.cacheDir.absolutePath
-                env["LD_LIBRARY_PATH"] = context.applicationInfo.nativeLibraryDir
-
-                pb.redirectErrorStream(true)
-                val proc = pb.start()
-
+                val proc = ProcessBuilder(listOf(binary.absolutePath) + args.toList())
+                    .apply {
+                        environment().putAll(envMap)
+                        redirectErrorStream(true)
+                    }.start()
                 val reader = proc.inputStream.bufferedReader()
                 var line: String?
-                while (reader.readLine().also { line = it } != null) {
-                    onLog(line ?: "")
-                }
+                while (reader.readLine().also { line = it } != null) onLog(line ?: "")
                 proc.waitFor()
             } catch (e: Exception) {
-                onLog("Error executing command: ${e.message}")
+                onLog("Command failed: ${e.message}")
             }
         }.start()
-    }
-
-    fun downloadBinary(
-        downloadUrlStr: String,
-        onProgress: (Int, String) -> Unit,
-        onComplete: (Boolean, String) -> Unit
-    ) {
-        setupEnvironment()
-        Thread {
-            try {
-                onProgress(0, "Connecting to binary server...")
-                var currentUrlStr = downloadUrlStr
-                var conn: HttpURLConnection
-                var responseCode: Int
-                var redirectCount = 0
-                val maxRedirects = 5
-
-                // Manual redirect handling loops to support raw/releases downloads safely
-                while (true) {
-                    val url = URL(currentUrlStr)
-                    conn = url.openConnection() as HttpURLConnection
-                    conn.connectTimeout = 15000
-                    conn.readTimeout = 30000
-                    conn.instanceFollowRedirects = false
-                    conn.connect()
-                    responseCode = conn.responseCode
-
-                    if (responseCode == HttpURLConnection.HTTP_MOVED_TEMP || 
-                        responseCode == HttpURLConnection.HTTP_MOVED_PERM || 
-                        responseCode == 307 || responseCode == 308) {
-                        val newUrl = conn.getHeaderField("Location")
-                        if (newUrl.isNullOrEmpty()) {
-                            throw IOException("Redirect received with empty Location header.")
-                        }
-                        currentUrlStr = newUrl
-                        redirectCount++
-                        if (redirectCount > maxRedirects) {
-                            throw IOException("Too many redirects")
-                        }
-                        onProgress(5, "Loading redirect endpoint...")
-                        conn.disconnect()
-                        continue
-                    }
-                    break
-                }
-
-                val contentLength = conn.contentLength
-                if (responseCode != HttpURLConnection.HTTP_OK) {
-                    onComplete(false, "Server active check failed: HTTP $responseCode")
-                    return@Thread
-                }
-
-                onProgress(10, "Downloading executable...")
-                val tmpFile = File(context.cacheDir, "ollama_bin.tmp")
-                if (tmpFile.exists()) tmpFile.delete()
-
-                conn.inputStream.use { input ->
-                    FileOutputStream(tmpFile).use { output ->
-                        val buffer = ByteArray(16384)
-                        var bytesRead: Int
-                        var totalBytes: Long = 0
-                        val bis = BufferedInputStream(input)
-
-                        while (bis.read(buffer).also { bytesRead = it } != -1) {
-                            output.write(buffer, 0, bytesRead)
-                            totalBytes += bytesRead
-                            if (contentLength > 0) {
-                                val percentage = (totalBytes * 100 / contentLength).toInt()
-                                onProgress(percentage, "Downloading: $percentage% (${totalBytes / 1024 / 1024}MB)")
-                            } else {
-                                onProgress(-1, "Downloading: ${totalBytes / 1024 / 1024}MB (Indefinite)")
-                            }
-                        }
-                    }
-                }
-
-                onProgress(90, "Applying operational files...")
-                val isTgz = downloadUrlStr.endsWith(".tgz") || downloadUrlStr.endsWith(".tar.gz")
-                if (isTgz) {
-                    onProgress(92, "Decompressing archive package...")
-                    try {
-                        extractTarGzipStream(tmpFile, binDir)
-                    } catch (e: Exception) {
-                        throw IOException("Decompression failed: ${e.message}", e)
-                    }
-                    var foundBin: File? = null
-                    binDir.walkTopDown().forEach { file ->
-                        if (file.isFile && file.name == "ollama" && file.absolutePath != ollamaFile.absolutePath) {
-                            foundBin = file
-                        }
-                    }
-                    if (foundBin != null) {
-                        if (ollamaFile.exists()) ollamaFile.delete()
-                        foundBin!!.copyTo(ollamaFile, overwrite = true)
-                        binDir.listFiles()?.forEach { child ->
-                            if (child.absolutePath != ollamaFile.absolutePath) {
-                                child.deleteRecursively()
-                            }
-                        }
-                        tmpFile.delete()
-                    } else {
-                        throw IOException("Ollama binary not found in extracted archive mapping.")
-                    }
-                } else {
-                    if (ollamaFile.exists()) ollamaFile.delete()
-                    tmpFile.copyTo(ollamaFile, overwrite = true)
-                    tmpFile.delete()
-                }
-
-                ollamaFile.setExecutable(true, false)
-                onComplete(true, "Standalone binary installed successfully under files/bin/ollama")
-            } catch (e: Exception) {
-                onComplete(false, "Setup interrupted: ${e.message}")
-            }
-        }.start()
-    }
-
-    private fun extractTarGzipStream(tarGzFile: File, destDir: File) {
-        GZIPInputStream(FileInputStream(tarGzFile)).use { gzis ->
-            val progressInputStream = BufferedInputStream(gzis)
-            val header = ByteArray(512)
-            while (true) {
-                var bytesRead = 0
-                while (bytesRead < 512) {
-                    val n = progressInputStream.read(header, bytesRead, 512 - bytesRead)
-                    if (n == -1) break
-                    bytesRead += n
-                }
-                if (bytesRead < 512) {
-                    break
-                }
-                
-                var allNulls = true
-                for (b in header) {
-                    if (b != 0.toByte()) {
-                        allNulls = false
-                        break
-                    }
-                }
-                if (allNulls) {
-                    break
-                }
-                
-                var nameEnd = 0
-                while (nameEnd < 100 && header[nameEnd] != 0.toByte()) {
-                    nameEnd++
-                }
-                val name = String(header, 0, nameEnd, Charsets.UTF_8).trim()
-                if (name.isEmpty()) continue
-                
-                var sizeStart = 124
-                val sizeEnd = 124 + 12
-                while (sizeStart < sizeEnd && (header[sizeStart] == ' '.toByte() || header[sizeStart] == 0.toByte())) {
-                    sizeStart++
-                }
-                var realSizeEnd = sizeEnd
-                while (realSizeEnd > sizeStart && (header[realSizeEnd - 1] == ' '.toByte() || header[realSizeEnd - 1] == 0.toByte())) {
-                    realSizeEnd--
-                }
-                
-                val sizeStr = if (sizeStart < realSizeEnd) {
-                    String(header, sizeStart, realSizeEnd - sizeStart, Charsets.UTF_8)
-                } else {
-                    "0"
-                }
-                
-                val fileSize = try {
-                    sizeStr.toLong(8)
-                } catch (e: Exception) {
-                    0L
-                }
-                
-                val typeFlag = header[156]
-                val isDirectory = typeFlag == '5'.toByte() || name.endsWith("/")
-                
-                val targetFile = File(destDir, name)
-                if (isDirectory) {
-                    targetFile.mkdirs()
-                } else {
-                    targetFile.parentFile?.mkdirs()
-                    FileOutputStream(targetFile).use { fos ->
-                        var remaining = fileSize
-                        val buf = ByteArray(16384)
-                        while (remaining > 0) {
-                            val toRead = minOf(remaining, buf.size.toLong()).toInt()
-                            val r = progressInputStream.read(buf, 0, toRead)
-                            if (r == -1) {
-                                throw IOException("Unexpected End of Stream in Tar extraction for $name")
-                            }
-                            fos.write(buf, 0, r)
-                            remaining -= r
-                        }
-                    }
-                }
-                
-                val padding = (512 - (fileSize % 512)) % 512
-                var skipped = 0L
-                while (skipped < padding) {
-                    val skipBuf = ByteArray(minOf(padding - skipped, 4096).toInt())
-                    val r = progressInputStream.read(skipBuf)
-                    if (r == -1) break
-                    skipped += r
-                }
-            }
-        }
     }
 }
