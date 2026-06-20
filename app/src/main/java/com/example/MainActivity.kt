@@ -3,7 +3,10 @@ package com.example
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -440,6 +443,21 @@ fun MainAppScreen() {
     })
     var activeTab by remember { mutableStateOf(AppTab.SERVER) }
 
+    // Request MANAGE_EXTERNAL_STORAGE (Android 11+) for full filesystem access in Agent file browser
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
+            try {
+                val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                    data = Uri.fromParts("package", context.packageName, null)
+                }
+                context.startActivity(intent)
+            } catch (_: Exception) {
+                // Fallback: open general storage settings if app-specific page unavailable
+                context.startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+            }
+        }
+    }
+
     Scaffold(
         containerColor = OllamaBg,
         topBar = {
@@ -452,7 +470,7 @@ fun MainAppScreen() {
                             contentAlignment = Alignment.Center
                         ) { Text("O", color = OllamaBg, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp) }
                         Text("Ollama", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = OllamaText)
-                        Text("Server", fontWeight = FontWeight.Light, fontSize = 18.sp, color = OllamaTextDim)
+                        Text("Devhive", fontWeight = FontWeight.Light, fontSize = 18.sp, color = OllamaGreen)
                     }
                 },
                 actions = {
