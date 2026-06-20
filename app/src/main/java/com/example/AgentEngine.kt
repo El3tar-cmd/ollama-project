@@ -5,10 +5,12 @@ import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
@@ -522,29 +524,45 @@ Platform: Android arm64 | Shell: /system/bin/sh
         }
     }
 
+    private val fetchClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .build()
+    }
+
     private fun toolFetchUrl(urlStr: String, method: String, body: String): AgentStep {
         return try {
             if (urlStr.isBlank()) return AgentStep("tool_result", "❌ fetch_url: empty URL", isError = true)
-            val conn = URL(urlStr).openConnection() as HttpURLConnection
-            conn.requestMethod = method.uppercase()
-            conn.connectTimeout = 10_000
-            conn.readTimeout    = 30_000
-            conn.setRequestProperty("User-Agent", "OllamaDevhive/1.0")
-            conn.setRequestProperty("Accept", "*/*")
-            if (body.isNotEmpty() && method.uppercase() != "GET") {
-                conn.doOutput = true
-                conn.setRequestProperty("Content-Type", "application/json")
-                conn.outputStream.use { it.write(body.toByteArray()) }
+
+            val mth = method.uppercase().ifBlank { if (body.isNotBlank()) "POST" else "GET" }
+            val reqBody = when {
+                mth == "GET" || mth == "HEAD" -> null
+                body.isNotBlank() -> body.toByteArray().toRequestBody(
+                    if (body.trimStart().startsWith("{") || body.trimStart().startsWith("["))
+                        "application/json".toMediaType()
+                    else
+                        "text/plain".toMediaType()
+                )
+                else -> ByteArray(0).toRequestBody("text/plain".toMediaType())
             }
-            conn.connect()
-            val code = conn.responseCode
-            val response = try {
-                conn.inputStream.bufferedReader().readText()
-            } catch (_: Exception) {
-                conn.errorStream?.bufferedReader()?.readText() ?: "(no body)"
+
+            val req = Request.Builder()
+                .url(urlStr)
+                .method(mth, reqBody)
+                .header("User-Agent", "Mozilla/5.0 OllamaDevhive/1.0")
+                .header("Accept", "text/html,application/json,application/xhtml+xml,*/*;q=0.8")
+                .header("Accept-Language", "en-US,en;q=0.9")
+                .build()
+
+            fetchClient.newCall(req).execute().use { resp ->
+                val code     = resp.code
+                val ctype    = resp.header("Content-Type", "")
+                val respBody = resp.body?.string()?.take(4000) ?: "(empty body)"
+                AgentStep("tool_result", "🌐 $mth $urlStr\n→ HTTP $code  |  $ctype\n\n$respBody".trimEnd())
             }
-            conn.disconnect()
-            AgentStep("tool_result", "🌐 $method $urlStr → HTTP $code\n${response.take(3000).trimEnd()}")
         } catch (e: Exception) {
             AgentStep("tool_result", "❌ fetch_url error: ${e.message}", isError = true)
         }
