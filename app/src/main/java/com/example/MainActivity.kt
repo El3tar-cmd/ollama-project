@@ -924,49 +924,10 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
             }
 
             Text(
-                "Tap Login to run ollama login — a sign-in URL will open in your browser. " +
-                "After authorizing with your Ollama account, tap \"Done\" in the dialog.",
+                "Tap Login — a browser page will open so you can authorize your device. " +
+                "After approving, tap \"Done\" in the dialog that appears here.",
                 color = OllamaTextDim, fontSize = 11.sp
             )
-
-            HorizontalDivider(color = OllamaBorder, thickness = 0.5.dp)
-
-            // Manual API key section
-            Text("OR — Enter API Key manually", color = OllamaTextDim, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-            Text(
-                "Get your key from ollama.com/settings/api",
-                color = OllamaTextDim, fontSize = 10.sp
-            )
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = vm.manualApiKeyInput,
-                    onValueChange = { vm.manualApiKeyInput = it },
-                    label = { Text("API Key (ollama_…)", fontSize = 11.sp) },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor   = OllamaGreen,
-                        unfocusedBorderColor = OllamaBorder,
-                        focusedLabelColor    = OllamaGreen,
-                        unfocusedLabelColor  = OllamaTextDim,
-                        cursorColor          = OllamaGreen,
-                        focusedTextColor     = OllamaText,
-                        unfocusedTextColor   = OllamaText
-                    ),
-                    shape = RoundedCornerShape(8.dp),
-                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation()
-                )
-                Button(
-                    onClick = { vm.validateAndSaveApiKey(context, vm.manualApiKeyInput) },
-                    enabled = vm.manualApiKeyInput.isNotBlank() && !vm.isValidatingKey,
-                    colors = ButtonDefaults.buttonColors(containerColor = OllamaGreen, contentColor = OllamaBg)
-                ) {
-                    if (vm.isValidatingKey)
-                        CircularProgressIndicator(Modifier.size(14.dp), color = OllamaBg, strokeWidth = 2.dp)
-                    else
-                        Text("Save", fontWeight = FontWeight.Bold)
-                }
-            }
         }
         Spacer(Modifier.height(8.dp))
     }
