@@ -192,13 +192,14 @@ ollama-project/
 
 ---
 
-## مسار العمل للـ AI Agent
+## مسار العمل للـ Devhive Agent
 
 الـ Agent يعمل في مجلد العمل الذي تختاره:
 
-- **الافتراضي:** `/sdcard/Android/data/com.aistudio.ollamaserver.hgwtyz/files/OllamaAgent/`
+- **الافتراضي:** `/sdcard/Android/data/com.ollamadevhive.server/files/OllamaAgent/`
 - يمكن التنقل بين المجلدات من تبويب **Files** داخل الـ Agent
-- زر **Switch** يبدّل بين internal storage و external storage
+- زر 📁 يفتح نافذة لاختيار أي مجلد على الجهاز
+- اضغط **Back** للرجوع من Files/Steps إلى Chat
 
 الـ Agent يستخدم النموذج المحلي اللي شغّله Ollama كـ LLM backend.
 
