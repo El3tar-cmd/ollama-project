@@ -32,7 +32,6 @@ class OllamaService : Service() {
         val host = intent?.getStringExtra("host") ?: "127.0.0.1:11434"
         val origins = intent?.getStringExtra("origins") ?: "*"
 
-        isRunning = true
         logBuffer.clear()
         addLog("Ollama background service initialized.")
 
@@ -46,6 +45,15 @@ class OllamaService : Service() {
 
         activeProcess = ollamaExecutor.startOllamaService(host, origins) { line ->
             addLog(line)
+        }
+
+        // Only mark as running if the process actually started
+        if (activeProcess != null) {
+            isRunning = true
+        } else {
+            isRunning = false
+            addLog("Error: Failed to launch Ollama process — stopping service.")
+            stopSelf()
         }
 
         return START_NOT_STICKY
