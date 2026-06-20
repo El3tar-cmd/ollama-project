@@ -124,7 +124,14 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     var authLoginUrl  by mutableStateOf<String?>(null)
     var isLoggedIn    by mutableStateOf(false)
 
+    private val prefs = ctx.getSharedPreferences("ollama_prefs", Context.MODE_PRIVATE)
+
     init {
+        // Restore login state: logged in if SSH key files exist AND pref is true
+        val ollamaDir = java.io.File(ctx.filesDir, ".ollama")
+        isLoggedIn = prefs.getBoolean("logged_in", false)
+            && java.io.File(ollamaDir, "id_ed25519.pub").exists()
+
         if (!executor.ollamaFile.exists()) {
             isPreparingBinary = true
             viewModelScope.launch(Dispatchers.IO) {
@@ -260,6 +267,13 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         }
     }
 
+    fun confirmLogin() {
+        isLoggedIn = true
+        prefs.edit().putBoolean("logged_in", true).apply()
+        authLoginUrl = null
+        liveLogs.add("✅ Login confirmed — SSH key registered with Ollama.")
+    }
+
     fun triggerLogout(context: Context) {
         viewModelScope.launch(Dispatchers.IO) {
             val ollamaDir = File(ctx.filesDir, ".ollama")
@@ -267,6 +281,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
             File(ollamaDir, "id_ed25519.pub").delete()
             withContext(Dispatchers.Main) {
                 isLoggedIn = false
+                prefs.edit().putBoolean("logged_in", false).apply()
                 Toast.makeText(context, "Logged out", Toast.LENGTH_SHORT).show()
                 liveLogs.add("Logged out — SSH keys removed.")
             }
@@ -486,37 +501,59 @@ fun MainAppScreen() {
     // Login dialog
     vm.authLoginUrl?.let { url ->
         val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+        var browserOpened by remember { mutableStateOf(false) }
         AlertDialog(
             onDismissRequest = { vm.authLoginUrl = null },
             containerColor = OllamaCard,
             title = { Text("Sign in to Ollama", color = OllamaText, fontWeight = FontWeight.Bold) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Your browser needs to open to complete sign-in.", color = OllamaTextDim, fontSize = 13.sp)
-                    Text("If it doesn't open automatically, copy the link below:", color = OllamaTextDim, fontSize = 13.sp)
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("1. Open the link in your browser and authorize this device.", color = OllamaTextDim, fontSize = 13.sp)
+                    Text("2. After approving on the website, tap \"Done\" below.", color = OllamaTextDim, fontSize = 13.sp)
                     Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(OllamaCardAlt).padding(8.dp)) {
                         Text(url, fontSize = 10.sp, color = OllamaGreen, fontFamily = FontFamily.Monospace, maxLines = 4, overflow = TextOverflow.Ellipsis)
+                    }
+                    if (browserOpened) {
+                        Row(
+                            Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xFF1A3A2A)).padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(Icons.Default.AccountCircle, null, tint = OllamaGreen, modifier = Modifier.size(14.dp))
+                            Text("Browser opened — authorize then tap Done ↓", color = OllamaGreen, fontSize = 11.sp)
+                        }
                     }
                 }
             },
             confirmButton = {
-                Button(
-                    onClick = {
-                        try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
-                        catch (e: Exception) {
-                            clipboard.setText(androidx.compose.ui.text.AnnotatedString(url))
-                            Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
-                        }
-                        vm.authLoginUrl = null
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = OllamaGreen, contentColor = OllamaBg)
-                ) { Text("Open Browser") }
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Button(
+                        onClick = {
+                            try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+                            catch (e: Exception) {
+                                clipboard.setText(androidx.compose.ui.text.AnnotatedString(url))
+                                Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
+                            }
+                            browserOpened = true
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = OllamaGreen, contentColor = OllamaBg),
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Open Browser") }
+                    if (browserOpened) {
+                        Button(
+                            onClick = { vm.confirmLogin() },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1A4A2A), contentColor = OllamaGreen),
+                            modifier = Modifier.fillMaxWidth(),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, OllamaGreen)
+                        ) { Text("✓ Done — I've Authorized", fontWeight = FontWeight.Bold) }
+                    }
+                }
             },
             dismissButton = {
                 TextButton(onClick = {
                     clipboard.setText(androidx.compose.ui.text.AnnotatedString(url))
                     Toast.makeText(context, "Link copied", Toast.LENGTH_SHORT).show()
-                    vm.authLoginUrl = null
                 }) { Text("Copy Link", color = OllamaTextDim) }
             }
         )
@@ -680,12 +717,31 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
 
         // Cloud auth
         SectionCard("CLOUD AUTH", "Sign in to access Ollama cloud models") {
+            if (vm.isLoggedIn) {
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xFF1A3A2A)).padding(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(Icons.Default.AccountCircle, null, tint = OllamaGreen, modifier = Modifier.size(18.dp))
+                    Text("Authenticated with Ollama", color = OllamaGreen, fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                }
+            }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Button(
                     onClick = { vm.triggerLogin(context) },
                     modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(containerColor = OllamaGreen, contentColor = OllamaBg)
-                ) { Icon(Icons.Default.AccountCircle, null, Modifier.size(16.dp)); Spacer(Modifier.width(6.dp)); Text("Login", fontWeight = FontWeight.Bold) }
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (vm.isLoggedIn) OllamaCard else OllamaGreen,
+                        contentColor = if (vm.isLoggedIn) OllamaTextDim else OllamaBg
+                    ),
+                    border = if (vm.isLoggedIn) androidx.compose.foundation.BorderStroke(1.dp, OllamaBorder) else null
+                ) {
+                    Icon(Icons.Default.AccountCircle, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (vm.isLoggedIn) "Re-login" else "Login", fontWeight = FontWeight.Bold)
+                }
                 OutlinedButton(
                     onClick = { vm.triggerLogout(context) },
                     modifier = Modifier.weight(1f),
@@ -911,13 +967,51 @@ fun AgentScreen(vm: MainViewModel, context: Context) {
 
     var agentTab by remember { mutableStateOf(0) }
 
+    var modelDropdownExpanded by remember { mutableStateOf(false) }
+
     Column(Modifier.fillMaxSize()) {
         // Agent header
         Column(Modifier.fillMaxWidth().background(OllamaSurface).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Column {
-                    Text("AI AGENT", color = OllamaGreen, fontSize = 10.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold)
-                    Text(vm.agentModel.ifEmpty { "No model selected" }, color = OllamaText, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                // Model selector
+                ExposedDropdownMenuBox(
+                    expanded = modelDropdownExpanded && vm.modelList.isNotEmpty(),
+                    onExpandedChange = { if (vm.modelList.isNotEmpty()) modelDropdownExpanded = it },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Column(modifier = Modifier.menuAnchor()) {
+                        Text("AI AGENT", color = OllamaGreen, fontSize = 10.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.clickable { if (vm.modelList.isNotEmpty()) modelDropdownExpanded = true }
+                        ) {
+                            Text(
+                                vm.agentModel.ifEmpty { "No model selected" },
+                                color = if (vm.agentModel.isEmpty()) OllamaRed else OllamaText,
+                                fontWeight = FontWeight.Bold, fontSize = 13.sp
+                            )
+                            if (vm.modelList.isNotEmpty()) {
+                                Icon(Icons.Default.KeyboardArrowDown, null, tint = OllamaGreen, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
+                    ExposedDropdownMenu(
+                        expanded = modelDropdownExpanded && vm.modelList.isNotEmpty(),
+                        onDismissRequest = { modelDropdownExpanded = false },
+                        containerColor = OllamaCard
+                    ) {
+                        vm.modelList.forEach { model ->
+                            DropdownMenuItem(
+                                text = { Text(model.name, color = OllamaText, fontSize = 13.sp) },
+                                onClick = { vm.agentModel = model.name; modelDropdownExpanded = false },
+                                colors = MenuDefaults.itemColors(textColor = OllamaText),
+                                leadingIcon = if (vm.agentModel == model.name) ({
+                                    Icon(Icons.Default.Check, null, tint = OllamaGreen, modifier = Modifier.size(14.dp))
+                                }) else null
+                            )
+                        }
+                    }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.size(7.dp).clip(CircleShape).background(if (vm.apiOnline) OllamaGreen else OllamaRed))
