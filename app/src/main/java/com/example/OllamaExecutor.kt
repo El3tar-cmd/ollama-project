@@ -55,6 +55,31 @@ class OllamaExecutor(private val context: Context) {
         }
     }
 
+    /** Build the common environment map for the Ollama process. */
+    private fun buildEnv(host: String, origins: String): Map<String, String> = mapOf(
+        "OLLAMA_HOST"     to host,
+        "OLLAMA_MODELS"   to modelsDir.absolutePath,
+        "OLLAMA_ORIGINS"  to origins,
+        "HOME"            to context.filesDir.absolutePath,
+        "TMPDIR"          to context.cacheDir.absolutePath,
+        "LD_LIBRARY_PATH" to context.applicationInfo.nativeLibraryDir
+    )
+
+    private fun startAndStream(command: List<String>, envMap: Map<String, String>, onLog: (String) -> Unit): Process {
+        val pb = ProcessBuilder(command)
+        pb.environment().putAll(envMap)
+        pb.redirectErrorStream(true)
+        val proc = pb.start()
+        Thread {
+            try {
+                val reader = proc.inputStream.bufferedReader()
+                var line: String?
+                while (reader.readLine().also { line = it } != null) onLog(line ?: "")
+            } catch (e: Exception) { onLog("Log pipe closed: ${e.message}") }
+        }.start()
+        return proc
+    }
+
     fun startOllamaService(
         host: String = "127.0.0.1:11434",
         origins: String = "*",
@@ -62,42 +87,58 @@ class OllamaExecutor(private val context: Context) {
     ): Process? {
         setupEnvironment()
         if (!ollamaFile.exists()) {
-            onLog("Error: Ollama executable not found. Please click 'Setup/Download' first.")
+            onLog("Error: Ollama executable not found. Please click 'Install' first.")
             return null
         }
 
+        val envMap = buildEnv(host, origins)
+
+        // Strategy 1: Direct execution (works on most devices)
         try {
-            val pb = ProcessBuilder(ollamaFile.absolutePath, "serve")
-            val env = pb.environment()
-            env["OLLAMA_HOST"] = host
-            env["OLLAMA_MODELS"] = modelsDir.absolutePath
-            env["OLLAMA_ORIGINS"] = origins
-            env["HOME"] = context.filesDir.absolutePath
-            env["TMPDIR"] = context.cacheDir.absolutePath
-            env["LD_LIBRARY_PATH"] = context.applicationInfo.nativeLibraryDir
-
-            pb.redirectErrorStream(true)
-            val proc = pb.start()
-
-            // Spawn separate thread to parse streaming logs of the daemon
-            Thread {
-                try {
-                    val reader = proc.inputStream.bufferedReader()
-                    var line: String?
-                    while (reader.readLine().also { line = it } != null) {
-                        onLog(line ?: "")
-                    }
-                } catch (e: Exception) {
-                    onLog("Log pipe closed: ${e.message}")
-                }
-            }.start()
-
-            return proc
+            return startAndStream(listOf(ollamaFile.absolutePath, "serve"), envMap, onLog)
         } catch (e: Exception) {
-            onLog("Failed to start Ollama executable: ${e.message}")
-            Log.e(TAG, "Process init failed", e)
-            return null
+            val msg = e.message ?: ""
+            if (!msg.contains("error=13") && !msg.contains("Permission denied")) {
+                onLog("Failed to start Ollama executable: $msg")
+                return null
+            }
+            onLog("Direct exec denied (SELinux/noexec). Trying fallback strategies...")
         }
+
+        // Strategy 2: Copy binary to externalCacheDir (often on a different, exec-allowed partition)
+        val extCache = context.externalCacheDir
+        if (extCache != null) {
+            try {
+                val extBin = File(extCache, "ollama")
+                ollamaFile.copyTo(extBin, overwrite = true)
+                extBin.setExecutable(true, false)
+                Runtime.getRuntime().exec(arrayOf("chmod", "755", extBin.absolutePath)).waitFor()
+                onLog("Trying execution from external cache: ${extBin.absolutePath}")
+                return startAndStream(listOf(extBin.absolutePath, "serve"), envMap, onLog)
+            } catch (e2: Exception) {
+                onLog("External cache fallback failed: ${e2.message}")
+            }
+        }
+
+        // Strategy 3: Run via /system/bin/sh wrapper (can bypass some SELinux restrictions)
+        try {
+            onLog("Trying /system/bin/sh wrapper...")
+            return startAndStream(
+                listOf("/system/bin/sh", "-c", "exec '${ollamaFile.absolutePath}' serve"),
+                envMap, onLog
+            )
+        } catch (e3: Exception) {
+            onLog("sh wrapper failed: ${e3.message}")
+        }
+
+        // All strategies failed
+        onLog("⚠️ All execution strategies failed.")
+        onLog("  Your device's security policy (SELinux/Knox) prevents running")
+        onLog("  custom binaries from app storage. Try:")
+        onLog("  1. Disable Knox Manage if present")
+        onLog("  2. Try on a different Android device")
+        onLog("  3. Enable 'Install unknown apps' in Developer Options")
+        return null
     }
 
     fun stopOllamaService(process: Process?) {
