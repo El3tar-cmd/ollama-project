@@ -1,7 +1,3 @@
-<div align="center">
-<img width="1200" height="475" alt="Banner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
-
 # Ollama Devhive — Android LLM Server
 
 Run a local Ollama LLM daemon directly on your Android device. Built with Kotlin & Jetpack Compose.
