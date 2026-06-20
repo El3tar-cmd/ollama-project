@@ -93,7 +93,7 @@ class OllamaExecutor(private val context: Context) {
     }
 
     /** Build env vars for the Ollama process. */
-    private fun buildEnv(host: String, origins: String): Map<String, String> {
+    private fun buildEnv(host: String, origins: String, extraEnv: Map<String, String> = emptyMap()): Map<String, String> {
         // Include nativeLibraryDir first (has libollama.so + libc++_shared.so),
         // then system lib paths so the dynamic linker can resolve all dependencies.
         val ldPath = listOf(
@@ -103,7 +103,7 @@ class OllamaExecutor(private val context: Context) {
             "/apex/com.android.art/lib64",
             "/vendor/lib64"
         ).joinToString(":")
-        return mapOf(
+        val base = mapOf(
             "OLLAMA_HOST"     to host,
             "OLLAMA_MODELS"   to modelsDir.absolutePath,
             "OLLAMA_ORIGINS"  to origins,
@@ -111,6 +111,7 @@ class OllamaExecutor(private val context: Context) {
             "TMPDIR"          to context.cacheDir.absolutePath,
             "LD_LIBRARY_PATH" to ldPath
         )
+        return base + extraEnv
     }
 
     private fun startAndStream(
