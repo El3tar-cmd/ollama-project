@@ -1114,33 +1114,7 @@ fun ChatScreen(vm: MainViewModel, context: Context) {
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 contentPadding = PaddingValues(vertical = 12.dp)
             ) {
-                items(vm.chatHistory) { msg ->
-                    val isUser = msg.role == "user"
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start) {
-                        Box(
-                            Modifier
-                                .widthIn(max = 290.dp)
-                                .clip(RoundedCornerShape(
-                                    topStart = 16.dp, topEnd = 16.dp,
-                                    bottomStart = if (isUser) 16.dp else 0.dp,
-                                    bottomEnd = if (isUser) 0.dp else 16.dp
-                                ))
-                                .background(if (isUser) OllamaGreen else OllamaCard)
-                                .border(if (isUser) 0.dp else 1.dp, OllamaBorder, RoundedCornerShape(
-                                    topStart = 16.dp, topEnd = 16.dp,
-                                    bottomStart = if (isUser) 16.dp else 0.dp,
-                                    bottomEnd = if (isUser) 0.dp else 16.dp
-                                ))
-                                .padding(12.dp)
-                        ) {
-                            if (msg.content.isEmpty() && !isUser) {
-                                CircularProgressIndicator(modifier = Modifier.size(16.dp), color = OllamaGreen, strokeWidth = 2.dp)
-                            } else {
-                                Text(msg.content, color = if (isUser) OllamaBg else OllamaText, fontSize = 14.sp)
-                            }
-                        }
-                    }
-                }
+                items(vm.chatHistory) { msg -> ChatMessageBubble(msg) }
             }
         }
 
@@ -1512,14 +1486,275 @@ fun AgentStepBubble(step: AgentStep) {
     }
 }
 
+// ─────────────────────────────────────────────
+// CHAT BUBBLE — with code-block parsing + copy
+// ─────────────────────────────────────────────
+
+sealed class ChatSegment {
+    data class PlainText(val text: String) : ChatSegment()
+    data class CodeBlock(val language: String, val code: String) : ChatSegment()
+}
+
+fun parseChatContent(content: String): List<ChatSegment> {
+    if (content.isBlank()) return listOf(ChatSegment.PlainText(content))
+    val result = mutableListOf<ChatSegment>()
+    val regex  = Regex("```(\\w*?)\\n([\\s\\S]*?)```|```([\\s\\S]*?)```")
+    var last   = 0
+    regex.findAll(content).forEach { m ->
+        val before = content.substring(last, m.range.first).trim()
+        if (before.isNotBlank()) result.add(ChatSegment.PlainText(before))
+        val lang = m.groupValues[1].trim()
+        val code = m.groupValues[2].ifBlank { m.groupValues[3] }.trimEnd()
+        result.add(ChatSegment.CodeBlock(lang, code))
+        last = m.range.last + 1
+    }
+    val tail = content.substring(last).trim()
+    if (tail.isNotBlank()) result.add(ChatSegment.PlainText(tail))
+    if (result.isEmpty()) result.add(ChatSegment.PlainText(content))
+    return result
+}
+
+@Composable
+fun ChatMessageBubble(msg: ChatMessage) {
+    val isUser    = msg.role == "user"
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start) {
+        if (msg.content.isEmpty() && !isUser) {
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(16.dp, 16.dp, 16.dp, 0.dp))
+                    .background(OllamaCard)
+                    .border(1.dp, OllamaBorder, RoundedCornerShape(16.dp, 16.dp, 16.dp, 0.dp))
+                    .padding(12.dp),
+                contentAlignment = Alignment.Center
+            ) { CircularProgressIndicator(Modifier.size(16.dp), color = OllamaGreen, strokeWidth = 2.dp) }
+            return@Row
+        }
+
+        val segments   = remember(msg.content) { parseChatContent(msg.content) }
+        val bubbleShape = RoundedCornerShape(
+            topStart = 16.dp, topEnd = 16.dp,
+            bottomStart = if (isUser) 16.dp else 0.dp,
+            bottomEnd   = if (isUser) 0.dp else 16.dp
+        )
+
+        Column(Modifier.widthIn(max = 290.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            segments.forEachIndexed { idx, segment ->
+                when (segment) {
+                    is ChatSegment.PlainText -> {
+                        if (segment.text.isBlank()) return@forEachIndexed
+                        val shape = if (segments.size == 1) bubbleShape else RoundedCornerShape(12.dp)
+                        Column(
+                            Modifier
+                                .clip(shape)
+                                .background(if (isUser) OllamaGreen else OllamaCard)
+                                .border(if (isUser) 0.dp else 1.dp, OllamaBorder, shape)
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                        ) {
+                            Text(segment.text, color = if (isUser) OllamaBg else OllamaText, fontSize = 14.sp)
+                            if (!isUser && segment.text.length > 10) {
+                                TextButton(
+                                    onClick = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(segment.text)) },
+                                    contentPadding = PaddingValues(0.dp),
+                                    modifier = Modifier.align(Alignment.End).height(20.dp)
+                                ) { Text("copy", color = OllamaTextDim, fontSize = 9.sp) }
+                            }
+                        }
+                    }
+                    is ChatSegment.CodeBlock -> {
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xFF0D1117))
+                                .border(1.dp, Color(0xFF30363D), RoundedCornerShape(8.dp))
+                                .padding(10.dp)
+                        ) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    segment.language.ifBlank { "code" },
+                                    color = OllamaGreen, fontSize = 9.sp, fontWeight = FontWeight.Bold
+                                )
+                                TextButton(
+                                    onClick = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(segment.code)) },
+                                    contentPadding = PaddingValues(0.dp),
+                                    modifier = Modifier.height(18.dp)
+                                ) { Text("copy", color = OllamaGreen, fontSize = 9.sp) }
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            Text(segment.code, color = Color(0xFF79C0FF), fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────
+// MARKDOWN VIEWER
+// ─────────────────────────────────────────────
+
+sealed class MdSegment {
+    data class Heading(val level: Int, val text: String) : MdSegment()
+    data class Paragraph(val text: String) : MdSegment()
+    data class BulletItem(val indent: Int, val text: String) : MdSegment()
+    data class NumberedItem(val num: Int, val text: String) : MdSegment()
+    data class MdCodeBlock(val lang: String, val code: String) : MdSegment()
+    data class Quote(val text: String) : MdSegment()
+    object Rule : MdSegment()
+    object Blank : MdSegment()
+}
+
+fun parseMd(md: String): List<MdSegment> {
+    val segs  = mutableListOf<MdSegment>()
+    val lines = md.lines()
+    var i     = 0
+    while (i < lines.size) {
+        val line = lines[i].trimEnd()
+        when {
+            line.startsWith("```") -> {
+                val lang = line.drop(3).trim()
+                val code = StringBuilder()
+                i++
+                while (i < lines.size && !lines[i].trimStart().startsWith("```")) {
+                    code.appendLine(lines[i]); i++
+                }
+                segs.add(MdSegment.MdCodeBlock(lang, code.toString().trimEnd()))
+            }
+            line.matches(Regex("^#{1,6} .*")) -> {
+                val lvl = line.takeWhile { it == '#' }.length
+                segs.add(MdSegment.Heading(lvl, line.drop(lvl + 1)))
+            }
+            line.matches(Regex("^\\s*[-*+] .*")) -> {
+                val indent = line.length - line.trimStart().length
+                segs.add(MdSegment.BulletItem(indent / 2, line.trimStart().drop(2)))
+            }
+            line.matches(Regex("^\\s*\\d+\\. .*")) -> {
+                val num = line.trimStart().takeWhile { it.isDigit() }.toIntOrNull() ?: 1
+                segs.add(MdSegment.NumberedItem(num, line.trimStart().dropWhile { it.isDigit() || it == '.' }.drop(1)))
+            }
+            line.startsWith("> ") -> segs.add(MdSegment.Quote(line.drop(2)))
+            line.matches(Regex("^[-*_]{3,}\\s*$")) -> segs.add(MdSegment.Rule)
+            line.isBlank() -> segs.add(MdSegment.Blank)
+            else -> segs.add(MdSegment.Paragraph(line))
+        }
+        i++
+    }
+    return segs
+}
+
+@Composable
+fun MarkdownViewer(markdown: String, modifier: Modifier = Modifier) {
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    val segments  = remember(markdown) { parseMd(markdown) }
+    val scrollState = rememberScrollState()
+    Column(
+        modifier.verticalScroll(scrollState).padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        segments.forEach { seg ->
+            when (seg) {
+                is MdSegment.Heading -> {
+                    if (seg.level == 1) Spacer(Modifier.height(8.dp))
+                    Text(
+                        seg.text,
+                        color = OllamaText,
+                        fontSize = when (seg.level) { 1 -> 22.sp; 2 -> 18.sp; 3 -> 15.sp; else -> 13.sp },
+                        fontWeight = if (seg.level <= 2) FontWeight.Bold else FontWeight.SemiBold,
+                        lineHeight = when (seg.level) { 1 -> 28.sp; 2 -> 24.sp; else -> 20.sp }
+                    )
+                    if (seg.level == 1) HorizontalDivider(color = OllamaBorder.copy(alpha = 0.5f), modifier = Modifier.padding(top = 4.dp, bottom = 4.dp))
+                }
+                is MdSegment.Paragraph -> Text(seg.text, color = OllamaText, fontSize = 13.sp, lineHeight = 20.sp)
+                is MdSegment.BulletItem -> Row(
+                    Modifier.padding(start = (seg.indent * 14).dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Text("•", color = OllamaGreen, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text(seg.text, color = OllamaText, fontSize = 13.sp, lineHeight = 20.sp, modifier = Modifier.weight(1f))
+                }
+                is MdSegment.NumberedItem -> Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Text("${seg.num}.", color = OllamaGreen, fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.width(24.dp))
+                    Text(seg.text, color = OllamaText, fontSize = 13.sp, lineHeight = 20.sp, modifier = Modifier.weight(1f))
+                }
+                is MdSegment.MdCodeBlock -> {
+                    val code = seg.code
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFF0D1117))
+                            .border(1.dp, Color(0xFF30363D), RoundedCornerShape(8.dp))
+                            .padding(10.dp)
+                    ) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text(seg.lang.ifBlank { "code" }, color = OllamaGreen, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                            TextButton(
+                                onClick = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(code)) },
+                                contentPadding = PaddingValues(0.dp), modifier = Modifier.height(18.dp)
+                            ) { Text("copy", color = OllamaGreen, fontSize = 9.sp) }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Text(code, color = Color(0xFF79C0FF), fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                    }
+                    Spacer(Modifier.height(2.dp))
+                }
+                is MdSegment.Quote -> Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(Color(0xFF0A1A14))
+                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Box(Modifier.width(3.dp).height(18.dp).background(OllamaGreen).clip(RoundedCornerShape(2.dp)))
+                    Text(seg.text, color = OllamaTextDim, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                }
+                MdSegment.Rule  -> HorizontalDivider(color = OllamaBorder, modifier = Modifier.padding(vertical = 6.dp))
+                MdSegment.Blank -> Spacer(Modifier.height(4.dp))
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────
+// AGENT FILES PANE
+// ─────────────────────────────────────────────
 @Composable
 fun AgentFilesPane(vm: MainViewModel, context: Context) {
     if (vm.agentSelectedFile != null) {
-        // File editor view
+        val isMarkdown = vm.agentSelectedFile!!.name.endsWith(".md", ignoreCase = true) ||
+                         vm.agentSelectedFile!!.name.endsWith(".markdown", ignoreCase = true)
+        var isPreview  by remember { mutableStateOf(isMarkdown) }
+
         Column(Modifier.fillMaxSize().padding(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("✏️ ${vm.agentSelectedFile!!.name}", color = OllamaGreen, fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    "${if (isMarkdown) "📝" else "✏️"} ${vm.agentSelectedFile!!.name}",
+                    color = if (isMarkdown) OllamaBlue else OllamaGreen,
+                    fontWeight = FontWeight.Bold, fontSize = 13.sp,
+                    modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (isMarkdown) {
+                        TextButton(
+                            onClick = { isPreview = !isPreview },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                        ) {
+                            Text(if (isPreview) "✏️ Edit" else "👁 Preview", color = OllamaBlue, fontSize = 11.sp)
+                        }
+                    }
                     OutlinedButton(
                         onClick = { vm.saveCurrentFile(); Toast.makeText(context, "Saved", Toast.LENGTH_SHORT).show() },
                         border = androidx.compose.foundation.BorderStroke(1.dp, OllamaGreen),
@@ -1528,19 +1763,36 @@ fun AgentFilesPane(vm: MainViewModel, context: Context) {
                     TextButton(onClick = { vm.agentSelectedFile = null }) { Text("Close", color = OllamaTextDim, fontSize = 12.sp) }
                 }
             }
-            Box(
-                Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(8.dp)).background(TerminalBg).border(1.dp, OllamaBorder, RoundedCornerShape(8.dp))
-            ) {
-                OutlinedTextField(
-                    value = vm.agentFileContent,
-                    onValueChange = { vm.agentFileContent = it },
-                    modifier = Modifier.fillMaxSize().padding(4.dp),
-                    textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp, color = OllamaText),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = Color.Transparent, unfocusedBorderColor = Color.Transparent,
-                        cursorColor = OllamaGreen, focusedTextColor = OllamaText, unfocusedTextColor = OllamaText
+
+            if (isPreview && isMarkdown) {
+                Box(
+                    Modifier.fillMaxWidth().weight(1f)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(OllamaCard)
+                        .border(1.dp, OllamaBorder, RoundedCornerShape(8.dp))
+                ) {
+                    MarkdownViewer(vm.agentFileContent, Modifier.fillMaxSize())
+                }
+            } else {
+                Box(
+                    Modifier.fillMaxWidth().weight(1f)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(TerminalBg)
+                        .border(1.dp, OllamaBorder, RoundedCornerShape(8.dp))
+                ) {
+                    OutlinedTextField(
+                        value = vm.agentFileContent,
+                        onValueChange = { vm.agentFileContent = it },
+                        modifier = Modifier.fillMaxSize().padding(4.dp),
+                        textStyle = androidx.compose.ui.text.TextStyle(
+                            fontFamily = FontFamily.Monospace, fontSize = 12.sp, color = OllamaText
+                        ),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color.Transparent, unfocusedBorderColor = Color.Transparent,
+                            cursorColor = OllamaGreen, focusedTextColor = OllamaText, unfocusedTextColor = OllamaText
+                        )
                     )
-                )
+                }
             }
         }
     } else {
