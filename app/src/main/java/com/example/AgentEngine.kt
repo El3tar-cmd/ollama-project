@@ -27,6 +27,11 @@ class AgentEngine(private val context: Context) {
     private val SYSTEM_PROMPT = """
 You are Devhive Agent — an expert AI coding assistant running on Android via Ollama.
 
+## Working directory
+WORKING_DIR
+
+All file paths MUST start with WORKING_DIR. Never use placeholder paths like /absolute/path.
+
 ## How to use tools
 Write ONE JSON tool block per action, inside triple-backtick markers:
 ```tool
@@ -37,31 +42,31 @@ Write ONE JSON tool block per action, inside triple-backtick markers:
 
 ### File system
 ```tool
-{"name": "list_dir", "path": "/absolute/path"}
+{"name": "list_dir", "path": "WORKING_DIR"}
 ```
 ```tool
-{"name": "read_file", "path": "/absolute/path/file.txt"}
+{"name": "read_file", "path": "WORKING_DIR/file.txt"}
 ```
 ```tool
-{"name": "write_file", "path": "/absolute/path/file.txt", "content": "full file content"}
+{"name": "write_file", "path": "WORKING_DIR/file.txt", "content": "full file content"}
 ```
 ```tool
-{"name": "append_file", "path": "/absolute/path/file.txt", "content": "text to append"}
+{"name": "append_file", "path": "WORKING_DIR/file.txt", "content": "text to append"}
 ```
 ```tool
-{"name": "edit_file", "path": "/absolute/path/file.txt", "old": "exact text to replace", "new": "replacement text"}
+{"name": "edit_file", "path": "WORKING_DIR/file.txt", "old": "exact text to replace", "new": "replacement text"}
 ```
 ```tool
-{"name": "delete_file", "path": "/absolute/path/file_or_dir"}
+{"name": "delete_file", "path": "WORKING_DIR/file_or_dir"}
 ```
 ```tool
-{"name": "move_file", "src": "/absolute/path/old.txt", "dst": "/absolute/path/new.txt"}
+{"name": "move_file", "src": "WORKING_DIR/old.txt", "dst": "WORKING_DIR/new.txt"}
 ```
 ```tool
-{"name": "create_dir", "path": "/absolute/path/new_dir"}
+{"name": "create_dir", "path": "WORKING_DIR/new_dir"}
 ```
 ```tool
-{"name": "search_files", "dir": "/absolute/path", "query": "search term"}
+{"name": "search_files", "dir": "WORKING_DIR", "query": "search term"}
 ```
 
 ### Shell execution
@@ -82,12 +87,17 @@ Write ONE JSON tool block per action, inside triple-backtick markers:
 {"name": "think", "content": "my reasoning before acting"}
 ```
 
+### Completion — call this when ALL tasks are fully done
+```tool
+{"name": "complete", "summary": "brief description of what was accomplished"}
+```
+
 ## Rules
-1. ALWAYS think before acting
-2. ALWAYS use absolute paths (working dir: WORKING_DIR)
+1. ALWAYS use paths that start with WORKING_DIR — never use /absolute/path or any other placeholder
+2. ALWAYS think before acting
 3. Read files before editing them
-4. After finishing ALL steps, write a clear summary starting with "## Done"
-5. If a tool fails, adjust your approach and try again
+4. When ALL steps are done, call the complete tool
+5. If a tool fails, adjust and try again
 6. Never invent file contents — use read_file first
 
 ## Environment
@@ -128,6 +138,7 @@ Write ONE JSON tool block per action, inside triple-backtick markers:
             "bash"        -> toolBash(tool.optString("cmd", ""), tool.optString("cwd", workingDir))
             "run_command" -> toolRunOllamaCommand(tool.optString("args", ""))
             "fetch_url"   -> toolFetchUrl(tool.optString("url", ""), tool.optString("method", "GET"), tool.optString("body", ""))
+            "complete"    -> AgentStep("complete", "✅ ${tool.optString("summary", "Task completed.")}")
             else          -> AgentStep("tool_result", "❌ Unknown tool: $name", isError = true)
         }
     }
@@ -394,6 +405,7 @@ Write ONE JSON tool block per action, inside triple-backtick markers:
 
             // Execute all tool calls
             val toolResults = StringBuilder()
+            var taskComplete = false
             toolCalls.forEach { toolCall ->
                 val toolName = toolCall.optString("name", "?")
                 onStep(AgentStep("tool_call", "🔧 $toolName"))
@@ -401,9 +413,11 @@ Write ONE JSON tool block per action, inside triple-backtick markers:
                 onStep(result)
                 toolResults.appendLine(result.content)
                 toolResults.appendLine("---")
+                if (result.type == "complete") taskComplete = true
             }
 
             messages.add(ChatMessage("assistant", fullResponse))
+            if (taskComplete) break
             messages.add(ChatMessage("user", "Tool results:\n$toolResults\nContinue."))
         }
 
