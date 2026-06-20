@@ -1043,11 +1043,12 @@ fun AgentScreen(vm: MainViewModel, context: Context) {
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
-                IconButton(
+                TextButton(
                     onClick = { showFolderPicker = true },
-                    modifier = Modifier.size(28.dp).clip(RoundedCornerShape(6.dp)).background(OllamaCard)
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                    modifier = Modifier.clip(RoundedCornerShape(4.dp)).background(OllamaCard)
                 ) {
-                    Icon(Icons.Default.Folder, contentDescription = "Pick folder", tint = OllamaGreen, modifier = Modifier.size(16.dp))
+                    Text("📁", fontSize = 14.sp)
                 }
             }
         }
