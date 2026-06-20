@@ -174,7 +174,7 @@ class OllamaApi {
         messages: List<ChatMessage>,
         onTokenGenerated: (String) -> Unit,
         onComplete: (Boolean, String) -> Unit
-    ) {
+    ): Call {
         val messagesArray = org.json.JSONArray()
         for (msg in messages) {
             messagesArray.put(
@@ -196,8 +196,10 @@ class OllamaApi {
             .post(body)
             .build()
 
-        client.newCall(request).enqueue(object : Callback {
+        val call = client.newCall(request)
+        call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
+                if (call.isCanceled()) return
                 onComplete(false, e.message ?: "Inference connection error")
             }
 
@@ -215,6 +217,7 @@ class OllamaApi {
 
                 try {
                     while (!source.exhausted()) {
+                        if (call.isCanceled()) break
                         val line = source.readUtf8Line() ?: break
                         if (line.isNotEmpty()) {
                             try {
@@ -226,23 +229,18 @@ class OllamaApi {
                                 val done = json.optBoolean("done", false)
                                 val msgObj = json.optJSONObject("message")
                                 val token = msgObj?.optString("content", "") ?: ""
-
-                                if (token.isNotEmpty()) {
-                                    onTokenGenerated(token)
-                                }
-                                if (done) {
-                                    break
-                                }
-                            } catch (e: Exception) {
-                                // Silent skip malformed streams
+                                if (token.isNotEmpty()) onTokenGenerated(token)
+                                if (done) break
+                            } catch (_: Exception) {
                             }
                         }
                     }
-                    onComplete(true, "Inference stream complete")
+                    if (!call.isCanceled()) onComplete(true, "Inference stream complete")
                 } catch (e: Exception) {
-                    onComplete(false, "Inference stream interrupted: ${e.message}")
+                    if (!call.isCanceled()) onComplete(false, "Inference stream interrupted: ${e.message}")
                 }
             }
         })
+        return call
     }
 }
