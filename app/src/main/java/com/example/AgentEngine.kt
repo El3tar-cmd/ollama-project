@@ -29,7 +29,7 @@ You are Devhive Agent — an expert AI coding assistant running on Android via O
 Working directory: WORKING_DIR
 
 IMPORTANT — HOW TO CALL TOOLS:
-You MUST call tools by outputting a JSON object on its own line, wrapped in a ```tool block.
+You MUST call tools by outputting a JSON object, wrapped in a ```tool block.
 You can ONLY interact with the system via tool calls. Never describe what you would do — DO IT.
 
 Format (one tool per block):
@@ -37,29 +37,44 @@ Format (one tool per block):
 {"name": "TOOL_NAME", "key": "value"}
 ```
 
-TOOLS:
+═══ THINKING TOOLS ═══
+- think:       {"name":"think","content":"step-by-step reasoning before acting"}
+- plan:        {"name":"plan","steps":["step 1","step 2","step 3"]}
+- reflect:     {"name":"reflect","observation":"what happened","adjustment":"what to do differently"}
+
+═══ FILE TOOLS ═══
 - list_dir:    {"name":"list_dir","path":"WORKING_DIR"}
 - read_file:   {"name":"read_file","path":"WORKING_DIR/file.txt"}
 - write_file:  {"name":"write_file","path":"WORKING_DIR/file.txt","content":"full content here"}
-- append_file: {"name":"append_file","path":"WORKING_DIR/file.txt","content":"text"}
+- append_file: {"name":"append_file","path":"WORKING_DIR/file.txt","content":"text to append"}
 - edit_file:   {"name":"edit_file","path":"WORKING_DIR/file.txt","old":"exact old text","new":"new text"}
 - delete_file: {"name":"delete_file","path":"WORKING_DIR/path"}
 - move_file:   {"name":"move_file","src":"WORKING_DIR/old","dst":"WORKING_DIR/new"}
 - create_dir:  {"name":"create_dir","path":"WORKING_DIR/newdir"}
+
+═══ SEARCH TOOLS ═══
 - search_files:{"name":"search_files","dir":"WORKING_DIR","query":"keyword"}
-- bash:        {"name":"bash","cmd":"ls -la"}
-- fetch_url:   {"name":"fetch_url","url":"https://example.com","method":"GET"}
-- think:       {"name":"think","content":"my reasoning"}
-- complete:    {"name":"complete","summary":"what was done"}
+- grep:        {"name":"grep","dir":"WORKING_DIR","pattern":"regex","glob":"*.py"}
+
+═══ EXECUTION TOOLS ═══
+- bash:        {"name":"bash","cmd":"ls -la","cwd":"WORKING_DIR"}
+- git:         {"name":"git","args":"status"}
+- calculate:   {"name":"calculate","expr":"2 ** 10 + sqrt(144)"}
+- fetch_url:   {"name":"fetch_url","url":"https://example.com","method":"GET","body":""}
+
+═══ CONTROL TOOLS ═══
+- complete:    {"name":"complete","summary":"concise description of what was accomplished"}
 
 RULES:
-1. ALL paths must start with WORKING_DIR — never use relative or placeholder paths.
-2. Think before acting. Use think tool if you need to reason.
-3. Read a file before editing it.
-4. Call complete when ALL tasks are fully done.
-5. If a tool fails, analyze the error and retry with a fix.
-6. NEVER write placeholder or fake content — always use real file content.
-7. ALWAYS output a ```tool block — never just describe what to do.
+1. ALWAYS start complex tasks with plan — lay out all steps first.
+2. Use think before making non-trivial decisions.
+3. Use reflect after unexpected results to adjust strategy.
+4. ALL file paths must start with WORKING_DIR — never relative paths.
+5. Read a file before editing it.
+6. Call complete only when ALL tasks are fully done.
+7. If a tool fails, reflect on the error and retry with a fix.
+8. NEVER write placeholder/fake content — always real content.
+9. ALWAYS output a ```tool block — never just describe what to do.
 
 Platform: Android arm64 | Shell: /system/bin/sh
 """.trimIndent()
@@ -123,7 +138,14 @@ Platform: Android arm64 | Shell: /system/bin/sh
     // ─── Tool dispatcher ─────────────────────────────────────────────────────
     suspend fun executeTool(tool: JSONObject): AgentStep = withContext(Dispatchers.IO) {
         when (val name = tool.optString("name", "")) {
-            "think"       -> AgentStep("think", "💭 ${tool.optString("content", "")}")
+            // ── Thinking tools ──
+            "think"       -> AgentStep("think",
+                "💭 ${tool.optString("content", "")}")
+            "plan"        -> toolPlan(tool.optJSONArray("steps"))
+            "reflect"     -> AgentStep("think",
+                "🔍 Observation: ${tool.optString("observation","")}\n" +
+                "🔄 Adjustment: ${tool.optString("adjustment","")}")
+            // ── File tools ──
             "list_dir"    -> toolListDir(tool.optString("path", workingDir))
             "read_file"   -> toolReadFile(tool.optString("path", ""))
             "write_file"  -> toolWriteFile(tool.optString("path", ""), tool.optString("content", ""))
@@ -132,10 +154,19 @@ Platform: Android arm64 | Shell: /system/bin/sh
             "delete_file" -> toolDeleteFile(tool.optString("path", ""))
             "move_file"   -> toolMoveFile(tool.optString("src", ""), tool.optString("dst", ""))
             "create_dir"  -> toolCreateDir(tool.optString("path", ""))
+            // ── Search tools ──
             "search_files"-> toolSearchFiles(tool.optString("dir", workingDir), tool.optString("query", ""))
+            "grep"        -> toolGrep(
+                tool.optString("dir", workingDir),
+                tool.optString("pattern", ""),
+                tool.optString("glob", ""))
+            // ── Execution tools ──
             "bash"        -> toolBash(tool.optString("cmd", ""), tool.optString("cwd", workingDir))
+            "git"         -> toolBash("git ${tool.optString("args","status")}", workingDir)
+            "calculate"   -> toolCalculate(tool.optString("expr", ""))
             "run_command" -> toolRunOllamaCommand(tool.optString("args", ""))
             "fetch_url"   -> toolFetchUrl(tool.optString("url", ""), tool.optString("method", "GET"), tool.optString("body", ""))
+            // ── Control ──
             "complete"    -> AgentStep("complete", "✅ ${tool.optString("summary", "Task completed.")}")
             else          -> AgentStep("tool_result", "❌ Unknown tool: $name", isError = true)
         }
@@ -275,6 +306,158 @@ Platform: Android arm64 | Shell: /system/bin/sh
         } catch (e: Exception) {
             AgentStep("tool_result", "❌ search_files error: ${e.message}", isError = true)
         }
+    }
+
+    // ─── New tool implementations ─────────────────────────────────────────────
+
+    private fun toolPlan(stepsArr: org.json.JSONArray?): AgentStep {
+        if (stepsArr == null || stepsArr.length() == 0)
+            return AgentStep("think", "📋 Plan: (empty)", isError = false)
+        val sb = StringBuilder("📋 Plan (${stepsArr.length()} steps)\n")
+        for (i in 0 until stepsArr.length()) {
+            sb.appendLine("  ${i + 1}. ${stepsArr.optString(i)}")
+        }
+        return AgentStep("think", sb.toString().trimEnd())
+    }
+
+    private fun toolGrep(dir: String, pattern: String, glob: String): AgentStep {
+        return try {
+            if (pattern.isBlank()) return AgentStep("tool_result", "❌ grep: empty pattern", isError = true)
+            val root = File(dir)
+            if (!root.exists()) return AgentStep("tool_result", "❌ Dir not found: $dir", isError = true)
+            val regex = try { Regex(pattern, RegexOption.IGNORE_CASE) }
+                        catch (_: Exception) { Regex(Regex.escape(pattern), RegexOption.IGNORE_CASE) }
+            val results = mutableListOf<String>()
+            val globRegex = if (glob.isNotBlank())
+                Regex("^" + glob.replace(".", "\\.").replace("*", ".*").replace("?", ".") + "$")
+            else null
+
+            root.walkTopDown()
+                .filter { it.isFile && (globRegex == null || globRegex.matches(it.name)) }
+                .take(500)
+                .forEach { file ->
+                    if (file.length() > 2_000_000) return@forEach
+                    try {
+                        file.readLines().forEachIndexed { idx, line ->
+                            if (regex.containsMatchIn(line)) {
+                                results.add("${file.absolutePath}:${idx + 1}: ${line.trim().take(120)}")
+                                if (results.size >= 100) return@forEach
+                            }
+                        }
+                    } catch (_: Exception) {}
+                }
+            if (results.isEmpty())
+                AgentStep("tool_result", "🔍 grep: no matches for /$pattern/ in $dir")
+            else
+                AgentStep("tool_result", "🔍 grep: ${results.size} match(es)\n${results.joinToString("\n")}")
+        } catch (e: Exception) {
+            AgentStep("tool_result", "❌ grep error: ${e.message}", isError = true)
+        }
+    }
+
+    private fun toolCalculate(expr: String): AgentStep {
+        return try {
+            if (expr.isBlank()) return AgentStep("tool_result", "❌ calculate: empty expression", isError = true)
+            // Safe evaluator — supports +,-,*,/,**,sqrt,abs,floor,ceil,round,mod,%
+            val result = evalExpr(expr.trim())
+            AgentStep("tool_result", "🔢 $expr = $result")
+        } catch (e: Exception) {
+            AgentStep("tool_result", "❌ calculate error: ${e.message}\nExpression: $expr", isError = true)
+        }
+    }
+
+    /** Minimal safe math expression evaluator (no eval, no JS engine). */
+    private fun evalExpr(expr: String): String {
+        val e = expr
+            .replace("\\s".toRegex(), "")
+            .replace("sqrt(", "§SQRT§")
+            .replace("abs(", "§ABS§")
+            .replace("floor(", "§FLOOR§")
+            .replace("ceil(", "§CEIL§")
+            .replace("round(", "§ROUND§")
+            .replace("**", "^")
+        val result = evalTokens(e)
+        return if (result == result.toLong().toDouble()) result.toLong().toString()
+               else "%.10g".format(result).trimEnd('0').trimEnd('.')
+    }
+
+    private fun evalTokens(expr: String): Double {
+        var e = expr
+        // Handle functions
+        fun applyFn(tag: String, fn: (Double) -> Double): String {
+            while (e.contains(tag)) {
+                val idx = e.indexOf(tag)
+                var depth = 1; var i = idx + tag.length
+                while (i < e.length && depth > 0) {
+                    if (e[i] == '(') depth++ else if (e[i] == ')') depth--
+                    i++
+                }
+                val inner = e.substring(idx + tag.length, i - 1)
+                val value  = fn(evalTokens(inner))
+                e = e.substring(0, idx) + value + e.substring(i)
+            }
+            return e
+        }
+        e = applyFn("§SQRT§",  { v -> kotlin.math.sqrt(v) })
+        e = applyFn("§ABS§",   { v -> kotlin.math.abs(v) })
+        e = applyFn("§FLOOR§", { v -> kotlin.math.floor(v) })
+        e = applyFn("§CEIL§",  { v -> kotlin.math.ceil(v) })
+        e = applyFn("§ROUND§", { v -> kotlin.math.round(v).toDouble() })
+
+        // Resolve parentheses
+        while (e.contains('(')) {
+            val last = e.lastIndexOf('(')
+            val close = e.indexOf(')', last)
+            if (close == -1) break
+            val inner = e.substring(last + 1, close)
+            e = e.substring(0, last) + evalTokens(inner) + e.substring(close + 1)
+        }
+
+        // Tokenize and compute with operator precedence
+        val tokens = Regex("(?<=[0-9.)])(?=[+\\-*/^%])|(?<=[+\\-*/^%])(?=[0-9.(])")
+            .split(e).filter { it.isNotBlank() }
+
+        // Flatten into numbers and ops
+        val nums = mutableListOf<Double>()
+        val ops  = mutableListOf<Char>()
+        var i = 0
+        while (i < e.length) {
+            val c = e[i]
+            if (c.isDigit() || c == '.' || (c == '-' && (i == 0 || e[i-1] in "+-*/^%"))) {
+                var j = i + 1
+                while (j < e.length && (e[j].isDigit() || e[j] == '.')) j++
+                nums.add(e.substring(i, j).toDouble())
+                i = j
+            } else if (c in "+-*/^%") {
+                ops.add(c); i++
+            } else i++
+        }
+        if (nums.isEmpty()) return e.toDoubleOrNull() ?: throw IllegalArgumentException("Cannot parse: $e")
+
+        // Apply ^ first
+        var idx = ops.indexOf('^')
+        while (idx != -1) {
+            nums[idx] = kotlin.math.pow(nums[idx], nums[idx + 1])
+            nums.removeAt(idx + 1); ops.removeAt(idx)
+            idx = ops.indexOf('^')
+        }
+        // Then * / %
+        idx = ops.indexOfFirst { it in "*/%" }
+        while (idx != -1) {
+            nums[idx] = when (ops[idx]) {
+                '*' -> nums[idx] * nums[idx + 1]
+                '/' -> nums[idx] / nums[idx + 1]
+                else -> nums[idx] % nums[idx + 1]
+            }
+            nums.removeAt(idx + 1); ops.removeAt(idx)
+            idx = ops.indexOfFirst { it in "*/%" }
+        }
+        // Then + -
+        var result = nums[0]
+        for (k in ops.indices) {
+            result = if (ops[k] == '+') result + nums[k + 1] else result - nums[k + 1]
+        }
+        return result
     }
 
     private fun toolBash(cmd: String, cwd: String): AgentStep {
