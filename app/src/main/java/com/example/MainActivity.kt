@@ -420,18 +420,28 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         }
     }
 
+    private var agentJob: kotlinx.coroutines.Job? = null
+
     fun runAgent(context: Context) {
         val task = agentInput.trim()
         if (task.isEmpty() || agentModel.isEmpty()) return
         if (!apiOnline) { Toast.makeText(context, "Server must be running for agent", Toast.LENGTH_SHORT).show(); return }
         agentInput = ""; isAgentRunning = true
         agentSteps.add(AgentStep("user", task))
-        viewModelScope.launch(Dispatchers.IO) {
+        agentJob = viewModelScope.launch(Dispatchers.IO) {
             agentEngine.runAgentLoop(task, agentModel, "http://$hostUrlState") { step ->
                 withContext(Dispatchers.Main) { agentSteps.add(step) }
             }
-            withContext(Dispatchers.Main) { isAgentRunning = false; refreshFileTree() }
+            withContext(Dispatchers.Main) { isAgentRunning = false; agentJob = null; refreshFileTree() }
         }
+    }
+
+    fun stopAgent() {
+        agentJob?.cancel()
+        agentJob = null
+        isAgentRunning = false
+        agentSteps.add(AgentStep("info", "🛑 Stopped by user."))
+        refreshFileTree()
     }
 
     fun spawnSubAgent(context: Context, subTask: String) {
@@ -1288,13 +1298,18 @@ fun AgentChatPane(vm: MainViewModel, context: Context, listState: androidx.compo
             )
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 FloatingActionButton(
-                    onClick = { focusManager.clearFocus(); vm.runAgent(context) },
+                    onClick = {
+                        focusManager.clearFocus()
+                        if (vm.isAgentRunning) vm.stopAgent() else vm.runAgent(context)
+                    },
                     modifier = Modifier.size(52.dp),
-                    containerColor = if (vm.isAgentRunning) OllamaCardAlt else OllamaGreen,
-                    contentColor = OllamaBg
+                    containerColor = if (vm.isAgentRunning) Color(0xFFCC2222) else OllamaGreen,
+                    contentColor = Color.White
                 ) {
-                    if (vm.isAgentRunning) CircularProgressIndicator(Modifier.size(20.dp), color = OllamaGreen, strokeWidth = 2.dp)
-                    else Icon(Icons.Default.Send, null, Modifier.size(20.dp))
+                    if (vm.isAgentRunning)
+                        Icon(Icons.Default.Stop, contentDescription = "Stop", modifier = Modifier.size(22.dp))
+                    else
+                        Icon(Icons.Default.Send, contentDescription = "Send", modifier = Modifier.size(20.dp))
                 }
                 IconButton(
                     onClick = { vm.agentSteps.clear() },
