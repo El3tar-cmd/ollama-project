@@ -375,14 +375,17 @@ Write ONE JSON tool block per action, inside triple-backtick markers:
 
             try {
                 suspendCancellableCoroutine<Unit> { cont ->
-                    api.chatStream(
+                    val call = api.chatStream(
                         baseUrl = baseUrl,
                         modelName = model,
                         messages = messages,
                         onTokenGenerated = { token -> fullResponse += token },
                         onComplete = { _, _ -> if (!cont.isCompleted) cont.resume(Unit) }
                     )
+                    cont.invokeOnCancellation { call.cancel() }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                break
             } catch (e: Exception) {
                 onStep(AgentStep("error", "❌ LLM error: ${e.message}", isError = true))
                 break
