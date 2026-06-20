@@ -437,7 +437,7 @@ Platform: Android arm64 | Shell: /system/bin/sh
         // Apply ^ first
         var idx = ops.indexOf('^')
         while (idx != -1) {
-            nums[idx] = kotlin.math.pow(nums[idx], nums[idx + 1])
+            nums[idx] = Math.pow(nums[idx], nums[idx + 1])
             nums.removeAt(idx + 1); ops.removeAt(idx)
             idx = ops.indexOf('^')
         }
