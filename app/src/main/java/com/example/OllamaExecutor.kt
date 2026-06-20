@@ -22,6 +22,16 @@ class OllamaExecutor(private val context: Context) {
         if (!modelsDir.exists()) modelsDir.mkdirs()
         if (ollamaFile.exists()) {
             ollamaFile.setExecutable(true, false)
+            // Fallback: force chmod via shell if setExecutable was not enough
+            if (!ollamaFile.canExecute()) {
+                try {
+                    Runtime.getRuntime()
+                        .exec(arrayOf("chmod", "755", ollamaFile.absolutePath))
+                        .waitFor()
+                } catch (e: Exception) {
+                    Log.w(TAG, "chmod fallback failed: ${e.message}")
+                }
+            }
         }
     }
 
