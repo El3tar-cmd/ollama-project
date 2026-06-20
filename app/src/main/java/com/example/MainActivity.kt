@@ -327,7 +327,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     }
 
     // ── Agent ─────────────────────────────────────────────────────────────
-    fun setAgentWorkingDir(path: String) {
+    fun updateAgentWorkingDir(path: String) {
         agentWorkingDir = path
         agentEngine.workingDir = path
         refreshFileTree()
@@ -343,7 +343,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
 
     fun openFile(file: File) {
         if (file.isDirectory) {
-            setAgentWorkingDir(file.absolutePath)
+            updateAgentWorkingDir(file.absolutePath)
         } else {
             agentSelectedFile = file
             viewModelScope.launch(Dispatchers.IO) {
@@ -929,7 +929,7 @@ fun AgentScreen(vm: MainViewModel, context: Context) {
                 Icon(Icons.Default.Home, null, tint = OllamaTextDim, modifier = Modifier.size(14.dp))
                 Text(vm.agentWorkingDir, color = OllamaTextDim, fontSize = 10.sp, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                 TextButton(onClick = {
-                    vm.setAgentWorkingDir(
+                    vm.updateAgentWorkingDir(
                         if (vm.agentWorkingDir == context.filesDir.absolutePath) context.getExternalFilesDir(null)?.absolutePath ?: vm.agentWorkingDir
                         else context.filesDir.absolutePath
                     )
@@ -1082,7 +1082,7 @@ fun AgentFilesPane(vm: MainViewModel, context: Context) {
                 val parent = File(vm.agentWorkingDir).parentFile
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     if (parent != null) {
-                        TextButton(onClick = { vm.setAgentWorkingDir(parent.absolutePath) }, contentPadding = PaddingValues(0.dp)) {
+                        TextButton(onClick = { vm.updateAgentWorkingDir(parent.absolutePath) }, contentPadding = PaddingValues(0.dp)) {
                             Text("↑ Up", color = OllamaTextDim, fontSize = 12.sp)
                         }
                     }
