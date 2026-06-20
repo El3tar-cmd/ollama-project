@@ -16,101 +16,100 @@ class OllamaService : Service() {
         val logBuffer = Collections.synchronizedList(mutableListOf<String>())
         var onLogReceived: ((String) -> Unit)? = null
         var serviceInstance: OllamaService? = null
+
+        private const val NOTIF_ID  = 11434
+        private const val CHANNEL_ID = "OllamaChannel"
     }
 
     private lateinit var ollamaExecutor: OllamaExecutor
+    private var notifManager: NotificationManager? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         serviceInstance = this
-        ollamaExecutor = OllamaExecutor(this)
+        ollamaExecutor  = OllamaExecutor(this)
+        notifManager    = getSystemService(NotificationManager::class.java)
+        createNotificationChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val host = intent?.getStringExtra("host") ?: "127.0.0.1:11434"
+        val host    = intent?.getStringExtra("host")    ?: "127.0.0.1:11434"
         val origins = intent?.getStringExtra("origins") ?: "*"
 
         logBuffer.clear()
-        addLog("Ollama background service initialized.")
+        addLog("Ollama Devhive service initializing...")
 
-        startForegroundServiceNotification()
+        // Android requires startForeground() within 5 s — show "Starting" state
+        startForeground(NOTIF_ID, buildNotification("Starting…", "Launching Ollama daemon"))
 
-        val oldProcess = activeProcess
-        if (oldProcess != null) {
-            ollamaExecutor.stopOllamaService(oldProcess)
-            activeProcess = null
-        }
+        // Stop any previous process
+        activeProcess?.let { ollamaExecutor.stopOllamaService(it); activeProcess = null }
 
-        activeProcess = ollamaExecutor.startOllamaService(host, origins) { line ->
+        val proc = ollamaExecutor.startOllamaService(host, origins) { line ->
             addLog(line)
         }
 
-        // Only mark as running if the process actually started
-        if (activeProcess != null) {
-            isRunning = true
+        if (proc != null) {
+            isRunning     = true
+            activeProcess = proc
+            // Update notification to "Running"
+            notifManager?.notify(NOTIF_ID, buildNotification(
+                getString(R.string.notification_title),
+                getString(R.string.notification_msg)
+            ))
         } else {
             isRunning = false
-            addLog("Error: Failed to launch Ollama process — stopping service.")
+            addLog("Failed to launch Ollama process — stopping service.")
+            // Dismiss the notification immediately and stop the service
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
 
         return START_NOT_STICKY
     }
 
+    private fun createNotificationChannel() {
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            getString(R.string.notification_channel),
+            NotificationManager.IMPORTANCE_LOW
+        )
+        notifManager?.createNotificationChannel(channel)
+    }
+
+    private fun buildNotification(title: String, text: String) =
+        NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setContentIntent(
+                PendingIntent.getActivity(
+                    this, 0,
+                    Intent(this, MainActivity::class.java),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                )
+            )
+            .setOngoing(true)
+            .build()
+
     private fun addLog(text: String) {
         val trimmed = text.trim()
         if (trimmed.isNotEmpty()) {
             synchronized(logBuffer) {
                 logBuffer.add(trimmed)
-                if (logBuffer.size > 1500) {
-                    logBuffer.removeAt(0)
-                }
+                if (logBuffer.size > 1500) logBuffer.removeAt(0)
             }
             onLogReceived?.invoke(trimmed)
         }
     }
 
-    private fun startForegroundServiceNotification() {
-        val channelId = "OllamaChannel"
-        val manager = getSystemService(NotificationManager::class.java)
-
-        val channel = NotificationChannel(
-            channelId,
-            getString(R.string.notification_channel),
-            NotificationManager.IMPORTANCE_LOW
-        )
-        manager?.createNotificationChannel(channel)
-
-        val mainIntent = Intent(this, MainActivity::class.java)
-        val pendingIntent = PendingIntent.getActivity(
-            this,
-            0,
-            mainIntent,
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-
-        val notification = NotificationCompat.Builder(this, channelId)
-            .setContentTitle(getString(R.string.notification_title))
-            .setContentText(getString(R.string.notification_msg))
-            .setSmallIcon(android.R.drawable.ic_media_play) // Standard play icon
-            .setContentIntent(pendingIntent)
-            .setOngoing(true)
-            .build()
-
-        startForeground(11434, notification)
-    }
-
     override fun onDestroy() {
         isRunning = false
-        val proc = activeProcess
-        if (proc != null) {
-            ollamaExecutor.stopOllamaService(proc)
-            activeProcess = null
-        }
+        activeProcess?.let { ollamaExecutor.stopOllamaService(it); activeProcess = null }
         serviceInstance = null
-        addLog("Ollama service stopped.")
+        addLog("Ollama Devhive service stopped.")
         super.onDestroy()
     }
 }
