@@ -35,7 +35,7 @@ class OllamaService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val host    = intent?.getStringExtra("host")    ?: "127.0.0.1:11434"
+        val host    = intent?.getStringExtra("host")     ?: "127.0.0.1:11434"
         val origins = intent?.getStringExtra("origins") ?: "*"
 
         logBuffer.clear()
