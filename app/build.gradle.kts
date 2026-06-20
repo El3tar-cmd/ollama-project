@@ -11,7 +11,7 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.aistudio.ollamaserver.hgwtyz"
+        applicationId = "com.ollamadevhive.server"
         minSdk = 24
         targetSdk = 36
         versionCode = 1
