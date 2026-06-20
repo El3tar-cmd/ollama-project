@@ -79,7 +79,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     // Server config
     var hostUrlState     by mutableStateOf("127.0.0.1:11434")
     var originsState     by mutableStateOf("*")
-    var downloadUrlState by mutableStateOf("https://github.com/sunshine0523/OllamaServer/raw/master/android/app/src/main/assets/arm64-v8a/ollama")
+    var downloadUrlState by mutableStateOf("https://github.com/El3tar-cmd/ollama-project/raw/main/app/src/main/jniLibs/arm64-v8a/libollama.so")
 
     // Daemon states
     var binaryInstalled   by mutableStateOf(false)
@@ -133,18 +133,8 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         isLoggedIn = prefs.getBoolean("logged_in", false)
             && java.io.File(ollamaDir, "id_ed25519.pub").exists()
 
-        if (!executor.ollamaFile.exists()) {
-            isPreparingBinary = true
-            viewModelScope.launch(Dispatchers.IO) {
-                executor.copyBinaryFromAssets()
-                withContext(Dispatchers.Main) {
-                    isPreparingBinary = false
-                    checkBinaryInstalled()
-                }
-            }
-        } else {
-            checkBinaryInstalled()
-        }
+        // Native lib (libollama.so) is always preferred — check it first
+        checkBinaryInstalled()
 
         // Init agent working dir — prefer external app-specific storage so files
         // are visible in any file manager under Android/data/<pkg>/files/OllamaAgent/
@@ -198,7 +188,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     }
 
     fun checkBinaryInstalled() {
-        binaryInstalled = executor.ollamaFile.exists() && executor.ollamaFile.canExecute()
+        binaryInstalled = executor.isBinaryInstalled()
     }
 
     fun refreshServiceStatus() {
@@ -226,17 +216,20 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         isInstalling = true
         setupProgress = 0
         setupStatus = "Starting download..."
-        executor.downloadBinary(
-            downloadUrlState,
-            onProgress = { pct, msg -> viewModelScope.launch(Dispatchers.Main) { setupProgress = pct; setupStatus = msg } },
-            onComplete = { ok, msg ->
-                viewModelScope.launch(Dispatchers.Main) {
-                    isInstalling = false; setupStatus = msg
-                    checkBinaryInstalled()
-                    Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
-                }
+        viewModelScope.launch(Dispatchers.IO) {
+            val success = executor.downloadBinary(
+                url = downloadUrlState,
+                onProgress = { pct -> viewModelScope.launch(Dispatchers.Main) { setupProgress = pct } },
+                onLog = { msg -> viewModelScope.launch(Dispatchers.Main) { setupStatus = msg } }
+            )
+            withContext(Dispatchers.Main) {
+                isInstalling = false
+                val msg = if (success) "Binary installed successfully" else "Installation failed — see logs"
+                setupStatus = msg
+                checkBinaryInstalled()
+                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
             }
-        )
+        }
     }
 
     // ── Login (fixed: URL-safe base64, no padding) ──────────────────────
