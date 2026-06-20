@@ -835,7 +835,7 @@ fun ChatScreen(vm: MainViewModel, context: Context) {
         } else {
             LazyColumn(
                 state = listState,
-                Modifier.fillMaxWidth().weight(1f).padding(horizontal = 12.dp),
+                modifier = Modifier.fillMaxWidth().weight(1f).padding(horizontal = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 contentPadding = PaddingValues(vertical = 12.dp)
             ) {
@@ -940,7 +940,7 @@ fun AgentScreen(vm: MainViewModel, context: Context) {
         TabRow(selectedTabIndex = agentTab, containerColor = OllamaSurface, contentColor = OllamaGreen, indicator = { tabPositions ->
             Box(
                 Modifier
-                    .tabIndicatorOffset(tabPositions[agentTab])
+                    .then(TabRowDefaults.tabIndicatorOffset(tabPositions[agentTab]))
                     .height(2.dp)
                     .background(OllamaGreen)
             )
@@ -962,7 +962,7 @@ fun AgentScreen(vm: MainViewModel, context: Context) {
 @Composable
 fun AgentChatPane(vm: MainViewModel, context: Context, listState: androidx.compose.foundation.lazy.LazyListState, focusManager: androidx.compose.ui.focus.FocusManager) {
     Column(Modifier.fillMaxSize()) {
-        LazyColumn(state = listState, Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(vertical = 10.dp)) {
+        LazyColumn(state = listState, modifier = Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(vertical = 10.dp)) {
             if (vm.agentSteps.isEmpty()) {
                 item {
                     Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
@@ -1121,7 +1121,7 @@ fun AgentStepsPane(vm: MainViewModel) {
     LaunchedEffect(vm.agentSteps.size) { if (vm.agentSteps.isNotEmpty()) listState.animateScrollToItem(vm.agentSteps.size - 1) }
     LazyColumn(
         state = listState,
-        Modifier.fillMaxSize().padding(8.dp),
+        modifier = Modifier.fillMaxSize().padding(8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
         contentPadding = PaddingValues(vertical = 8.dp)
     ) {
@@ -1166,7 +1166,7 @@ fun TerminalScreen(vm: MainViewModel, context: Context) {
                     Text("No logs yet.\nStart the daemon to see output.", color = OllamaTextDim, textAlign = TextAlign.Center, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
                 }
             } else {
-                LazyColumn(state = listState, Modifier.fillMaxSize().padding(10.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(10.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
                     items(vm.liveLogs) { line ->
                         Text(line, color = TerminalGreen, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
                     }
