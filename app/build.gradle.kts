@@ -102,8 +102,6 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.logging.interceptor)
     implementation(libs.okhttp)
-    implementation("org.bouncycastle:bcprov-jdk18on:1.77")
-    implementation("org.bouncycastle:bcpkix-jdk18on:1.77")
 
     // ── Tests ──────────────────────────────────────────
     testImplementation(libs.androidx.compose.ui.test.junit4)

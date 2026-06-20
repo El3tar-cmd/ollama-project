@@ -17,7 +17,7 @@ class OllamaService : Service() {
         var onLogReceived: ((String) -> Unit)? = null
         var serviceInstance: OllamaService? = null
 
-        private const val NOTIF_ID  = 11434
+        private const val NOTIF_ID   = 11434
         private const val CHANNEL_ID = "OllamaChannel"
     }
 
@@ -35,26 +35,26 @@ class OllamaService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val host    = intent?.getStringExtra("host")     ?: "127.0.0.1:11434"
+        val host    = intent?.getStringExtra("host")    ?: "127.0.0.1:11434"
         val origins = intent?.getStringExtra("origins") ?: "*"
+        // API key forwarded from the ViewModel so the daemon can authenticate
+        // with ollama.com when pulling or running cloud models.
+        val apiKey  = intent?.getStringExtra("api_key") ?: ""
 
         logBuffer.clear()
         addLog("Ollama Devhive service initializing...")
 
-        // Android requires startForeground() within 5 s — show "Starting" state
         startForeground(NOTIF_ID, buildNotification("Starting…", "Launching Ollama daemon"))
 
-        // Stop any previous process
         activeProcess?.let { ollamaExecutor.stopOllamaService(it); activeProcess = null }
 
-        val proc = ollamaExecutor.startOllamaService(host, origins) { line ->
+        val proc = ollamaExecutor.startOllamaService(host, origins, apiKey) { line ->
             addLog(line)
         }
 
         if (proc != null) {
             isRunning     = true
             activeProcess = proc
-            // Update notification to "Running"
             notifManager?.notify(NOTIF_ID, buildNotification(
                 getString(R.string.notification_title),
                 getString(R.string.notification_msg)
@@ -62,7 +62,6 @@ class OllamaService : Service() {
         } else {
             isRunning = false
             addLog("Failed to launch Ollama process — stopping service.")
-            // Dismiss the notification immediately and stop the service
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }

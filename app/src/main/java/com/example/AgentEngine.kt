@@ -23,101 +23,99 @@ class AgentEngine(private val context: Context) {
     private val TAG = "AgentEngine"
     var workingDir: String = context.filesDir.absolutePath
 
-    // ─── System prompt — works with any model (qwen, phi, llama, gemma…) ───
+    // ─── System prompt ────────────────────────────────────────────────────────
     private val SYSTEM_PROMPT = """
 You are Devhive Agent — an expert AI coding assistant running on Android via Ollama.
+Working directory: WORKING_DIR
 
-## Working directory
-WORKING_DIR
+IMPORTANT — HOW TO CALL TOOLS:
+You MUST call tools by outputting a JSON object on its own line, wrapped in a ```tool block.
+You can ONLY interact with the system via tool calls. Never describe what you would do — DO IT.
 
-All file paths MUST start with WORKING_DIR. Never use placeholder paths like /absolute/path.
-
-## How to use tools
-Write ONE JSON tool block per action, inside triple-backtick markers:
+Format (one tool per block):
 ```tool
-{"name": "TOOL_NAME", "param1": "value1", "param2": "value2"}
-```
-
-## Available tools
-
-### File system
-```tool
-{"name": "list_dir", "path": "WORKING_DIR"}
-```
-```tool
-{"name": "read_file", "path": "WORKING_DIR/file.txt"}
-```
-```tool
-{"name": "write_file", "path": "WORKING_DIR/file.txt", "content": "full file content"}
-```
-```tool
-{"name": "append_file", "path": "WORKING_DIR/file.txt", "content": "text to append"}
-```
-```tool
-{"name": "edit_file", "path": "WORKING_DIR/file.txt", "old": "exact text to replace", "new": "replacement text"}
-```
-```tool
-{"name": "delete_file", "path": "WORKING_DIR/file_or_dir"}
-```
-```tool
-{"name": "move_file", "src": "WORKING_DIR/old.txt", "dst": "WORKING_DIR/new.txt"}
-```
-```tool
-{"name": "create_dir", "path": "WORKING_DIR/new_dir"}
-```
-```tool
-{"name": "search_files", "dir": "WORKING_DIR", "query": "search term"}
+{"name": "TOOL_NAME", "key": "value"}
 ```
 
-### Shell execution
-```tool
-{"name": "bash", "cmd": "ls -la && echo done"}
-```
-```tool
-{"name": "run_command", "args": "list"}
-```
+TOOLS:
+- list_dir:    {"name":"list_dir","path":"WORKING_DIR"}
+- read_file:   {"name":"read_file","path":"WORKING_DIR/file.txt"}
+- write_file:  {"name":"write_file","path":"WORKING_DIR/file.txt","content":"full content here"}
+- append_file: {"name":"append_file","path":"WORKING_DIR/file.txt","content":"text"}
+- edit_file:   {"name":"edit_file","path":"WORKING_DIR/file.txt","old":"exact old text","new":"new text"}
+- delete_file: {"name":"delete_file","path":"WORKING_DIR/path"}
+- move_file:   {"name":"move_file","src":"WORKING_DIR/old","dst":"WORKING_DIR/new"}
+- create_dir:  {"name":"create_dir","path":"WORKING_DIR/newdir"}
+- search_files:{"name":"search_files","dir":"WORKING_DIR","query":"keyword"}
+- bash:        {"name":"bash","cmd":"ls -la"}
+- fetch_url:   {"name":"fetch_url","url":"https://example.com","method":"GET"}
+- think:       {"name":"think","content":"my reasoning"}
+- complete:    {"name":"complete","summary":"what was done"}
 
-### Network
-```tool
-{"name": "fetch_url", "url": "https://example.com/api", "method": "GET"}
-```
+RULES:
+1. ALL paths must start with WORKING_DIR — never use relative or placeholder paths.
+2. Think before acting. Use think tool if you need to reason.
+3. Read a file before editing it.
+4. Call complete when ALL tasks are fully done.
+5. If a tool fails, analyze the error and retry with a fix.
+6. NEVER write placeholder or fake content — always use real file content.
+7. ALWAYS output a ```tool block — never just describe what to do.
 
-### Reasoning
-```tool
-{"name": "think", "content": "my reasoning before acting"}
-```
-
-### Completion — call this when ALL tasks are fully done
-```tool
-{"name": "complete", "summary": "brief description of what was accomplished"}
-```
-
-## Rules
-1. ALWAYS use paths that start with WORKING_DIR — never use /absolute/path or any other placeholder
-2. ALWAYS think before acting
-3. Read files before editing them
-4. When ALL steps are done, call the complete tool
-5. If a tool fails, adjust and try again
-6. Never invent file contents — use read_file first
-
-## Environment
-- Working directory: WORKING_DIR
-- Platform: Android (arm64)
-- Shell: /system/bin/sh
+Platform: Android arm64 | Shell: /system/bin/sh
 """.trimIndent()
 
     private fun systemPrompt() = SYSTEM_PROMPT.replace("WORKING_DIR", workingDir)
 
-    // ─── Tool call parser ────────────────────────────────────────────────────
+    // ─── Tool call parser — handles multiple formats from different models ────
     fun parseToolCalls(text: String): List<JSONObject> {
         val result = mutableListOf<JSONObject>()
-        val regex = Regex("```tool\\s*\\n([\\s\\S]*?)\\n```")
-        regex.findAll(text).forEach { match ->
+        val seen   = mutableSetOf<String>()
+
+        fun tryAdd(raw: String) {
+            val trimmed = raw.trim()
+            if (trimmed.isBlank() || trimmed in seen) return
+            seen.add(trimmed)
             try {
-                result.add(JSONObject(match.groupValues[1].trim()))
-            } catch (e: Exception) {
-                Log.w(TAG, "Bad tool JSON: ${e.message}")
+                val obj = JSONObject(trimmed)
+                if (obj.has("name")) result.add(obj)
+            } catch (_: Exception) {}
+        }
+
+        // Format 1: ```tool\n{...}\n``` (primary)
+        Regex("```tool\\s*\\n([\\s\\S]*?)\\n?```").findAll(text).forEach { tryAdd(it.groupValues[1]) }
+
+        // Format 2: ```json\n{...}\n``` with a "name" key (some models use this)
+        Regex("```json\\s*\\n([\\s\\S]*?)\\n?```").findAll(text).forEach { m ->
+            val raw = m.groupValues[1].trim()
+            if (raw.contains("\"name\"")) tryAdd(raw)
+        }
+
+        // Format 3: bare fenced block ``` {... } ``` with a "name" key
+        Regex("```\\s*\\n(\\{[\\s\\S]*?\\})\\s*\\n?```").findAll(text).forEach { m ->
+            val raw = m.groupValues[1].trim()
+            if (raw.contains("\"name\"")) tryAdd(raw)
+        }
+
+        // Format 4: standalone JSON object on its own line(s) — {"name":"..."}
+        // Scan the text line by line accumulating potential JSON blocks
+        val lines = text.lines()
+        val jsonBuf = StringBuilder()
+        var depth = 0
+        for (line in lines) {
+            for (ch in line) {
+                if (ch == '{') depth++
+                if (ch == '}') depth--
             }
+            if (depth > 0 || jsonBuf.isNotEmpty()) jsonBuf.append(line).append('\n')
+            if (depth == 0 && jsonBuf.isNotBlank()) {
+                val candidate = jsonBuf.toString().trim()
+                if (candidate.contains("\"name\"")) tryAdd(candidate)
+                jsonBuf.clear()
+            }
+        }
+
+        if (result.isEmpty()) {
+            Log.d(TAG, "parseToolCalls: no tool calls found in response (${text.length} chars)")
         }
         return result
     }
@@ -368,41 +366,85 @@ Write ONE JSON tool block per action, inside triple-backtick markers:
 
         val api = OllamaApi()
         var steps = 0
+        var consecutiveErrors = 0
+        val MAX_CONSECUTIVE_ERRORS = 3
 
         while (steps < maxSteps) {
             steps++
             var fullResponse = ""
+            var streamError  = ""
+            var streamOk     = true
 
             try {
                 suspendCancellableCoroutine<Unit> { cont ->
                     val call = api.chatStream(
-                        baseUrl = baseUrl,
-                        modelName = model,
-                        messages = messages,
+                        baseUrl        = baseUrl,
+                        modelName      = model,
+                        messages       = messages,
                         onTokenGenerated = { token -> fullResponse += token },
-                        onComplete = { _, _ -> if (!cont.isCompleted) cont.resume(Unit) }
+                        onComplete     = { success, msg ->
+                            if (!success) { streamOk = false; streamError = msg }
+                            if (!cont.isCompleted) cont.resume(Unit)
+                        }
                     )
                     cont.invokeOnCancellation { call.cancel() }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
-                break
+                throw e  // let coroutine cancellation propagate normally
             } catch (e: Exception) {
-                onStep(AgentStep("error", "❌ LLM error: ${e.message}", isError = true))
+                onStep(AgentStep("error", "❌ LLM connection error: ${e.message}", isError = true))
                 break
             }
 
-            if (fullResponse.isBlank()) break
+            // Stream returned an error (e.g. HTTP 500, timeout, connection refused)
+            if (!streamOk) {
+                consecutiveErrors++
+                onStep(AgentStep("error", "❌ LLM error: $streamError", isError = true))
+                if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                    onStep(AgentStep("info", "⚠️ Too many consecutive errors. Is the daemon running?"))
+                    break
+                }
+                // Short wait before retrying
+                kotlinx.coroutines.delay(1000)
+                continue
+            }
+
+            // Empty response — model sent nothing
+            if (fullResponse.isBlank()) {
+                consecutiveErrors++
+                onStep(AgentStep("error", "❌ Model returned an empty response.", isError = true))
+                if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) break
+                kotlinx.coroutines.delay(800)
+                continue
+            }
+
+            consecutiveErrors = 0  // reset on successful response
 
             val toolCalls = parseToolCalls(fullResponse)
-            val textOnly  = fullResponse.replace(Regex("```tool\\s*\\n[\\s\\S]*?\\n```"), "").trim()
+
+            // Strip all recognised tool block formats for display
+            val textOnly = fullResponse
+                .replace(Regex("```tool\\s*\\n[\\s\\S]*?\\n?```"), "")
+                .replace(Regex("```json\\s*\\n[\\s\\S]*?\\n?```"), "")
+                .replace(Regex("```\\s*\\n\\{[\\s\\S]*?\\}\\s*\\n?```"), "")
+                .trim()
 
             if (textOnly.isNotBlank()) {
                 onStep(AgentStep("assistant", textOnly))
             }
 
-            // No tool calls → model finished
+            // Model gave only text — nudge it to call a tool (up to 2 times)
             if (toolCalls.isEmpty()) {
                 messages.add(ChatMessage("assistant", fullResponse))
+                val noToolTries = messages.count { it.role == "user" && it.content.startsWith("REMINDER") }
+                if (noToolTries < 2) {
+                    val reminder = "REMINDER: You must call a tool using a ```tool block. " +
+                        "Do not describe actions in plain text — output a tool call JSON block now. " +
+                        "If the task is complete, call: {\"name\":\"complete\",\"summary\":\"what was done\"}"
+                    messages.add(ChatMessage("user", reminder))
+                    continue
+                }
+                // Two reminders ignored — model is finished
                 break
             }
 
@@ -421,7 +463,7 @@ Write ONE JSON tool block per action, inside triple-backtick markers:
 
             messages.add(ChatMessage("assistant", fullResponse))
             if (taskComplete) break
-            messages.add(ChatMessage("user", "Tool results:\n$toolResults\nContinue."))
+            messages.add(ChatMessage("user", "Tool results:\n$toolResults\nContinue with the next step. Use a ```tool block."))
         }
 
         if (steps >= maxSteps) {

@@ -137,18 +137,21 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     val shellHistory  = mutableListOf<String>()
     var shellHistIdx  by mutableStateOf(-1)
 
-    // Login
-    var authLoginUrl  by mutableStateOf<String?>(null)
-    var sshPublicKey  by mutableStateOf<String?>(null)
-    var isLoggedIn    by mutableStateOf(false)
+    // Cloud auth — API key obtained via `ollama signin` or entered manually
+    var authLoginUrl     by mutableStateOf<String?>(null)
+    var isLoggedIn       by mutableStateOf(false)
+    var cloudApiKey      by mutableStateOf("")
+    var manualApiKeyInput by mutableStateOf("")
+    var isSigningIn      by mutableStateOf(false)
+    var isValidatingKey  by mutableStateOf(false)
+    var cloudAuthStatus  by mutableStateOf("")   // feedback message for the UI
 
     private val prefs = ctx.getSharedPreferences("ollama_prefs", Context.MODE_PRIVATE)
 
     init {
-        // Restore login state: logged in if SSH key files exist AND pref is true
-        val ollamaDir = java.io.File(ctx.filesDir, ".ollama")
-        isLoggedIn = prefs.getBoolean("logged_in", false)
-            && java.io.File(ollamaDir, "id_ed25519.pub").exists()
+        // Restore cloud auth state from SharedPreferences
+        cloudApiKey = prefs.getString("cloud_api_key", "") ?: ""
+        isLoggedIn  = cloudApiKey.isNotBlank()
 
         // Native lib (libollama.so) is always preferred — check it first
         checkBinaryInstalled()
@@ -220,6 +223,8 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
             context.startForegroundService(Intent(context, OllamaService::class.java).apply {
                 putExtra("host", hostUrlState)
                 putExtra("origins", originsState)
+                // Pass API key so daemon can use OLLAMA_API_KEY for cloud models
+                if (cloudApiKey.isNotBlank()) putExtra("api_key", cloudApiKey)
             })
         }
         viewModelScope.launch(Dispatchers.Main) {
@@ -249,139 +254,136 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         }
     }
 
-    // ── Login — tries `ollama login`, falls back to manual SSH key generation ──
+    // ── Cloud Auth — `ollama login` browser flow OR manual API key ───────────
+
+    /**
+     * Runs `ollama login`, captures the connect URL and opens the browser.
+     * The binary blocks until the user authorises on ollama.com, then stores
+     * credentials under $HOME/.ollama/ (HOME = context.filesDir).
+     */
     fun triggerLogin(context: Context) {
         if (!executor.isBinaryInstalled()) {
-            viewModelScope.launch(Dispatchers.Main) {
-                Toast.makeText(context, "Ollama binary not installed yet. Tap Install first.", Toast.LENGTH_LONG).show()
-            }
+            Toast.makeText(context, "Install binary first, then sign in.", Toast.LENGTH_LONG).show()
             return
         }
-        authLoginUrl = null; sshPublicKey = null
+        authLoginUrl    = null
+        isSigningIn     = true
+        cloudAuthStatus = ""
         liveLogs.add("Running ollama login…")
-        var fellBack = false
-        executor.execOllamaCommand("login") { line ->
-            viewModelScope.launch(Dispatchers.Main) {
-                liveLogs.add(line)
-                if (!fellBack && (line.contains("unknown command") || line.contains("unknown flag"))) {
-                    fellBack = true
-                    liveLogs.add("⚠️ Binary doesn't support 'login' — generating SSH key manually…")
-                    generateAndSaveSshKeys()
-                    return@launch
-                }
-                val match = "(https://ollama\\.com/connect\\S+)".toRegex().find(line)
-                if (match != null) { authLoginUrl = match.value; startAuthWatcher() }
-            }
-        }
-    }
 
-    fun generateAndSaveSshKeys() {
         viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val gen = org.bouncycastle.crypto.generators.Ed25519KeyPairGenerator()
-                gen.init(org.bouncycastle.crypto.params.Ed25519KeyGenerationParameters(java.security.SecureRandom()))
-                val kp   = gen.generateKeyPair()
-                val priv = kp.private as org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
-                val pub  = kp.public  as org.bouncycastle.crypto.params.Ed25519PublicKeyParameters
-                val pubB  = pub.encoded   // 32 bytes
-                val privB = priv.encoded  // 32 bytes seed
-
-                val pubStr  = sshEd25519PublicKey(pubB)
-                val privStr = sshEd25519PrivateKey(privB, pubB)
-
-                val dir = File(ctx.filesDir, ".ollama").also { it.mkdirs() }
-                File(dir, "id_ed25519").writeText(privStr)
-                File(dir, "id_ed25519.pub").writeText(pubStr)
-
-                withContext(Dispatchers.Main) {
-                    sshPublicKey = pubStr
-                    liveLogs.add("✅ SSH Ed25519 key generated and saved.")
-                    startAuthWatcher()
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) { liveLogs.add("❌ Key generation failed: ${e.message}") }
-            }
-        }
-    }
-
-    private fun sshWriteField(out: java.io.ByteArrayOutputStream, b: ByteArray) {
-        out.write(java.nio.ByteBuffer.allocate(4).putInt(b.size).array()); out.write(b)
-    }
-    private fun sshWriteU32(out: java.io.ByteArrayOutputStream, v: Int) {
-        out.write(java.nio.ByteBuffer.allocate(4).putInt(v).array())
-    }
-
-    fun sshEd25519PublicKey(pubB: ByteArray): String {
-        val out = java.io.ByteArrayOutputStream()
-        sshWriteField(out, "ssh-ed25519".toByteArray()); sshWriteField(out, pubB)
-        return "ssh-ed25519 ${android.util.Base64.encodeToString(out.toByteArray(), android.util.Base64.NO_WRAP)} ollama-devhive"
-    }
-
-    private fun sshEd25519PrivateKey(privB: ByteArray, pubB: ByteArray, comment: String = "ollama-devhive"): String {
-        val pubBlob = java.io.ByteArrayOutputStream().also { sshWriteField(it, "ssh-ed25519".toByteArray()); sshWriteField(it, pubB) }.toByteArray()
-        val check   = java.nio.ByteBuffer.allocate(4).putInt(java.security.SecureRandom().nextInt()).array()
-        val privBlock = java.io.ByteArrayOutputStream().also { pb ->
-            pb.write(check); pb.write(check)
-            sshWriteField(pb, "ssh-ed25519".toByteArray())
-            sshWriteField(pb, pubB)
-            sshWriteField(pb, privB + pubB)
-            sshWriteField(pb, comment.toByteArray())
-            var i = 1; while (pb.size() % 8 != 0) pb.write(i++)
-        }.toByteArray()
-        val outer = java.io.ByteArrayOutputStream().also { o ->
-            o.write("openssh-key-v1\u0000".toByteArray(Charsets.UTF_8))
-            sshWriteField(o, "none".toByteArray()); sshWriteField(o, "none".toByteArray())
-            sshWriteU32(o, 0); sshWriteU32(o, 1)
-            sshWriteField(o, pubBlob); sshWriteField(o, privBlock)
-        }.toByteArray()
-        val b64 = android.util.Base64.encodeToString(outer, android.util.Base64.DEFAULT).trim()
-        return "-----BEGIN OPENSSH PRIVATE KEY-----\n$b64\n-----END OPENSSH PRIVATE KEY-----\n"
-    }
-
-    // Watch for SSH key files created by `ollama login` — auto-confirm when ready
-    private var authWatcherActive = false
-    private fun startAuthWatcher() {
-        if (authWatcherActive) return
-        authWatcherActive = true
-        viewModelScope.launch(Dispatchers.IO) {
-            val keyFile = java.io.File(ctx.filesDir, ".ollama/id_ed25519")
-            val pubFile = java.io.File(ctx.filesDir, ".ollama/id_ed25519.pub")
-            val deadline = System.currentTimeMillis() + 5 * 60 * 1000L // 5-min timeout
-            while (System.currentTimeMillis() < deadline) {
-                delay(3000)
-                if (keyFile.exists() && pubFile.exists()) {
-                    withContext(Dispatchers.Main) {
-                        if (!isLoggedIn) {
-                            isLoggedIn = true
-                            prefs.edit().putBoolean("logged_in", true).apply()
-                            liveLogs.add("✅ SSH key detected — device linked to Ollama account.")
-                        }
+            val proc = executor.execLogin { line ->
+                viewModelScope.launch(Dispatchers.Main) {
+                    liveLogs.add(line)
+                    // Capture connect URL from output
+                    val match = "(https://ollama\\.com/connect\\S+)".toRegex().find(line)
+                    if (match != null) authLoginUrl = match.value
+                    // Detect successful auth message from binary
+                    if (line.contains("Logged in", ignoreCase = true) ||
+                        line.contains("Authenticated", ignoreCase = true) ||
+                        line.contains("success", ignoreCase = true)) {
+                        cloudAuthStatus = "✅ Logged in!"
+                        markLoggedIn()
                     }
-                    break
                 }
             }
-            authWatcherActive = false
+            proc?.waitFor()
+            withContext(Dispatchers.Main) {
+                isSigningIn = false
+                if (!isLoggedIn) {
+                    // Binary exited — try to read credential file it may have written
+                    readAndApplyStoredCredential()
+                }
+            }
         }
     }
 
-    fun confirmLogin() {
-        isLoggedIn = true
-        prefs.edit().putBoolean("logged_in", true).apply()
-        authLoginUrl = null; sshPublicKey = null
-        authWatcherActive = false
-        liveLogs.add("✅ Login confirmed — SSH key registered with Ollama.")
+    /** Scan $HOME/.ollama/ for credential file written by `ollama login`. */
+    fun readAndApplyStoredCredential() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val credential = executor.readStoredCredential()
+            withContext(Dispatchers.Main) {
+                if (!credential.isNullOrBlank()) {
+                    persistApiKey(credential)
+                    cloudAuthStatus = "✅ Credentials found and saved!"
+                    liveLogs.add("✅ Credentials stored — cloud auth active.")
+                }
+            }
+        }
     }
 
+    /**
+     * Validate a manually entered API key with Ollama Cloud, then save it.
+     * Users can get an API key from https://ollama.com/settings/api
+     */
+    fun validateAndSaveApiKey(context: Context, key: String) {
+        val trimmed = key.trim()
+        if (trimmed.isBlank()) {
+            Toast.makeText(context, "Enter an API key first.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        isValidatingKey = true
+        cloudAuthStatus = "Validating key…"
+        api.validateCloudApiKey(trimmed) { ok, msg ->
+            viewModelScope.launch(Dispatchers.Main) {
+                isValidatingKey = false
+                if (ok) {
+                    persistApiKey(trimmed)
+                    manualApiKeyInput = ""
+                    cloudAuthStatus = "✅ Key validated and saved!"
+                    Toast.makeText(context, "API key saved — cloud auth active.", Toast.LENGTH_SHORT).show()
+                } else {
+                    cloudAuthStatus = "❌ $msg"
+                    Toast.makeText(context, "Validation failed: $msg", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    /** Persist an API key to state + SharedPreferences and mark as logged in. */
+    private fun persistApiKey(key: String) {
+        cloudApiKey  = key
+        isLoggedIn   = true
+        authLoginUrl = null
+        prefs.edit().putString("cloud_api_key", key).apply()
+        liveLogs.add("✅ Cloud API key stored.")
+    }
+
+    /** Mark as logged in (binary handled auth — credentials stored in ~/.ollama/). */
+    fun markLoggedIn() {
+        if (!isLoggedIn) {
+            isLoggedIn      = true
+            authLoginUrl    = null
+            cloudAuthStatus = "✅ Logged in to Ollama Cloud!"
+            prefs.edit().putBoolean("logged_in_flag", true).apply()
+            liveLogs.add("✅ Login confirmed — authenticated with Ollama.")
+        }
+    }
+
+    /** Called when user taps "Done — I've Authorized" in the browser dialog. */
+    fun confirmLogin() {
+        isSigningIn  = false
+        authLoginUrl = null
+        // Try reading credentials the binary may have written
+        readAndApplyStoredCredential()
+        // Even if no file found, mark as logged in — binary has the session stored
+        markLoggedIn()
+    }
+
+    /** Run `ollama logout` and clear stored credentials. */
     fun triggerLogout(context: Context) {
+        val key = cloudApiKey
         viewModelScope.launch(Dispatchers.IO) {
-            val ollamaDir = File(ctx.filesDir, ".ollama")
-            File(ollamaDir, "id_ed25519").delete()
-            File(ollamaDir, "id_ed25519.pub").delete()
+            executor.execLogout(apiKey = key) { line ->
+                viewModelScope.launch(Dispatchers.Main) { liveLogs.add(line) }
+            }
             withContext(Dispatchers.Main) {
-                isLoggedIn = false
-                prefs.edit().putBoolean("logged_in", false).apply()
-                Toast.makeText(context, "Logged out", Toast.LENGTH_SHORT).show()
-                liveLogs.add("Logged out — SSH keys removed.")
+                cloudApiKey     = ""
+                isLoggedIn      = false
+                cloudAuthStatus = ""
+                prefs.edit().remove("cloud_api_key").putBoolean("logged_in_flag", false).apply()
+                Toast.makeText(context, "Logged out from Ollama Cloud.", Toast.LENGTH_SHORT).show()
+                liveLogs.add("Logged out — cloud credentials cleared.")
             }
         }
     }
@@ -635,19 +637,29 @@ fun MainAppScreen() {
         }
     }
 
-    // Login dialog — ollama login (binary supports it)
+    // Sign-in dialog — shown after `ollama signin` outputs a connect URL
     vm.authLoginUrl?.let { url ->
         val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
         var browserOpened by remember { mutableStateOf(false) }
         AlertDialog(
-            onDismissRequest = { vm.authLoginUrl = null },
+            onDismissRequest = { vm.authLoginUrl = null; vm.isSigningIn = false },
             containerColor = OllamaCard,
-            title = { Text("Sign in to Ollama", color = OllamaText, fontWeight = FontWeight.Bold) },
+            title = { Text("Sign in to Ollama Cloud", color = OllamaText, fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("1. Open the link in your browser and authorize this device.", color = OllamaTextDim, fontSize = 13.sp)
-                    Text("2. After approving on the website, tap \"Done\" below.", color = OllamaTextDim, fontSize = 13.sp)
-                    Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(OllamaCardAlt).padding(8.dp)) {
+                    Text(
+                        "Open the link below in your browser and sign in to your Ollama account. " +
+                        "Then tap \"Done\" once you've authorized this device.",
+                        color = OllamaTextDim, fontSize = 13.sp
+                    )
+                    Box(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+                            .background(OllamaCardAlt).padding(8.dp)
+                            .clickable {
+                                clipboard.setText(androidx.compose.ui.text.AnnotatedString(url))
+                                Toast.makeText(context, "Link copied", Toast.LENGTH_SHORT).show()
+                            }
+                    ) {
                         Text(url, fontSize = 10.sp, color = OllamaGreen, fontFamily = FontFamily.Monospace, maxLines = 4, overflow = TextOverflow.Ellipsis)
                     }
                     if (browserOpened) {
@@ -658,7 +670,7 @@ fun MainAppScreen() {
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Icon(Icons.Default.AccountCircle, null, tint = OllamaGreen, modifier = Modifier.size(14.dp))
-                            Text("Browser opened — authorize then tap Done ↓", color = OllamaGreen, fontSize = 11.sp)
+                            Text("Browser opened — authorize, then tap Done ↓", color = OllamaGreen, fontSize = 11.sp)
                         }
                     }
                 }
@@ -668,7 +680,7 @@ fun MainAppScreen() {
                     Button(
                         onClick = {
                             try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
-                            catch (e: Exception) {
+                            catch (_: Exception) {
                                 clipboard.setText(androidx.compose.ui.text.AnnotatedString(url))
                                 Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
                             }
@@ -676,14 +688,18 @@ fun MainAppScreen() {
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = OllamaGreen, contentColor = OllamaBg),
                         modifier = Modifier.fillMaxWidth()
-                    ) { Text("Open Browser") }
+                    ) {
+                        Icon(Icons.Default.AccountCircle, null, Modifier.size(14.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Open Browser")
+                    }
                     if (browserOpened) {
                         Button(
                             onClick = { vm.confirmLogin() },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1A4A2A), contentColor = OllamaGreen),
                             modifier = Modifier.fillMaxWidth(),
                             border = androidx.compose.foundation.BorderStroke(1.dp, OllamaGreen)
-                        ) { Text("✓ Done — I've Authorized", fontWeight = FontWeight.Bold) }
+                        ) { Text("✓ Done — I've Signed In", fontWeight = FontWeight.Bold) }
                     }
                 }
             },
@@ -692,70 +708,6 @@ fun MainAppScreen() {
                     clipboard.setText(androidx.compose.ui.text.AnnotatedString(url))
                     Toast.makeText(context, "Link copied", Toast.LENGTH_SHORT).show()
                 }) { Text("Copy Link", color = OllamaTextDim) }
-            }
-        )
-    }
-
-    // SSH key dialog — shown when binary doesn't support `ollama login`
-    vm.sshPublicKey?.let { pubKey ->
-        val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
-        val keysUrl = "https://ollama.com/settings/keys"
-        AlertDialog(
-            onDismissRequest = {},
-            containerColor = OllamaCard,
-            title = { Text("Add SSH Key to Ollama", color = OllamaText, fontWeight = FontWeight.Bold) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Row(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
-                            .background(Color(0xFF2A2000)).padding(10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(Icons.Default.Warning, null, tint = Color(0xFFFFCC00), modifier = Modifier.size(16.dp))
-                        Text("Your Ollama binary doesn't support 'login'. A key was generated locally instead.", color = Color(0xFFFFCC00), fontSize = 11.sp)
-                    }
-                    Text("Add this public key at ollama.com/settings/keys to link this device:", color = OllamaTextDim, fontSize = 12.sp)
-                    Box(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
-                            .background(OllamaCardAlt).padding(8.dp)
-                            .clickable {
-                                clipboard.setText(androidx.compose.ui.text.AnnotatedString(pubKey))
-                                Toast.makeText(context, "Public key copied!", Toast.LENGTH_SHORT).show()
-                            }
-                    ) {
-                        Text(pubKey, fontSize = 9.sp, color = OllamaGreen, fontFamily = FontFamily.Monospace, maxLines = 6, overflow = TextOverflow.Ellipsis)
-                    }
-                    Text("Tap key above to copy, then paste it at ollama.com/settings/keys", color = OllamaTextDim, fontSize = 10.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
-                }
-            },
-            confirmButton = {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Button(
-                        onClick = {
-                            try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(keysUrl))) }
-                            catch (e: Exception) {
-                                clipboard.setText(androidx.compose.ui.text.AnnotatedString(keysUrl))
-                                Toast.makeText(context, "Copied URL", Toast.LENGTH_SHORT).show()
-                            }
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = OllamaGreen, contentColor = OllamaBg),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(Icons.Default.AccountCircle, null, Modifier.size(14.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Open ollama.com/settings/keys")
-                    }
-                    Button(
-                        onClick = { vm.confirmLogin() },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1A4A2A), contentColor = OllamaGreen),
-                        modifier = Modifier.fillMaxWidth(),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, OllamaGreen)
-                    ) { Text("✓ Done — I've Added the Key", fontWeight = FontWeight.Bold) }
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { vm.sshPublicKey = null }) { Text("Cancel", color = OllamaTextDim) }
             }
         )
     }
@@ -917,7 +869,8 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
         }
 
         // Cloud auth
-        SectionCard("CLOUD AUTH", "Sign in to access Ollama cloud models") {
+        SectionCard("CLOUD AUTH", "Sign in to use Ollama cloud models") {
+            // Status badge
             if (vm.isLoggedIn) {
                 Row(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
@@ -926,33 +879,94 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Icon(Icons.Default.AccountCircle, null, tint = OllamaGreen, modifier = Modifier.size(18.dp))
-                    Text("Authenticated with Ollama", color = OllamaGreen, fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                    Text(
+                        if (vm.cloudApiKey.isNotBlank()) "Authenticated with API key" else "Authenticated via Ollama",
+                        color = OllamaGreen, fontWeight = FontWeight.Bold, fontSize = 13.sp,
+                        modifier = Modifier.weight(1f)
+                    )
                 }
             }
+
+            // Status/feedback message
+            if (vm.cloudAuthStatus.isNotBlank()) {
+                Text(vm.cloudAuthStatus, color = if (vm.cloudAuthStatus.startsWith("✅")) OllamaGreen else OllamaRed, fontSize = 12.sp)
+            }
+
+            // Sign-in button row
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Button(
                     onClick = { vm.triggerLogin(context) },
                     modifier = Modifier.weight(1f),
+                    enabled = !vm.isSigningIn,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (vm.isLoggedIn) OllamaCard else OllamaGreen,
-                        contentColor = if (vm.isLoggedIn) OllamaTextDim else OllamaBg
+                        contentColor   = if (vm.isLoggedIn) OllamaTextDim else OllamaBg
                     ),
                     border = if (vm.isLoggedIn) androidx.compose.foundation.BorderStroke(1.dp, OllamaBorder) else null
                 ) {
-                    Icon(Icons.Default.AccountCircle, null, Modifier.size(16.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text(if (vm.isLoggedIn) "Re-login" else "Login", fontWeight = FontWeight.Bold)
+                    if (vm.isSigningIn) {
+                        CircularProgressIndicator(Modifier.size(14.dp), color = OllamaBg, strokeWidth = 2.dp)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Waiting…")
+                    } else {
+                        Icon(Icons.Default.AccountCircle, null, Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (vm.isLoggedIn) "Re-login" else "Login", fontWeight = FontWeight.Bold)
+                    }
                 }
-                OutlinedButton(
-                    onClick = { vm.triggerLogout(context) },
-                    modifier = Modifier.weight(1f),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, OllamaBorder)
-                ) { Text("Logout", color = OllamaTextDim) }
+                if (vm.isLoggedIn) {
+                    OutlinedButton(
+                        onClick = { vm.triggerLogout(context) },
+                        modifier = Modifier.weight(1f),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, OllamaBorder)
+                    ) { Text("Logout", color = OllamaTextDim) }
+                }
             }
+
             Text(
-                "Login runs ollama login via the binary — generates an SSH Ed25519 key and opens ollama.com to authorize this device. No API key needed.",
+                "Tap Login to run ollama login — a sign-in URL will open in your browser. " +
+                "After authorizing with your Ollama account, tap \"Done\" in the dialog.",
                 color = OllamaTextDim, fontSize = 11.sp
             )
+
+            HorizontalDivider(color = OllamaBorder, thickness = 0.5.dp)
+
+            // Manual API key section
+            Text("OR — Enter API Key manually", color = OllamaTextDim, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            Text(
+                "Get your key from ollama.com/settings/api",
+                color = OllamaTextDim, fontSize = 10.sp
+            )
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = vm.manualApiKeyInput,
+                    onValueChange = { vm.manualApiKeyInput = it },
+                    label = { Text("API Key (ollama_…)", fontSize = 11.sp) },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor   = OllamaGreen,
+                        unfocusedBorderColor = OllamaBorder,
+                        focusedLabelColor    = OllamaGreen,
+                        unfocusedLabelColor  = OllamaTextDim,
+                        cursorColor          = OllamaGreen,
+                        focusedTextColor     = OllamaText,
+                        unfocusedTextColor   = OllamaText
+                    ),
+                    shape = RoundedCornerShape(8.dp),
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation()
+                )
+                Button(
+                    onClick = { vm.validateAndSaveApiKey(context, vm.manualApiKeyInput) },
+                    enabled = vm.manualApiKeyInput.isNotBlank() && !vm.isValidatingKey,
+                    colors = ButtonDefaults.buttonColors(containerColor = OllamaGreen, contentColor = OllamaBg)
+                ) {
+                    if (vm.isValidatingKey)
+                        CircularProgressIndicator(Modifier.size(14.dp), color = OllamaBg, strokeWidth = 2.dp)
+                    else
+                        Text("Save", fontWeight = FontWeight.Bold)
+                }
+            }
         }
         Spacer(Modifier.height(8.dp))
     }

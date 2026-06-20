@@ -92,10 +92,17 @@ class OllamaExecutor(private val context: Context) {
         }
     }
 
-    /** Build env vars for the Ollama process. */
-    private fun buildEnv(host: String, origins: String, extraEnv: Map<String, String> = emptyMap()): Map<String, String> {
-        // Include nativeLibraryDir first (has libollama.so + libc++_shared.so),
-        // then system lib paths so the dynamic linker can resolve all dependencies.
+    /**
+     * Build env vars for the Ollama process.
+     * @param apiKey  Ollama cloud API key — passed as OLLAMA_API_KEY so the
+     *                daemon can authenticate with ollama.com for cloud models.
+     */
+    fun buildEnv(
+        host: String,
+        origins: String,
+        apiKey: String = "",
+        extraEnv: Map<String, String> = emptyMap()
+    ): Map<String, String> {
         val ldPath = listOf(
             context.applicationInfo.nativeLibraryDir,
             "/system/lib64",
@@ -103,7 +110,7 @@ class OllamaExecutor(private val context: Context) {
             "/apex/com.android.art/lib64",
             "/vendor/lib64"
         ).joinToString(":")
-        val base = mapOf(
+        val base = mutableMapOf(
             "OLLAMA_HOST"     to host,
             "OLLAMA_MODELS"   to modelsDir.absolutePath,
             "OLLAMA_ORIGINS"  to origins,
@@ -111,6 +118,9 @@ class OllamaExecutor(private val context: Context) {
             "TMPDIR"          to context.cacheDir.absolutePath,
             "LD_LIBRARY_PATH" to ldPath
         )
+        if (apiKey.isNotBlank()) {
+            base["OLLAMA_API_KEY"] = apiKey
+        }
         return base + extraEnv
     }
 
@@ -136,6 +146,7 @@ class OllamaExecutor(private val context: Context) {
     fun startOllamaService(
         host: String = "127.0.0.1:11434",
         origins: String = "*",
+        apiKey: String = "",
         onLog: (String) -> Unit
     ): Process? {
         setupEnvironment()
@@ -146,7 +157,7 @@ class OllamaExecutor(private val context: Context) {
             return null
         }
 
-        val envMap = buildEnv(host, origins)
+        val envMap = buildEnv(host, origins, apiKey)
 
         // ── Strategy 0: native lib (always executable — no SELinux restriction) ──
         if (binary == nativeBinary) {
@@ -155,7 +166,6 @@ class OllamaExecutor(private val context: Context) {
                 return startAndStream(listOf(binary.absolutePath, "serve"), envMap, onLog)
             } catch (e: Exception) {
                 onLog("Native lib exec failed: ${e.message}")
-                // fall through to other strategies with filesDir copy
             }
         }
 
@@ -184,7 +194,7 @@ class OllamaExecutor(private val context: Context) {
             }
         }
 
-        // ── Strategy 3: Android dynamic linker (bypasses some SELinux domains) ──
+        // ── Strategy 3: Android dynamic linker ──
         for (linker in listOf("/system/bin/linker64", "/apex/com.android.runtime/bin/linker64")) {
             if (File(linker).exists()) {
                 try {
@@ -213,14 +223,18 @@ class OllamaExecutor(private val context: Context) {
         }
     }
 
-    fun execOllamaCommand(vararg args: String, onLog: (String) -> Unit) {
+    /**
+     * Run an arbitrary ollama sub-command and stream its output.
+     * Uses the same environment as the daemon (including HOME and OLLAMA_API_KEY).
+     */
+    fun execOllamaCommand(vararg args: String, apiKey: String = "", onLog: (String) -> Unit) {
         setupEnvironment()
         val binary = resolveBinary()
         if (binary == null) {
             onLog("Error: Ollama binary not found.")
             return
         }
-        val envMap = buildEnv("127.0.0.1:11434", "*")
+        val envMap = buildEnv("127.0.0.1:11434", "*", apiKey)
         Thread {
             try {
                 val proc = ProcessBuilder(listOf(binary.absolutePath) + args.toList())
@@ -236,5 +250,69 @@ class OllamaExecutor(private val context: Context) {
                 onLog("Command failed: ${e.message}")
             }
         }.start()
+    }
+
+    /**
+     * Run `ollama login` and stream output.
+     * The binary outputs a connect URL; after the user authorises in the browser
+     * the process exits (the binary handles the OAuth callback itself).
+     * Returns the running Process so the caller can waitFor() it.
+     */
+    fun execLogin(onLog: (String) -> Unit): Process? {
+        setupEnvironment()
+        val binary = resolveBinary() ?: run { onLog("Error: binary not found."); return null }
+        val envMap = buildEnv("127.0.0.1:11434", "*")
+        return try {
+            val proc = ProcessBuilder(listOf(binary.absolutePath, "login"))
+                .apply {
+                    environment().putAll(envMap)
+                    redirectErrorStream(true)
+                }.start()
+            Thread {
+                try {
+                    val reader = proc.inputStream.bufferedReader()
+                    var line: String?
+                    while (reader.readLine().also { line = it } != null) onLog(line ?: "")
+                } catch (e: Exception) { onLog("Login stream closed: ${e.message}") }
+            }.start()
+            proc
+        } catch (e: Exception) {
+            onLog("login failed: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * Run `ollama logout` — clears stored credentials from the binary.
+     */
+    fun execLogout(apiKey: String = "", onLog: (String) -> Unit) {
+        execOllamaCommand("logout", apiKey = apiKey, onLog = onLog)
+    }
+
+    /**
+     * Scan $HOME/.ollama/ for a credential/token file written by `ollama signin`.
+     * Returns the raw content of the first plausible candidate, or null if nothing found.
+     */
+    fun readStoredCredential(): String? {
+        val ollamaDir = File(context.filesDir, ".ollama")
+        if (!ollamaDir.exists()) return null
+        // Candidate file names the Ollama binary might write
+        val candidates = listOf("api_key", "credentials", "token", "auth", ".credentials", "config")
+        for (name in candidates) {
+            val f = File(ollamaDir, name)
+            if (f.exists() && f.isFile && f.length() < 4096) {
+                val content = f.readText().trim()
+                if (content.isNotBlank()) return content
+            }
+        }
+        // Fallback: any small non-key file created recently in .ollama
+        ollamaDir.listFiles()?.sortedByDescending { it.lastModified() }?.forEach { f ->
+            if (f.isFile && f.length() < 4096 &&
+                !f.name.endsWith(".pub") && f.name != "id_ed25519") {
+                val content = f.readText().trim()
+                if (content.isNotBlank()) return content
+            }
+        }
+        return null
     }
 }
