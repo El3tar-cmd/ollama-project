@@ -1307,7 +1307,7 @@ fun AgentChatPane(vm: MainViewModel, context: Context, listState: androidx.compo
                     contentColor = Color.White
                 ) {
                     if (vm.isAgentRunning)
-                        Icon(Icons.Default.Stop, contentDescription = "Stop", modifier = Modifier.size(22.dp))
+                        Box(Modifier.size(18.dp).background(Color.White, RoundedCornerShape(3.dp)))
                     else
                         Icon(Icons.Default.Send, contentDescription = "Send", modifier = Modifier.size(20.dp))
                 }
