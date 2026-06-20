@@ -248,31 +248,21 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         }
     }
 
-    // ── Login (fixed: URL-safe base64, no padding) ──────────────────────
+    // ── Login — delegates to the Ollama binary's own `ollama login` ──────
     fun triggerLogin(context: Context) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val ollamaDir  = File(ctx.filesDir, ".ollama").also { it.mkdirs() }
-            val privFile   = File(ollamaDir, "id_ed25519")
-            val pubFile    = File(ollamaDir, "id_ed25519.pub")
-            val pubStr: String
-            if (!privFile.exists() || !pubFile.exists()) {
-                val (priv, pub) = SshKeyGen.generateEd25519Key()
-                privFile.writeText(priv); privFile.setReadable(true, true)
-                pubFile.writeText(pub)
-                pubStr = pub
-            } else {
-                pubStr = pubFile.readText().trim()
+        if (!executor.isBinaryInstalled()) {
+            viewModelScope.launch(Dispatchers.Main) {
+                Toast.makeText(context, "Ollama binary not installed yet. Tap Install first.", Toast.LENGTH_LONG).show()
             }
-            val parts     = pubStr.trim().split(" ")
-            val keyPart   = if (parts.size >= 2) "${parts[0]} ${parts[1]}" else pubStr
-            val encoded   = android.util.Base64.encodeToString(
-                keyPart.toByteArray(Charsets.UTF_8),
-                android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING
-            )
-            val deviceName = android.os.Build.MODEL.replace(" ", "_")
-            withContext(Dispatchers.Main) {
-                authLoginUrl = "https://ollama.com/connect?name=$deviceName&key=$encoded"
-                liveLogs.add("Login URL ready — opening browser...")
+            return
+        }
+        authLoginUrl = null
+        liveLogs.add("Running ollama login…")
+        executor.execOllamaCommand("login") { line ->
+            viewModelScope.launch(Dispatchers.Main) {
+                liveLogs.add(line)
+                val match = "(https://ollama\\.com/connect\\S+)".toRegex().find(line)
+                if (match != null) authLoginUrl = match.value
             }
         }
     }
@@ -777,7 +767,7 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
                 ) { Text("Logout", color = OllamaTextDim) }
             }
             Text(
-                "Login generates an SSH Ed25519 key pair and opens ollama.com to authorize your device.",
+                "Login runs ollama login via the binary — generates an SSH Ed25519 key and opens ollama.com to authorize this device. No API key needed.",
                 color = OllamaTextDim, fontSize = 11.sp
             )
         }
