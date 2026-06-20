@@ -4,7 +4,6 @@ import android.content.Context
 import android.util.Base64
 import java.io.File
 import java.nio.ByteBuffer
-import java.security.KeyPairGenerator
 import java.security.SecureRandom
 
 /**
@@ -37,17 +36,8 @@ class OllamaAuth(private val context: Context) {
      * → Last 32 bytes of each DER blob are the raw key material.
      */
     fun generateConnectUrl(deviceName: String = "devhive"): String {
-        val kpg = try {
-            KeyPairGenerator.getInstance("Ed25519")
-        } catch (_: Exception) {
-            KeyPairGenerator.getInstance("Ed25519", "BC")
-        }
-        val keyPair = kpg.generateKeyPair()
-
-        val pubDer  = keyPair.public.encoded
-        val privDer = keyPair.private.encoded
-        val rawPub  = pubDer.copyOfRange(pubDer.size - 32, pubDer.size)
-        val rawPriv = privDer.copyOfRange(privDer.size - 32, privDer.size)
+        // Use our pure-Kotlin Ed25519 — works on every Android version
+        val (rawPriv, rawPub) = Ed25519.generateKeyPair()
 
         val typeBytes = "ssh-ed25519".toByteArray(Charsets.US_ASCII)
         val pubWire   = sshWire(typeBytes, rawPub)
