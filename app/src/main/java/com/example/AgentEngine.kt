@@ -5,9 +5,11 @@ import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
 data class AgentStep(
@@ -21,13 +23,19 @@ class AgentEngine(private val context: Context) {
     private val TAG = "AgentEngine"
     var workingDir: String = context.filesDir.absolutePath
 
+    // ─── System prompt — works with any model (qwen, phi, llama, gemma…) ───
     private val SYSTEM_PROMPT = """
-You are a professional AI coding agent running on Android. You have access to tools to complete tasks.
+You are Devhive Agent — an expert AI coding assistant running on Android via Ollama.
 
-Use tools by responding with JSON blocks like this (one tool per block):
+## How to use tools
+Write ONE JSON tool block per action, inside triple-backtick markers:
 ```tool
-{"name": "think", "content": "my reasoning here"}
+{"name": "TOOL_NAME", "param1": "value1", "param2": "value2"}
 ```
+
+## Available tools
+
+### File system
 ```tool
 {"name": "list_dir", "path": "/absolute/path"}
 ```
@@ -35,106 +43,125 @@ Use tools by responding with JSON blocks like this (one tool per block):
 {"name": "read_file", "path": "/absolute/path/file.txt"}
 ```
 ```tool
-{"name": "write_file", "path": "/absolute/path/file.txt", "content": "file content here"}
+{"name": "write_file", "path": "/absolute/path/file.txt", "content": "full file content"}
 ```
 ```tool
-{"name": "edit_file", "path": "/absolute/path/file.txt", "old": "old text", "new": "new text"}
+{"name": "append_file", "path": "/absolute/path/file.txt", "content": "text to append"}
+```
+```tool
+{"name": "edit_file", "path": "/absolute/path/file.txt", "old": "exact text to replace", "new": "replacement text"}
+```
+```tool
+{"name": "delete_file", "path": "/absolute/path/file_or_dir"}
+```
+```tool
+{"name": "move_file", "src": "/absolute/path/old.txt", "dst": "/absolute/path/new.txt"}
+```
+```tool
+{"name": "create_dir", "path": "/absolute/path/new_dir"}
 ```
 ```tool
 {"name": "search_files", "dir": "/absolute/path", "query": "search term"}
+```
+
+### Shell execution
+```tool
+{"name": "bash", "cmd": "ls -la && echo done"}
 ```
 ```tool
 {"name": "run_command", "args": "list"}
 ```
 
-Rules:
-- Always think before acting
+### Network
+```tool
+{"name": "fetch_url", "url": "https://example.com/api", "method": "GET"}
+```
+
+### Reasoning
+```tool
+{"name": "think", "content": "my reasoning before acting"}
+```
+
+## Rules
+1. ALWAYS think before acting
+2. ALWAYS use absolute paths (working dir: WORKING_DIR)
+3. Read files before editing them
+4. After finishing ALL steps, write a clear summary starting with "## Done"
+5. If a tool fails, adjust your approach and try again
+6. Never invent file contents — use read_file first
+
+## Environment
 - Working directory: WORKING_DIR
-- Use absolute paths
-- After completing the task, write a clear summary starting with "## Done"
-- If you need information, use tools to get it before answering
+- Platform: Android (arm64)
+- Shell: /system/bin/sh
 """.trimIndent()
 
-    private fun systemPrompt(): String = SYSTEM_PROMPT.replace("WORKING_DIR", workingDir)
+    private fun systemPrompt() = SYSTEM_PROMPT.replace("WORKING_DIR", workingDir)
 
+    // ─── Tool call parser ────────────────────────────────────────────────────
     fun parseToolCalls(text: String): List<JSONObject> {
         val result = mutableListOf<JSONObject>()
         val regex = Regex("```tool\\s*\\n([\\s\\S]*?)\\n```")
         regex.findAll(text).forEach { match ->
             try {
-                val json = JSONObject(match.groupValues[1].trim())
-                result.add(json)
+                result.add(JSONObject(match.groupValues[1].trim()))
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to parse tool: ${e.message}")
+                Log.w(TAG, "Bad tool JSON: ${e.message}")
             }
         }
         return result
     }
 
+    // ─── Tool dispatcher ─────────────────────────────────────────────────────
     suspend fun executeTool(tool: JSONObject): AgentStep = withContext(Dispatchers.IO) {
-        val name = tool.optString("name", "")
-        return@withContext when (name) {
-            "think" -> {
-                AgentStep("think", "💭 ${tool.optString("content", "")}")
-            }
-            "list_dir" -> {
-                val path = tool.optString("path", workingDir)
-                toolListDir(path)
-            }
-            "read_file" -> {
-                val path = tool.optString("path", "")
-                toolReadFile(path)
-            }
-            "write_file" -> {
-                val path = tool.optString("path", "")
-                val content = tool.optString("content", "")
-                toolWriteFile(path, content)
-            }
-            "edit_file" -> {
-                val path = tool.optString("path", "")
-                val old = tool.optString("old", "")
-                val new = tool.optString("new", "")
-                toolEditFile(path, old, new)
-            }
-            "search_files" -> {
-                val dir = tool.optString("dir", workingDir)
-                val query = tool.optString("query", "")
-                toolSearchFiles(dir, query)
-            }
-            "run_command" -> {
-                val args = tool.optString("args", "")
-                toolRunOllamaCommand(args)
-            }
-            else -> AgentStep("tool_result", "❌ Unknown tool: $name", isError = true)
+        when (val name = tool.optString("name", "")) {
+            "think"       -> AgentStep("think", "💭 ${tool.optString("content", "")}")
+            "list_dir"    -> toolListDir(tool.optString("path", workingDir))
+            "read_file"   -> toolReadFile(tool.optString("path", ""))
+            "write_file"  -> toolWriteFile(tool.optString("path", ""), tool.optString("content", ""))
+            "append_file" -> toolAppendFile(tool.optString("path", ""), tool.optString("content", ""))
+            "edit_file"   -> toolEditFile(tool.optString("path", ""), tool.optString("old", ""), tool.optString("new", ""))
+            "delete_file" -> toolDeleteFile(tool.optString("path", ""))
+            "move_file"   -> toolMoveFile(tool.optString("src", ""), tool.optString("dst", ""))
+            "create_dir"  -> toolCreateDir(tool.optString("path", ""))
+            "search_files"-> toolSearchFiles(tool.optString("dir", workingDir), tool.optString("query", ""))
+            "bash"        -> toolBash(tool.optString("cmd", ""), tool.optString("cwd", workingDir))
+            "run_command" -> toolRunOllamaCommand(tool.optString("args", ""))
+            "fetch_url"   -> toolFetchUrl(tool.optString("url", ""), tool.optString("method", "GET"), tool.optString("body", ""))
+            else          -> AgentStep("tool_result", "❌ Unknown tool: $name", isError = true)
         }
     }
+
+    // ─── Tool implementations ─────────────────────────────────────────────────
 
     private fun toolListDir(path: String): AgentStep {
         return try {
             val dir = File(path)
-            if (!dir.exists()) return AgentStep("tool_result", "❌ Dir not found: $path", isError = true)
+            if (!dir.exists()) return AgentStep("tool_result", "❌ Not found: $path", isError = true)
             val entries = dir.listFiles()?.sortedWith(compareBy({ !it.isDirectory }, { it.name })) ?: emptyList()
-            val sb = StringBuilder("📁 $path\n")
+            val sb = StringBuilder("📁 $path (${entries.size} entries)\n")
             entries.forEach { f ->
                 val prefix = if (f.isDirectory) "📂" else "📄"
-                val size = if (f.isFile) " (${formatSize(f.length())})" else ""
-                sb.appendLine("  $prefix ${f.name}$size")
+                val extra  = if (f.isFile) "  ${formatSize(f.length())}" else "/"
+                sb.appendLine("  $prefix ${f.name}$extra")
             }
-            AgentStep("tool_result", sb.toString())
+            AgentStep("tool_result", sb.toString().trimEnd())
         } catch (e: Exception) {
-            AgentStep("tool_result", "❌ Error listing dir: ${e.message}", isError = true)
+            AgentStep("tool_result", "❌ list_dir error: ${e.message}", isError = true)
         }
     }
 
     private fun toolReadFile(path: String): AgentStep {
         return try {
             val file = File(path)
-            if (!file.exists()) return AgentStep("tool_result", "❌ File not found: $path", isError = true)
-            if (file.length() > 100_000) return AgentStep("tool_result", "❌ File too large (>${formatSize(file.length())})", isError = true)
+            if (!file.exists()) return AgentStep("tool_result", "❌ Not found: $path", isError = true)
+            val limit = 500_000L
+            if (file.length() > limit) return AgentStep("tool_result", "❌ File too large (${formatSize(file.length())}). Max: ${formatSize(limit)}", isError = true)
             val content = file.readText()
-            AgentStep("tool_result", "📄 $path\n```\n$content\n```")
+            val lines   = content.lines().size
+            AgentStep("tool_result", "📄 $path ($lines lines, ${formatSize(file.length())})\n```\n$content\n```")
         } catch (e: Exception) {
-            AgentStep("tool_result", "❌ Error reading: ${e.message}", isError = true)
+            AgentStep("tool_result", "❌ read_file error: ${e.message}", isError = true)
         }
     }
 
@@ -143,22 +170,74 @@ Rules:
             val file = File(path)
             file.parentFile?.mkdirs()
             file.writeText(content)
-            AgentStep("tool_result", "✅ Written ${formatSize(file.length())} to $path")
+            AgentStep("tool_result", "✅ Wrote ${formatSize(file.length())} to $path (${content.lines().size} lines)")
         } catch (e: Exception) {
-            AgentStep("tool_result", "❌ Error writing: ${e.message}", isError = true)
+            AgentStep("tool_result", "❌ write_file error: ${e.message}", isError = true)
+        }
+    }
+
+    private fun toolAppendFile(path: String, content: String): AgentStep {
+        return try {
+            val file = File(path)
+            file.parentFile?.mkdirs()
+            file.appendText(content)
+            AgentStep("tool_result", "✅ Appended ${content.length} chars to $path")
+        } catch (e: Exception) {
+            AgentStep("tool_result", "❌ append_file error: ${e.message}", isError = true)
         }
     }
 
     private fun toolEditFile(path: String, old: String, new: String): AgentStep {
         return try {
             val file = File(path)
-            if (!file.exists()) return AgentStep("tool_result", "❌ File not found: $path", isError = true)
+            if (!file.exists()) return AgentStep("tool_result", "❌ Not found: $path", isError = true)
             val content = file.readText()
-            if (!content.contains(old)) return AgentStep("tool_result", "❌ Target text not found in file", isError = true)
+            val count = content.split(old).size - 1
+            if (count == 0) return AgentStep("tool_result", "❌ Target text not found in file. Use read_file first.", isError = true)
             file.writeText(content.replace(old, new))
-            AgentStep("tool_result", "✅ Edited $path successfully")
+            AgentStep("tool_result", "✅ Replaced $count occurrence(s) in $path")
         } catch (e: Exception) {
-            AgentStep("tool_result", "❌ Error editing: ${e.message}", isError = true)
+            AgentStep("tool_result", "❌ edit_file error: ${e.message}", isError = true)
+        }
+    }
+
+    private fun toolDeleteFile(path: String): AgentStep {
+        return try {
+            val f = File(path)
+            if (!f.exists()) return AgentStep("tool_result", "❌ Not found: $path", isError = true)
+            val deleted = if (f.isDirectory) f.deleteRecursively() else f.delete()
+            if (deleted) AgentStep("tool_result", "🗑️ Deleted: $path")
+            else AgentStep("tool_result", "❌ Could not delete: $path", isError = true)
+        } catch (e: Exception) {
+            AgentStep("tool_result", "❌ delete_file error: ${e.message}", isError = true)
+        }
+    }
+
+    private fun toolMoveFile(src: String, dst: String): AgentStep {
+        return try {
+            val s = File(src)
+            val d = File(dst)
+            if (!s.exists()) return AgentStep("tool_result", "❌ Source not found: $src", isError = true)
+            d.parentFile?.mkdirs()
+            if (s.renameTo(d)) AgentStep("tool_result", "✅ Moved: $src → $dst")
+            else {
+                s.copyRecursively(d, overwrite = true)
+                s.deleteRecursively()
+                AgentStep("tool_result", "✅ Moved (copy+delete): $src → $dst")
+            }
+        } catch (e: Exception) {
+            AgentStep("tool_result", "❌ move_file error: ${e.message}", isError = true)
+        }
+    }
+
+    private fun toolCreateDir(path: String): AgentStep {
+        return try {
+            val dir = File(path)
+            if (dir.exists()) return AgentStep("tool_result", "ℹ️ Already exists: $path")
+            if (dir.mkdirs()) AgentStep("tool_result", "✅ Created directory: $path")
+            else AgentStep("tool_result", "❌ Could not create directory: $path", isError = true)
+        } catch (e: Exception) {
+            AgentStep("tool_result", "❌ create_dir error: ${e.message}", isError = true)
         }
     }
 
@@ -167,58 +246,117 @@ Rules:
             val root = File(dir)
             if (!root.exists()) return AgentStep("tool_result", "❌ Dir not found: $dir", isError = true)
             val results = mutableListOf<String>()
-            root.walkTopDown().filter { it.isFile }.take(500).forEach { file ->
-                if (file.name.contains(query, ignoreCase = true)) {
-                    results.add("📄 ${file.absolutePath}")
-                } else {
-                    try {
-                        if (file.length() < 500_000 && file.readText().contains(query, ignoreCase = true)) {
-                            results.add("📝 ${file.absolutePath} (content match)")
+            root.walkTopDown()
+                .filter { it.isFile }
+                .take(1000)
+                .forEach { file ->
+                    when {
+                        file.name.contains(query, ignoreCase = true) ->
+                            results.add("📄 ${file.absolutePath}")
+                        file.length() < 1_000_000 -> {
+                            try {
+                                if (file.readText().contains(query, ignoreCase = true))
+                                    results.add("📝 ${file.absolutePath} (content)")
+                            } catch (_: Exception) {}
                         }
-                    } catch (_: Exception) {}
+                    }
                 }
-            }
-            if (results.isEmpty()) {
-                AgentStep("tool_result", "🔍 No results for \"$query\" in $dir")
-            } else {
-                AgentStep("tool_result", "🔍 Found ${results.size} results:\n${results.take(30).joinToString("\n")}")
-            }
+            if (results.isEmpty()) AgentStep("tool_result", "🔍 No matches for \"$query\" in $dir")
+            else AgentStep("tool_result", "🔍 Found ${results.size} match(es):\n${results.take(50).joinToString("\n")}")
         } catch (e: Exception) {
-            AgentStep("tool_result", "❌ Search error: ${e.message}", isError = true)
+            AgentStep("tool_result", "❌ search_files error: ${e.message}", isError = true)
+        }
+    }
+
+    private fun toolBash(cmd: String, cwd: String): AgentStep {
+        return try {
+            if (cmd.isBlank()) return AgentStep("tool_result", "❌ bash: empty command", isError = true)
+            val pb = ProcessBuilder(listOf("/system/bin/sh", "-c", cmd))
+            pb.directory(File(if (File(cwd).exists()) cwd else workingDir))
+            pb.environment()["HOME"]            = context.filesDir.absolutePath
+            pb.environment()["TMPDIR"]          = context.cacheDir.absolutePath
+            pb.environment()["LD_LIBRARY_PATH"] = context.applicationInfo.nativeLibraryDir
+            pb.environment()["OLLAMA_MODELS"]   = File(context.filesDir, "ollama_models").absolutePath
+            pb.redirectErrorStream(true)
+            val proc = pb.start()
+            val output = proc.inputStream.bufferedReader().readText()
+            val timedOut = !proc.waitFor(30, TimeUnit.SECONDS)
+            if (timedOut) {
+                proc.destroy()
+                return AgentStep("tool_result", "⏱️ bash: command timed out after 30s\n${output.take(500)}", isError = true)
+            }
+            val exitCode = proc.exitValue()
+            val icon = if (exitCode == 0) "✅" else "⚠️"
+            AgentStep("tool_result", "$icon bash exit=$exitCode\n$ $cmd\n${output.take(4000).trimEnd()}")
+        } catch (e: Exception) {
+            AgentStep("tool_result", "❌ bash error: ${e.message}", isError = true)
         }
     }
 
     private fun toolRunOllamaCommand(args: String): AgentStep {
         return try {
-            val ollamaFile = File(context.filesDir, "bin/ollama")
-            if (!ollamaFile.exists()) return AgentStep("tool_result", "❌ Ollama binary not installed", isError = true)
+            val executor = OllamaExecutor(context)
+            val binary = File(context.applicationInfo.nativeLibraryDir, "libollama.so")
+                .takeIf { it.exists() }
+                ?: File(context.filesDir, "bin/ollama")
+            if (!binary.exists()) return AgentStep("tool_result", "❌ Ollama binary not found", isError = true)
             val cmdArgs = args.trim().split("\\s+".toRegex()).filter { it.isNotBlank() }
-            val pb = ProcessBuilder(listOf(ollamaFile.absolutePath) + cmdArgs)
-            pb.environment()["OLLAMA_MODELS"] = File(context.filesDir, "ollama_models").absolutePath
-            pb.environment()["HOME"] = context.filesDir.absolutePath
+            val pb = ProcessBuilder(listOf(binary.absolutePath) + cmdArgs)
+            pb.environment()["OLLAMA_MODELS"]   = File(context.filesDir, "ollama_models").absolutePath
+            pb.environment()["HOME"]            = context.filesDir.absolutePath
+            pb.environment()["LD_LIBRARY_PATH"] = context.applicationInfo.nativeLibraryDir
             pb.redirectErrorStream(true)
             val proc = pb.start()
             val output = proc.inputStream.bufferedReader().readText()
-            proc.waitFor()
-            AgentStep("tool_result", "⚡ ollama $args\n$output")
+            proc.waitFor(60, TimeUnit.SECONDS)
+            AgentStep("tool_result", "⚡ ollama $args\n${output.take(2000).trimEnd()}")
         } catch (e: Exception) {
-            AgentStep("tool_result", "❌ Command error: ${e.message}", isError = true)
+            AgentStep("tool_result", "❌ run_command error: ${e.message}", isError = true)
         }
     }
 
+    private fun toolFetchUrl(urlStr: String, method: String, body: String): AgentStep {
+        return try {
+            if (urlStr.isBlank()) return AgentStep("tool_result", "❌ fetch_url: empty URL", isError = true)
+            val conn = URL(urlStr).openConnection() as HttpURLConnection
+            conn.requestMethod = method.uppercase()
+            conn.connectTimeout = 10_000
+            conn.readTimeout    = 30_000
+            conn.setRequestProperty("User-Agent", "OllamaDevhive/1.0")
+            conn.setRequestProperty("Accept", "*/*")
+            if (body.isNotEmpty() && method.uppercase() != "GET") {
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.outputStream.use { it.write(body.toByteArray()) }
+            }
+            conn.connect()
+            val code = conn.responseCode
+            val response = try {
+                conn.inputStream.bufferedReader().readText()
+            } catch (_: Exception) {
+                conn.errorStream?.bufferedReader()?.readText() ?: "(no body)"
+            }
+            conn.disconnect()
+            AgentStep("tool_result", "🌐 $method $urlStr → HTTP $code\n${response.take(3000).trimEnd()}")
+        } catch (e: Exception) {
+            AgentStep("tool_result", "❌ fetch_url error: ${e.message}", isError = true)
+        }
+    }
+
+    // ─── Agent loop ───────────────────────────────────────────────────────────
     suspend fun runAgentLoop(
         userTask: String,
         model: String,
         baseUrl: String,
-        maxSteps: Int = 20,
+        maxSteps: Int = 25,
         onStep: suspend (AgentStep) -> Unit
     ) {
         val messages = mutableListOf<ChatMessage>()
         messages.add(ChatMessage("system", systemPrompt()))
         messages.add(ChatMessage("user", userTask))
 
-        var steps = 0
         val api = OllamaApi()
+        var steps = 0
 
         while (steps < maxSteps) {
             steps++
@@ -231,9 +369,7 @@ Rules:
                         modelName = model,
                         messages = messages,
                         onTokenGenerated = { token -> fullResponse += token },
-                        onComplete = { _, _ ->
-                            if (!cont.isCompleted) cont.resume(Unit)
-                        }
+                        onComplete = { _, _ -> if (!cont.isCompleted) cont.resume(Unit) }
                     )
                 }
             } catch (e: Exception) {
@@ -244,21 +380,23 @@ Rules:
             if (fullResponse.isBlank()) break
 
             val toolCalls = parseToolCalls(fullResponse)
-            val textWithoutTools = fullResponse.replace(Regex("```tool\\s*\\n[\\s\\S]*?\\n```"), "").trim()
+            val textOnly  = fullResponse.replace(Regex("```tool\\s*\\n[\\s\\S]*?\\n```"), "").trim()
 
-            if (textWithoutTools.isNotBlank()) {
-                onStep(AgentStep("assistant", textWithoutTools))
+            if (textOnly.isNotBlank()) {
+                onStep(AgentStep("assistant", textOnly))
             }
 
+            // No tool calls → model finished
             if (toolCalls.isEmpty()) {
                 messages.add(ChatMessage("assistant", fullResponse))
                 break
             }
 
+            // Execute all tool calls
             val toolResults = StringBuilder()
             toolCalls.forEach { toolCall ->
-                val toolName = toolCall.optString("name")
-                onStep(AgentStep("tool_call", "🔧 Calling: $toolName"))
+                val toolName = toolCall.optString("name", "?")
+                onStep(AgentStep("tool_call", "🔧 $toolName"))
                 val result = executeTool(toolCall)
                 onStep(result)
                 toolResults.appendLine(result.content)
@@ -266,15 +404,18 @@ Rules:
             }
 
             messages.add(ChatMessage("assistant", fullResponse))
-            messages.add(ChatMessage("user", "Tool results:\n$toolResults\n\nContinue with the task."))
+            messages.add(ChatMessage("user", "Tool results:\n$toolResults\nContinue."))
+        }
+
+        if (steps >= maxSteps) {
+            onStep(AgentStep("info", "⚠️ Reached max steps ($maxSteps). Task may be incomplete."))
         }
     }
 
-    private fun formatSize(bytes: Long): String {
-        return when {
-            bytes < 1024 -> "${bytes}B"
-            bytes < 1024 * 1024 -> "${bytes / 1024}KB"
-            else -> String.format("%.1fMB", bytes / 1024.0 / 1024.0)
-        }
+    // ─── Helpers ──────────────────────────────────────────────────────────────
+    private fun formatSize(bytes: Long): String = when {
+        bytes < 1024          -> "${bytes}B"
+        bytes < 1024 * 1024   -> "${bytes / 1024}KB"
+        else                  -> "%.1fMB".format(bytes / 1024.0 / 1024.0)
     }
 }
