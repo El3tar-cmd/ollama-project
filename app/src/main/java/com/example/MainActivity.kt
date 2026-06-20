@@ -262,8 +262,37 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
             viewModelScope.launch(Dispatchers.Main) {
                 liveLogs.add(line)
                 val match = "(https://ollama\\.com/connect\\S+)".toRegex().find(line)
-                if (match != null) authLoginUrl = match.value
+                if (match != null) {
+                    authLoginUrl = match.value
+                    startAuthWatcher()
+                }
             }
+        }
+    }
+
+    // Watch for SSH key files created by `ollama login` — auto-confirm when ready
+    private var authWatcherActive = false
+    private fun startAuthWatcher() {
+        if (authWatcherActive) return
+        authWatcherActive = true
+        viewModelScope.launch(Dispatchers.IO) {
+            val keyFile = java.io.File(ctx.filesDir, ".ollama/id_ed25519")
+            val pubFile = java.io.File(ctx.filesDir, ".ollama/id_ed25519.pub")
+            val deadline = System.currentTimeMillis() + 5 * 60 * 1000L // 5-min timeout
+            while (System.currentTimeMillis() < deadline) {
+                delay(3000)
+                if (keyFile.exists() && pubFile.exists()) {
+                    withContext(Dispatchers.Main) {
+                        if (!isLoggedIn) {
+                            isLoggedIn = true
+                            prefs.edit().putBoolean("logged_in", true).apply()
+                            liveLogs.add("✅ SSH key detected — device linked to Ollama account.")
+                        }
+                    }
+                    break
+                }
+            }
+            authWatcherActive = false
         }
     }
 
@@ -271,6 +300,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         isLoggedIn = true
         prefs.edit().putBoolean("logged_in", true).apply()
         authLoginUrl = null
+        authWatcherActive = false
         liveLogs.add("✅ Login confirmed — SSH key registered with Ollama.")
     }
 
@@ -334,10 +364,21 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         val idx = chatHistory.size
         chatHistory.add(ChatMessage("assistant", ""))
         var response = ""
-        api.chatStream("http://$hostUrlState", selectedModelChat,
-            chatHistory.subList(0, idx).toList(),
+        // Drop leading assistant messages (e.g. the welcome bubble) — LLMs expect
+        // conversation to start with a user turn, and some backends reject otherwise.
+        val apiMessages = chatHistory.subList(0, idx)
+            .dropWhile { it.role != "user" }
+            .toList()
+        api.chatStream("http://$hostUrlState", selectedModelChat, apiMessages,
             onTokenGenerated = { token -> viewModelScope.launch(Dispatchers.Main) { response += token; chatHistory[idx] = ChatMessage("assistant", response) } },
-            onComplete = { ok, msg -> viewModelScope.launch(Dispatchers.Main) { isGeneratingResponse = false; if (!ok) chatHistory[idx] = ChatMessage("assistant", "Error: $msg") } }
+            onComplete = { ok, msg -> viewModelScope.launch(Dispatchers.Main) {
+                isGeneratingResponse = false
+                if (!ok) {
+                    chatHistory[idx] = ChatMessage("assistant", "⚠️ $msg")
+                } else if (response.isBlank()) {
+                    chatHistory[idx] = ChatMessage("assistant", "⚠️ Empty response from server. Check Logs tab for details.")
+                }
+            }}
         )
     }
 
