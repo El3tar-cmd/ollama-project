@@ -55,6 +55,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.TimeUnit
+
+// ─── Shell terminal ────────────────────────────────────────────────────────
+enum class ShellLineType { COMMAND, OUTPUT, ERROR, INFO }
+data class ShellLine(val text: String, val type: ShellLineType = ShellLineType.OUTPUT)
 
 // ─────────────────────────────────────────────
 // Activity
@@ -115,14 +120,22 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     var isAgentRunning    by mutableStateOf(false)
     val agentSteps        = mutableStateListOf<AgentStep>()
     var agentWorkingDir   by mutableStateOf("")
-    var agentFileTree     by mutableStateOf<List<File>>(emptyList())
+    val agentFileTree     = mutableStateListOf<File>()
     var agentSelectedFile by mutableStateOf<File?>(null)
     var agentFileContent  by mutableStateOf("")
     var showFileTree      by mutableStateOf(true)
 
-    // Terminal
+    // Terminal / Daemon logs
     val liveLogs      = mutableStateListOf<String>()
     var terminalInput by mutableStateOf("")
+
+    // Shell (real bash terminal)
+    val shellLines    = mutableStateListOf<ShellLine>()
+    var shellCwd      by mutableStateOf(
+        ctx.getExternalFilesDir(null)?.absolutePath ?: ctx.filesDir.absolutePath
+    )
+    val shellHistory  = mutableListOf<String>()
+    var shellHistIdx  by mutableStateOf(-1)
 
     // Login
     var authLoginUrl  by mutableStateOf<String?>(null)
@@ -349,7 +362,10 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             val files = File(agentWorkingDir).listFiles()
                 ?.sortedWith(compareBy({ !it.isDirectory }, { it.name })) ?: emptyList()
-            withContext(Dispatchers.Main) { agentFileTree = files }
+            withContext(Dispatchers.Main) {
+                agentFileTree.clear()
+                agentFileTree.addAll(files)
+            }
         }
     }
 
