@@ -125,32 +125,103 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
 
-// ── Download Ollama ARM64 binary at build time ─────────────────────────────
-// The binary is bundled as libollama.so in jniLibs so the installer puts it
-// in nativeLibraryDir — the only directory Android always allows execution in
+// ── Download Ollama ARM64 binary + libc++_shared.so at build time ───────────
+// Both are bundled as .so files in jniLibs so the installer extracts them
+// into nativeLibraryDir — the only dir Android always allows execution from
 // (not subject to SELinux noexec / Samsung Knox restrictions).
+// libc++_shared.so is required by the Ollama binary at link time; we try to
+// copy it from the NDK in the build environment first, then fall back to
+// downloading it from the OllamaServer repository.
 val downloadOllamaBinary by tasks.registering {
-    val jniDir  = layout.projectDirectory.dir("src/main/jniLibs/arm64-v8a")
-    val outFile = jniDir.file("libollama.so").asFile
-    outputs.file(outFile)
+    val jniDir     = layout.projectDirectory.dir("src/main/jniLibs/arm64-v8a")
+    val ollamaFile = jniDir.file("libollama.so").asFile
+    val libCppFile = jniDir.file("libc++_shared.so").asFile
+    outputs.files(ollamaFile, libCppFile)
+
     doFirst {
         jniDir.asFile.mkdirs()
-        if (!outFile.exists()) {
+
+        // ── 1. libollama.so ─────────────────────────────────────────────────
+        if (!ollamaFile.exists()) {
             println("[Devhive] Downloading Ollama ARM64 binary (~48 MB)...")
             val conn = URL(
                 "https://github.com/sunshine0523/OllamaServer/raw/master/android/app/src/main/assets/arm64-v8a/ollama"
             ).openConnection() as HttpURLConnection
             conn.connectTimeout = 30_000
-            conn.readTimeout    = 120_000
+            conn.readTimeout    = 180_000
             conn.connect()
             conn.inputStream.use { input ->
-                outFile.outputStream().use { output -> input.copyTo(output) }
+                ollamaFile.outputStream().use { output -> input.copyTo(output) }
             }
             conn.disconnect()
-            outFile.setExecutable(true, false)
-            println("[Devhive] Downloaded: ${outFile.length() / 1024 / 1024} MB → ${outFile.absolutePath}")
+            ollamaFile.setExecutable(true, false)
+            println("[Devhive] Downloaded libollama.so: ${ollamaFile.length() / 1024 / 1024} MB")
         } else {
-            println("[Devhive] libollama.so already present (${outFile.length() / 1024 / 1024} MB), skipping download.")
+            println("[Devhive] libollama.so already present (${ollamaFile.length() / 1024 / 1024} MB), skipping.")
+        }
+
+        // ── 2. libc++_shared.so ─────────────────────────────────────────────
+        // The Ollama binary dynamically links libc++_shared.so. Bundle it so
+        // the app's nativeLibraryDir satisfies the linker (via LD_LIBRARY_PATH).
+        if (!libCppFile.exists()) {
+            var done = false
+
+            // 2a. Try to copy from local NDK (fastest in CI — NDK is pre-installed)
+            val ndkSearchDirs = listOfNotNull(
+                System.getenv("ANDROID_NDK_HOME"),
+                System.getenv("ANDROID_NDK_ROOT"),
+                System.getenv("NDK_HOME"),
+                System.getenv("ANDROID_SDK_ROOT")?.let { "$it/ndk" }
+                    ?.let { java.io.File(it).listFiles()?.maxByOrNull { f -> f.name }?.absolutePath }
+            )
+            val ndkSubPaths = listOf(
+                "toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so",
+                "toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so",
+                "toolchains/llvm/prebuilt/windows-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so"
+            )
+            outer@ for (ndkHome in ndkSearchDirs.filterNotNull()) {
+                for (sub in ndkSubPaths) {
+                    val src = java.io.File("$ndkHome/$sub")
+                    if (src.exists()) {
+                        src.copyTo(libCppFile, overwrite = true)
+                        println("[Devhive] Copied libc++_shared.so from NDK: ${src.absolutePath}")
+                        done = true
+                        break@outer
+                    }
+                }
+            }
+
+            // 2b. Fall back to downloading from OllamaServer repo
+            if (!done) {
+                println("[Devhive] NDK not found locally — downloading libc++_shared.so...")
+                try {
+                    val conn2 = URL(
+                        "https://github.com/sunshine0523/OllamaServer/raw/master/android/app/src/main/jniLibs/arm64-v8a/libc++_shared.so"
+                    ).openConnection() as HttpURLConnection
+                    conn2.connectTimeout = 30_000
+                    conn2.readTimeout    = 60_000
+                    conn2.instanceFollowRedirects = true
+                    conn2.connect()
+                    if (conn2.responseCode == 200) {
+                        conn2.inputStream.use { input ->
+                            libCppFile.outputStream().use { output -> input.copyTo(output) }
+                        }
+                        println("[Devhive] Downloaded libc++_shared.so: ${libCppFile.length()} bytes")
+                        done = true
+                    } else {
+                        println("[Devhive] Warning: libc++_shared.so download returned HTTP ${conn2.responseCode}")
+                    }
+                    conn2.disconnect()
+                } catch (e: Exception) {
+                    println("[Devhive] Warning: could not download libc++_shared.so: ${e.message}")
+                }
+            }
+
+            if (!done) {
+                println("[Devhive] WARNING: libc++_shared.so not found. Daemon may fail to link on devices that lack it in /system/lib64.")
+            }
+        } else {
+            println("[Devhive] libc++_shared.so already present (${libCppFile.length()} bytes), skipping.")
         }
     }
 }
