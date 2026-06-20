@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
@@ -966,8 +967,22 @@ fun AgentScreen(vm: MainViewModel, context: Context) {
     LaunchedEffect(vm.agentSteps.size) { if (vm.agentSteps.isNotEmpty()) agentListState.animateScrollToItem(vm.agentSteps.size - 1) }
 
     var agentTab by remember { mutableStateOf(0) }
-
     var modelDropdownExpanded by remember { mutableStateOf(false) }
+    var showFolderPicker by remember { mutableStateOf(false) }
+
+    // Back press in Files/Steps → return to Chat
+    BackHandler(enabled = agentTab != 0) { agentTab = 0 }
+
+    if (showFolderPicker) {
+        FolderPickerDialog(
+            initialPath = vm.agentWorkingDir,
+            onSelect = { path ->
+                vm.updateAgentWorkingDir(path)
+                showFolderPicker = false
+            },
+            onDismiss = { showFolderPicker = false }
+        )
+    }
 
     Column(Modifier.fillMaxSize()) {
         // Agent header
@@ -980,7 +995,7 @@ fun AgentScreen(vm: MainViewModel, context: Context) {
                     modifier = Modifier.weight(1f)
                 ) {
                     Column(modifier = Modifier.menuAnchor()) {
-                        Text("AI AGENT", color = OllamaGreen, fontSize = 10.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold)
+                        Text("DEVHIVE AGENT", color = OllamaGreen, fontSize = 10.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold)
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -1018,31 +1033,53 @@ fun AgentScreen(vm: MainViewModel, context: Context) {
                     Text(if (vm.isAgentRunning) "Running..." else if (vm.apiOnline) "Ready" else "Server offline", color = if (vm.isAgentRunning) OllamaGreen else OllamaTextDim, fontSize = 11.sp)
                 }
             }
-            // Working dir
+            // Working dir row with folder picker button
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Icon(Icons.Default.Home, null, tint = OllamaTextDim, modifier = Modifier.size(14.dp))
-                Text(vm.agentWorkingDir, color = OllamaTextDim, fontSize = 10.sp, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                TextButton(onClick = {
-                    vm.updateAgentWorkingDir(
-                        if (vm.agentWorkingDir == context.filesDir.absolutePath) context.getExternalFilesDir(null)?.absolutePath ?: vm.agentWorkingDir
-                        else context.filesDir.absolutePath
-                    )
-                }, contentPadding = PaddingValues(0.dp)) { Text("Switch", color = OllamaGreen, fontSize = 10.sp) }
+                Text(
+                    vm.agentWorkingDir,
+                    color = OllamaTextDim, fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(
+                    onClick = { showFolderPicker = true },
+                    modifier = Modifier.size(28.dp).clip(RoundedCornerShape(6.dp)).background(OllamaCard)
+                ) {
+                    Icon(Icons.Default.FolderOpen, contentDescription = "Pick folder", tint = OllamaGreen, modifier = Modifier.size(16.dp))
+                }
             }
         }
 
-        // Sub-tabs
-        TabRow(selectedTabIndex = agentTab, containerColor = OllamaSurface, contentColor = OllamaGreen, indicator = { tabPositions ->
-            Box(
-                Modifier
-                    .tabIndicatorOffset(tabPositions[agentTab])
-                    .height(2.dp)
-                    .background(OllamaGreen)
-            )
-        }) {
-            listOf("Chat", "Files", "Steps").forEachIndexed { i, title ->
-                Tab(selected = agentTab == i, onClick = { agentTab = i },
-                    text = { Text(title, fontSize = 12.sp, color = if (agentTab == i) OllamaGreen else OllamaTextDim) })
+        // Sub-tabs with back arrow when not on Chat
+        Row(Modifier.fillMaxWidth().background(OllamaSurface), verticalAlignment = Alignment.CenterVertically) {
+            if (agentTab != 0) {
+                IconButton(onClick = { agentTab = 0 }, modifier = Modifier.size(40.dp)) {
+                    Icon(Icons.Default.ArrowBack, contentDescription = "Back to Chat", tint = OllamaGreen, modifier = Modifier.size(20.dp))
+                }
+            }
+            TabRow(
+                selectedTabIndex = agentTab,
+                modifier = Modifier.weight(1f),
+                containerColor = OllamaSurface,
+                contentColor = OllamaGreen,
+                indicator = { tabPositions ->
+                    Box(
+                        Modifier
+                            .tabIndicatorOffset(tabPositions[agentTab])
+                            .height(2.dp)
+                            .background(OllamaGreen)
+                    )
+                }
+            ) {
+                listOf("Chat", "Files", "Steps").forEachIndexed { i, title ->
+                    Tab(
+                        selected = agentTab == i,
+                        onClick = { agentTab = i },
+                        text = { Text(title, fontSize = 12.sp, color = if (agentTab == i) OllamaGreen else OllamaTextDim) }
+                    )
+                }
             }
         }
 
@@ -1052,6 +1089,111 @@ fun AgentScreen(vm: MainViewModel, context: Context) {
             2 -> AgentStepsPane(vm)
         }
     }
+}
+
+@Composable
+fun FolderPickerDialog(
+    initialPath: String,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var currentPath by remember { mutableStateOf(
+        if (File(initialPath).exists()) initialPath else "/storage/emulated/0"
+    ) }
+
+    val currentDir = File(currentPath)
+    val dirs = remember(currentPath) {
+        (currentDir.listFiles()?.filter { it.isDirectory && !it.name.startsWith(".") }
+            ?.sortedBy { it.name } ?: emptyList())
+    }
+    val parent = currentDir.parentFile
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = OllamaCard,
+        title = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Pick Project Folder", color = OllamaText, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                // Quick shortcuts
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(
+                        "Internal" to "/storage/emulated/0",
+                        "Downloads" to "/storage/emulated/0/Download",
+                        "Documents" to "/storage/emulated/0/Documents"
+                    ).forEach { (label, path) ->
+                        if (File(path).exists()) {
+                            TextButton(
+                                onClick = { currentPath = path },
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                                modifier = Modifier.clip(RoundedCornerShape(4.dp)).background(OllamaSurface)
+                            ) { Text(label, color = OllamaGreen, fontSize = 10.sp) }
+                        }
+                    }
+                }
+            }
+        },
+        text = {
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(0.dp)) {
+                // Current path + up button
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(OllamaSurface).padding(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (parent != null) {
+                        IconButton(onClick = { currentPath = parent.absolutePath }, modifier = Modifier.size(24.dp)) {
+                            Icon(Icons.Default.ArrowBack, null, tint = OllamaGreen, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                    Text(
+                        currentPath,
+                        color = OllamaTextDim, fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                // Directory list
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp),
+                    verticalArrangement = Arrangement.spacedBy(0.dp)
+                ) {
+                    if (dirs.isEmpty()) {
+                        item {
+                            Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                                Text("No subdirectories", color = OllamaTextDim, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                    items(dirs) { dir ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { currentPath = dir.absolutePath }
+                                .padding(horizontal = 8.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Text("📂", fontSize = 16.sp)
+                            Text(dir.name, color = OllamaText, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                            Icon(Icons.Default.ChevronRight, null, tint = OllamaTextDim, modifier = Modifier.size(14.dp))
+                        }
+                        HorizontalDivider(color = OllamaBorder, thickness = 0.5.dp)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSelect(currentPath) },
+                colors = ButtonDefaults.buttonColors(containerColor = OllamaGreen)
+            ) { Text("Select This Folder", color = OllamaBg, fontWeight = FontWeight.Bold) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel", color = OllamaTextDim) }
+        }
+    )
 }
 
 @Composable
