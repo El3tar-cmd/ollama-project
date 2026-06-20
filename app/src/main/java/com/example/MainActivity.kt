@@ -269,30 +269,65 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         authLoginUrl    = null
         isSigningIn     = true
         cloudAuthStatus = ""
-        liveLogs.add("Running ollama login…")
+        liveLogs.add("Starting Ollama login…")
 
         viewModelScope.launch(Dispatchers.IO) {
+            var binarySupportsLogin = true
+
+            // ── Try the binary's built-in login first ──────────────────────────
             val proc = executor.execLogin { line ->
                 viewModelScope.launch(Dispatchers.Main) {
                     liveLogs.add(line)
-                    // Capture connect URL from output
+                    if (line.contains("unknown command", ignoreCase = true) ||
+                        (line.contains("Error", ignoreCase = true) && line.contains("login", ignoreCase = true))) {
+                        binarySupportsLogin = false
+                    }
                     val match = "(https://ollama\\.com/connect\\S+)".toRegex().find(line)
                     if (match != null) authLoginUrl = match.value
-                    // Detect successful auth message from binary
                     if (line.contains("Logged in", ignoreCase = true) ||
-                        line.contains("Authenticated", ignoreCase = true) ||
-                        line.contains("success", ignoreCase = true)) {
+                        line.contains("Authenticated", ignoreCase = true)) {
                         cloudAuthStatus = "✅ Logged in!"
                         markLoggedIn()
                     }
                 }
             }
             proc?.waitFor()
+
+            // Small delay for Main callbacks to finish
+            kotlinx.coroutines.delay(400)
+
             withContext(Dispatchers.Main) {
-                isSigningIn = false
-                if (!isLoggedIn) {
-                    // Binary exited — try to read credential file it may have written
-                    readAndApplyStoredCredential()
+                when {
+                    // Binary produced the URL or already logged us in
+                    authLoginUrl != null || isLoggedIn -> {
+                        isSigningIn = false
+                    }
+                    // Binary doesn't support login → generate key pair ourselves
+                    !binarySupportsLogin || liveLogs.any { it.contains("unknown command", ignoreCase = true) } -> {
+                        liveLogs.add("Binary doesn't support 'login'. Generating auth key locally…")
+                        viewModelScope.launch(Dispatchers.IO) {
+                            try {
+                                val auth = OllamaAuth(context)
+                                val url  = auth.generateConnectUrl("devhive")
+                                withContext(Dispatchers.Main) {
+                                    authLoginUrl = url
+                                    isSigningIn  = false
+                                    liveLogs.add("✅ Auth key generated — open browser to authorize")
+                                }
+                            } catch (e: Exception) {
+                                withContext(Dispatchers.Main) {
+                                    cloudAuthStatus = "❌ Failed to generate key: ${e.message}"
+                                    isSigningIn     = false
+                                    liveLogs.add("❌ Key generation error: ${e.message}")
+                                }
+                            }
+                        }
+                    }
+                    // Binary exited cleanly — check for stored credentials
+                    else -> {
+                        isSigningIn = false
+                        readAndApplyStoredCredential()
+                    }
                 }
             }
         }
@@ -1038,7 +1073,14 @@ fun ChatScreen(vm: MainViewModel, context: Context) {
     val listState    = rememberLazyListState()
     val focusManager = LocalFocusManager.current
 
+    // Scroll when a new message is added
     LaunchedEffect(vm.chatHistory.size) { if (vm.chatHistory.isNotEmpty()) listState.animateScrollToItem(vm.chatHistory.size - 1) }
+    // Scroll while streaming (last message content grows)
+    val lastMsgContent = vm.chatHistory.lastOrNull()?.content ?: ""
+    LaunchedEffect(lastMsgContent) {
+        if (vm.isGeneratingResponse && vm.chatHistory.isNotEmpty())
+            listState.animateScrollToItem(vm.chatHistory.size - 1)
+    }
     LaunchedEffect(vm.selectedModelChat) { if (vm.selectedModelChat.isNotEmpty() && vm.chatHistory.isEmpty()) vm.startChatSession() }
 
     Column(Modifier.fillMaxSize()) {
@@ -1430,15 +1472,27 @@ fun AgentChatPane(vm: MainViewModel, context: Context, listState: androidx.compo
 @Composable
 fun AgentStepBubble(step: AgentStep) {
     val (bg, textColor, icon) = when (step.type) {
-        "user"        -> Triple(OllamaGreen,     OllamaBg,      "👤")
-        "assistant"   -> Triple(OllamaCard,      OllamaText,    "🤖")
-        "think"       -> Triple(Color(0xFF1A1A2E), OllamaPurple, "💭")
-        "tool_call"   -> Triple(Color(0xFF1A2A1A), OllamaGreen,  "🔧")
-        "tool_result" -> Triple(Color(0xFF0D1A0D), TerminalGreen,"📤")
-        "spawn"       -> Triple(Color(0xFF1A1A2E), OllamaBlue,   "🌱")
-        "error"       -> Triple(Color(0xFF2A0D0D), OllamaRed,    "❌")
-        else          -> Triple(OllamaCard,      OllamaTextDim, "•")
+        "user"        -> Triple(OllamaGreen,       OllamaBg,      "👤")
+        "assistant"   -> Triple(OllamaCard,        OllamaText,    "🤖")
+        "think"       -> Triple(Color(0xFF1A1A2E), OllamaPurple,  "💭")
+        "tool_call"   -> Triple(Color(0xFF1A2A1A), OllamaGreen,   "🔧")
+        "tool_result" -> Triple(Color(0xFF0D1A0D), TerminalGreen, "📤")
+        "spawn"       -> Triple(Color(0xFF1A1A2E), OllamaBlue,    "🌱")
+        "error"       -> Triple(Color(0xFF2A0D0D), OllamaRed,     "❌")
+        else          -> Triple(OllamaCard,        OllamaTextDim, "•")
     }
+
+    // Strip raw tool/json blocks from assistant messages so the bubble stays clean
+    val displayContent = if (step.type == "assistant") {
+        step.content
+            .replace(Regex("```tool[\\s\\S]*?```"), "")
+            .replace(Regex("```json[\\s\\S]*?```"), "")
+            .replace(Regex("```[\\s\\S]*?```"), "")
+            .trim()
+    } else step.content
+
+    if (displayContent.isBlank() && step.type == "assistant") return
+
     val isUser = step.type == "user"
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start) {
         Box(
@@ -1449,7 +1503,7 @@ fun AgentStepBubble(step: AgentStep) {
                 .padding(10.dp)
         ) {
             Text(
-                text = if (step.type != "user") "$icon ${step.content}" else step.content,
+                text = if (step.type != "user") "$icon $displayContent" else displayContent,
                 color = textColor,
                 fontSize = 12.sp,
                 fontFamily = if (step.type in listOf("tool_result", "think")) FontFamily.Monospace else FontFamily.Default
