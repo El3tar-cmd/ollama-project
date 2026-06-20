@@ -139,6 +139,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
 
     // Login
     var authLoginUrl  by mutableStateOf<String?>(null)
+    var sshPublicKey  by mutableStateOf<String?>(null)
     var isLoggedIn    by mutableStateOf(false)
 
     private val prefs = ctx.getSharedPreferences("ollama_prefs", Context.MODE_PRIVATE)
@@ -248,7 +249,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         }
     }
 
-    // ── Login — delegates to the Ollama binary's own `ollama login` ──────
+    // ── Login — tries `ollama login`, falls back to manual SSH key generation ──
     fun triggerLogin(context: Context) {
         if (!executor.isBinaryInstalled()) {
             viewModelScope.launch(Dispatchers.Main) {
@@ -256,18 +257,85 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
             }
             return
         }
-        authLoginUrl = null
+        authLoginUrl = null; sshPublicKey = null
         liveLogs.add("Running ollama login…")
+        var fellBack = false
         executor.execOllamaCommand("login") { line ->
             viewModelScope.launch(Dispatchers.Main) {
                 liveLogs.add(line)
-                val match = "(https://ollama\\.com/connect\\S+)".toRegex().find(line)
-                if (match != null) {
-                    authLoginUrl = match.value
-                    startAuthWatcher()
+                if (!fellBack && (line.contains("unknown command") || line.contains("unknown flag"))) {
+                    fellBack = true
+                    liveLogs.add("⚠️ Binary doesn't support 'login' — generating SSH key manually…")
+                    generateAndSaveSshKeys()
+                    return@launch
                 }
+                val match = "(https://ollama\\.com/connect\\S+)".toRegex().find(line)
+                if (match != null) { authLoginUrl = match.value; startAuthWatcher() }
             }
         }
+    }
+
+    fun generateAndSaveSshKeys() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val gen = org.bouncycastle.crypto.generators.Ed25519KeyPairGenerator()
+                gen.init(org.bouncycastle.crypto.params.Ed25519KeyGenerationParameters(java.security.SecureRandom()))
+                val kp   = gen.generateKeyPair()
+                val priv = kp.private as org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
+                val pub  = kp.public  as org.bouncycastle.crypto.params.Ed25519PublicKeyParameters
+                val pubB  = pub.encoded   // 32 bytes
+                val privB = priv.encoded  // 32 bytes seed
+
+                val pubStr  = sshEd25519PublicKey(pubB)
+                val privStr = sshEd25519PrivateKey(privB, pubB)
+
+                val dir = File(ctx.filesDir, ".ollama").also { it.mkdirs() }
+                File(dir, "id_ed25519").writeText(privStr)
+                File(dir, "id_ed25519.pub").writeText(pubStr)
+
+                withContext(Dispatchers.Main) {
+                    sshPublicKey = pubStr
+                    liveLogs.add("✅ SSH Ed25519 key generated and saved.")
+                    startAuthWatcher()
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { liveLogs.add("❌ Key generation failed: ${e.message}") }
+            }
+        }
+    }
+
+    private fun sshWriteField(out: java.io.ByteArrayOutputStream, b: ByteArray) {
+        out.write(java.nio.ByteBuffer.allocate(4).putInt(b.size).array()); out.write(b)
+    }
+    private fun sshWriteU32(out: java.io.ByteArrayOutputStream, v: Int) {
+        out.write(java.nio.ByteBuffer.allocate(4).putInt(v).array())
+    }
+
+    fun sshEd25519PublicKey(pubB: ByteArray): String {
+        val out = java.io.ByteArrayOutputStream()
+        sshWriteField(out, "ssh-ed25519".toByteArray()); sshWriteField(out, pubB)
+        return "ssh-ed25519 ${android.util.Base64.encodeToString(out.toByteArray(), android.util.Base64.NO_WRAP)} ollama-devhive"
+    }
+
+    private fun sshEd25519PrivateKey(privB: ByteArray, pubB: ByteArray, comment: String = "ollama-devhive"): String {
+        val pubBlob = java.io.ByteArrayOutputStream().also { sshWriteField(it, "ssh-ed25519".toByteArray()); sshWriteField(it, pubB) }.toByteArray()
+        val check   = java.nio.ByteBuffer.allocate(4).putInt(java.security.SecureRandom().nextInt()).array()
+        val privBlock = java.io.ByteArrayOutputStream().also { pb ->
+            pb.write(check); pb.write(check)
+            sshWriteField(pb, "ssh-ed25519".toByteArray())
+            sshWriteField(pb, pubB)
+            sshWriteField(pb, privB + pubB)
+            sshWriteField(pb, comment.toByteArray())
+            var i = 1; while (pb.size() % 8 != 0) pb.write(i++)
+        }.toByteArray()
+        val outer = java.io.ByteArrayOutputStream().also { o ->
+            o.write("openssh-key-v1\u0000".toByteArray(Charsets.UTF_8))
+            sshWriteField(o, "none".toByteArray()); sshWriteField(o, "none".toByteArray())
+            sshWriteU32(o, 0); sshWriteU32(o, 1)
+            sshWriteField(o, pubBlob); sshWriteField(o, privBlock)
+        }.toByteArray()
+        val b64 = android.util.Base64.encodeToString(outer, android.util.Base64.DEFAULT).trim()
+        return "-----BEGIN OPENSSH PRIVATE KEY-----\n$b64\n-----END OPENSSH PRIVATE KEY-----\n"
     }
 
     // Watch for SSH key files created by `ollama login` — auto-confirm when ready
@@ -299,7 +367,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     fun confirmLogin() {
         isLoggedIn = true
         prefs.edit().putBoolean("logged_in", true).apply()
-        authLoginUrl = null
+        authLoginUrl = null; sshPublicKey = null
         authWatcherActive = false
         liveLogs.add("✅ Login confirmed — SSH key registered with Ollama.")
     }
@@ -567,7 +635,7 @@ fun MainAppScreen() {
         }
     }
 
-    // Login dialog
+    // Login dialog — ollama login (binary supports it)
     vm.authLoginUrl?.let { url ->
         val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
         var browserOpened by remember { mutableStateOf(false) }
@@ -624,6 +692,70 @@ fun MainAppScreen() {
                     clipboard.setText(androidx.compose.ui.text.AnnotatedString(url))
                     Toast.makeText(context, "Link copied", Toast.LENGTH_SHORT).show()
                 }) { Text("Copy Link", color = OllamaTextDim) }
+            }
+        )
+    }
+
+    // SSH key dialog — shown when binary doesn't support `ollama login`
+    vm.sshPublicKey?.let { pubKey ->
+        val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+        val keysUrl = "https://ollama.com/settings/keys"
+        AlertDialog(
+            onDismissRequest = {},
+            containerColor = OllamaCard,
+            title = { Text("Add SSH Key to Ollama", color = OllamaText, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFF2A2000)).padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(Icons.Default.Warning, null, tint = Color(0xFFFFCC00), modifier = Modifier.size(16.dp))
+                        Text("Your Ollama binary doesn't support 'login'. A key was generated locally instead.", color = Color(0xFFFFCC00), fontSize = 11.sp)
+                    }
+                    Text("Add this public key at ollama.com/settings/keys to link this device:", color = OllamaTextDim, fontSize = 12.sp)
+                    Box(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+                            .background(OllamaCardAlt).padding(8.dp)
+                            .clickable {
+                                clipboard.setText(androidx.compose.ui.text.AnnotatedString(pubKey))
+                                Toast.makeText(context, "Public key copied!", Toast.LENGTH_SHORT).show()
+                            }
+                    ) {
+                        Text(pubKey, fontSize = 9.sp, color = OllamaGreen, fontFamily = FontFamily.Monospace, maxLines = 6, overflow = TextOverflow.Ellipsis)
+                    }
+                    Text("Tap key above to copy, then paste it at ollama.com/settings/keys", color = OllamaTextDim, fontSize = 10.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+                }
+            },
+            confirmButton = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Button(
+                        onClick = {
+                            try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(keysUrl))) }
+                            catch (e: Exception) {
+                                clipboard.setText(androidx.compose.ui.text.AnnotatedString(keysUrl))
+                                Toast.makeText(context, "Copied URL", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = OllamaGreen, contentColor = OllamaBg),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.AccountCircle, null, Modifier.size(14.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Open ollama.com/settings/keys")
+                    }
+                    Button(
+                        onClick = { vm.confirmLogin() },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1A4A2A), contentColor = OllamaGreen),
+                        modifier = Modifier.fillMaxWidth(),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, OllamaGreen)
+                    ) { Text("✓ Done — I've Added the Key", fontWeight = FontWeight.Bold) }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { vm.sshPublicKey = null }) { Text("Cancel", color = OllamaTextDim) }
             }
         )
     }
