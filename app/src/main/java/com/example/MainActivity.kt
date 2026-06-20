@@ -1047,7 +1047,7 @@ fun AgentScreen(vm: MainViewModel, context: Context) {
                     onClick = { showFolderPicker = true },
                     modifier = Modifier.size(28.dp).clip(RoundedCornerShape(6.dp)).background(OllamaCard)
                 ) {
-                    Icon(Icons.Default.FolderOpen, contentDescription = "Pick folder", tint = OllamaGreen, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Default.Folder, contentDescription = "Pick folder", tint = OllamaGreen, modifier = Modifier.size(16.dp))
                 }
             }
         }
@@ -1177,7 +1177,7 @@ fun FolderPickerDialog(
                         ) {
                             Text("📂", fontSize = 16.sp)
                             Text(dir.name, color = OllamaText, fontSize = 13.sp, modifier = Modifier.weight(1f))
-                            Icon(Icons.Default.ChevronRight, null, tint = OllamaTextDim, modifier = Modifier.size(14.dp))
+                            Icon(Icons.Default.KeyboardArrowRight, null, tint = OllamaTextDim, modifier = Modifier.size(14.dp))
                         }
                         HorizontalDivider(color = OllamaBorder, thickness = 0.5.dp)
                     }
