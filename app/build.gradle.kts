@@ -1,3 +1,4 @@
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -46,7 +47,7 @@ android {
             }
         }
         debug {
-            // Uses Android's built-in debug keystore automatically — no config needed.
+            // Uses Android's built-in debug keystore automatically — config needed.
         }
     }
 
@@ -172,7 +173,7 @@ val downloadOllamaBinary by tasks.registering {
                 System.getenv("ANDROID_NDK_ROOT"),
                 System.getenv("NDK_HOME"),
                 System.getenv("ANDROID_SDK_ROOT")?.let { "$it/ndk" }
-                    ?.let { java.io.File(it).listFiles()?.maxByOrNull { f -> f.name }?.absolutePath }
+                    ?.let { File(it).listFiles()?.maxByOrNull { f: File -> f.name }?.absolutePath }
             )
             val ndkSubPaths = listOf(
                 "toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so",
@@ -181,7 +182,7 @@ val downloadOllamaBinary by tasks.registering {
             )
             outer@ for (ndkHome in ndkSearchDirs.filterNotNull()) {
                 for (sub in ndkSubPaths) {
-                    val src = java.io.File("$ndkHome/$sub")
+                    val src = File("$ndkHome/$sub")
                     if (src.exists()) {
                         src.copyTo(libCppFile, overwrite = true)
                         println("[Devhive] Copied libc++_shared.so from NDK: ${src.absolutePath}")
