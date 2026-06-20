@@ -253,10 +253,12 @@ class OllamaExecutor(private val context: Context) {
     }
 
     /**
-     * Run `ollama login` and stream output.
-     * The binary outputs a connect URL; after the user authorises in the browser
-     * the process exits (the binary handles the OAuth callback itself).
-     * Returns the running Process so the caller can waitFor() it.
+     * Run `ollama login` and stream output character-by-character.
+     *
+     * Why not readLine(): Go binaries buffer stdout when writing to a pipe,
+     * so the connect URL line may never reach readLine() until the process exits.
+     * Reading one char at a time + checking for the URL in partial content
+     * ensures we surface the URL as soon as the binary writes it.
      */
     fun execLogin(onLog: (String) -> Unit): Process? {
         setupEnvironment()
@@ -270,10 +272,30 @@ class OllamaExecutor(private val context: Context) {
                 }.start()
             Thread {
                 try {
-                    val reader = proc.inputStream.bufferedReader()
-                    var line: String?
-                    while (reader.readLine().also { line = it } != null) onLog(line ?: "")
-                } catch (e: Exception) { onLog("Login stream closed: ${e.message}") }
+                    val stream = proc.inputStream
+                    val sb     = StringBuilder()
+                    val buf    = ByteArray(1)
+                    while (stream.read(buf) != -1) {
+                        val ch = buf[0].toInt().toChar()
+                        if (ch == '\n' || ch == '\r') {
+                            val line = sb.toString().trim()
+                            if (line.isNotBlank()) onLog(line)
+                            sb.clear()
+                        } else {
+                            sb.append(ch)
+                            // Emit immediately when we see a full connect URL
+                            // (binary may not print a trailing newline)
+                            val partial = sb.toString()
+                            if (partial.contains("https://ollama.com/connect") &&
+                                partial.length > 40 &&
+                                !partial.endsWith("connect")) {
+                                onLog(partial.trim())
+                                sb.clear()
+                            }
+                        }
+                    }
+                    if (sb.isNotBlank()) onLog(sb.toString().trim())
+                } catch (e: Exception) { onLog("Login stream: ${e.message}") }
             }.start()
             proc
         } catch (e: Exception) {
