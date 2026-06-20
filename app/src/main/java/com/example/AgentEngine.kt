@@ -38,12 +38,13 @@ Format (one tool per block):
 ```
 
 ═══ THINKING TOOLS ═══
-- think:       {"name":"think","content":"step-by-step reasoning before acting"}
-- plan:        {"name":"plan","steps":["step 1","step 2","step 3"]}
-- reflect:     {"name":"reflect","observation":"what happened","adjustment":"what to do differently"}
+- think:               {"name":"think","content":"step-by-step reasoning before acting"}
+- sequential_thinking: {"name":"sequential_thinking","thought":"current reasoning step","step":1,"total_steps":3,"is_final_thought":false,"next_action":"what to do next"}
+- plan:                {"name":"plan","steps":["step 1","step 2","step 3"]}
+- reflect:             {"name":"reflect","observation":"what happened","adjustment":"what to do differently"}
 
 ═══ FILE TOOLS ═══
-- list_dir:    {"name":"list_dir","path":"WORKING_DIR"}
+- list_dir:    {"name":"list_dir","path":"WORKING_DIR"}   (alias: list)
 - read_file:   {"name":"read_file","path":"WORKING_DIR/file.txt"}
 - write_file:  {"name":"write_file","path":"WORKING_DIR/file.txt","content":"full content here"}
 - append_file: {"name":"append_file","path":"WORKING_DIR/file.txt","content":"text to append"}
@@ -53,7 +54,7 @@ Format (one tool per block):
 - create_dir:  {"name":"create_dir","path":"WORKING_DIR/newdir"}
 
 ═══ SEARCH TOOLS ═══
-- search_files:{"name":"search_files","dir":"WORKING_DIR","query":"keyword"}
+- search_files:{"name":"search_files","dir":"WORKING_DIR","query":"keyword"}  (alias: search)
 - grep:        {"name":"grep","dir":"WORKING_DIR","pattern":"regex","glob":"*.py"}
 
 ═══ EXECUTION TOOLS ═══
@@ -67,7 +68,7 @@ Format (one tool per block):
 
 RULES:
 1. ALWAYS start complex tasks with plan — lay out all steps first.
-2. Use think before making non-trivial decisions.
+2. Use think or sequential_thinking before making non-trivial decisions.
 3. Use reflect after unexpected results to adjust strategy.
 4. ALL file paths must start with WORKING_DIR — never relative paths.
 5. Read a file before editing it.
@@ -141,12 +142,25 @@ Platform: Android arm64 | Shell: /system/bin/sh
             // ── Thinking tools ──
             "think"       -> AgentStep("think",
                 "💭 ${tool.optString("content", "")}")
+            "sequential_thinking" -> {
+                val step       = tool.optInt("step", 0)
+                val total      = tool.optInt("total_steps", 0)
+                val thought    = tool.optString("thought", "")
+                val isFinal    = tool.optBoolean("is_final_thought", false)
+                val nextAction = tool.optString("next_action", "")
+                val header     = if (total > 0) "🧠 Step $step/$total" else "🧠 Thinking"
+                val body       = if (!isFinal && nextAction.isNotBlank()) "$thought\n→ Next: $nextAction"
+                                 else if (isFinal) "$thought\n✅ Final thought"
+                                 else thought
+                AgentStep("think", "$header\n$body")
+            }
             "plan"        -> toolPlan(tool.optJSONArray("steps"))
             "reflect"     -> AgentStep("think",
                 "🔍 Observation: ${tool.optString("observation","")}\n" +
                 "🔄 Adjustment: ${tool.optString("adjustment","")}")
-            // ── File tools ──
-            "list_dir"    -> toolListDir(tool.optString("path", workingDir))
+            // ── File tools (with aliases) ──
+            "list_dir", "list"
+                          -> toolListDir(tool.optString("path", tool.optString("dir", workingDir)))
             "read_file"   -> toolReadFile(tool.optString("path", ""))
             "write_file"  -> toolWriteFile(tool.optString("path", ""), tool.optString("content", ""))
             "append_file" -> toolAppendFile(tool.optString("path", ""), tool.optString("content", ""))
@@ -154,8 +168,9 @@ Platform: Android arm64 | Shell: /system/bin/sh
             "delete_file" -> toolDeleteFile(tool.optString("path", ""))
             "move_file"   -> toolMoveFile(tool.optString("src", ""), tool.optString("dst", ""))
             "create_dir"  -> toolCreateDir(tool.optString("path", ""))
-            // ── Search tools ──
-            "search_files"-> toolSearchFiles(tool.optString("dir", workingDir), tool.optString("query", ""))
+            // ── Search tools (with aliases) ──
+            "search_files", "search"
+                          -> toolSearchFiles(tool.optString("dir", tool.optString("path", workingDir)), tool.optString("query", ""))
             "grep"        -> toolGrep(
                 tool.optString("dir", workingDir),
                 tool.optString("pattern", ""),
