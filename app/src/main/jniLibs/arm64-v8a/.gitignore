@@ -1,0 +1,3 @@
+# libollama.so is downloaded at build time by the Gradle downloadOllamaBinary task.
+# Do NOT commit this file — it is 48 MB and excluded to keep the repo clean.
+libollama.so
