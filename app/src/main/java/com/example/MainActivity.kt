@@ -168,6 +168,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     var isDownloadingGGUF      by mutableStateOf(false)
     var ggufDownloadProgress   by mutableStateOf(0)
     var ggufDownloadStatus     by mutableStateOf("")
+    var llamaHealthStatus      by mutableStateOf("")
 
     private val prefs = ctx.getSharedPreferences("ollama_prefs", Context.MODE_PRIVATE)
 
@@ -203,6 +204,26 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
             viewModelScope.launch(Dispatchers.Main) {
                 liveLogs.add(line)
                 if (liveLogs.size > 1000) liveLogs.removeAt(0)
+            }
+        }
+        // Poll llama.cpp logs and merge into liveLogs
+        viewModelScope.launch(Dispatchers.IO) {
+            var lastSize = 0
+            while (true) {
+                val lines = synchronized(LlamaService.logBuffer) {
+                    if (LlamaService.logBuffer.size > lastSize)
+                        LlamaService.logBuffer.drop(lastSize).also { lastSize = LlamaService.logBuffer.size }
+                    else emptyList()
+                }
+                if (lines.isNotEmpty()) {
+                    viewModelScope.launch(Dispatchers.Main) {
+                        lines.forEach { line ->
+                            liveLogs.add("[llama.cpp] $line")
+                            if (liveLogs.size > 1000) liveLogs.removeAt(0)
+                        }
+                    }
+                }
+                kotlinx.coroutines.delay(1000)
             }
         }
     }
@@ -319,10 +340,22 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         }
     }
 
-    fun checkLlamaHealth() {
-        LlamaCppApi().checkHealth("http://127.0.0.1:$llamaPort") { ok, _ ->
-            viewModelScope.launch(Dispatchers.Main) { llamaApiOnline = ok }
+    fun checkLlamaHealth(context: Context? = null) {
+        llamaHealthStatus = "⏳ Checking…"
+        LlamaCppApi().checkHealth("http://127.0.0.1:$llamaPort") { ok, msg ->
+            viewModelScope.launch(Dispatchers.Main) {
+                llamaApiOnline = ok
+                llamaHealthStatus = if (ok) "✅ Server healthy on port $llamaPort"
+                                    else "❌ Not reachable: $msg"
+                context?.let { Toast.makeText(it, llamaHealthStatus, Toast.LENGTH_SHORT).show() }
+            }
         }
+    }
+
+    fun cancelGGUFDownload() {
+        llamaServer.cancelDownload = true
+        isDownloadingGGUF = false
+        ggufDownloadStatus = "Cancelled"
     }
 
     fun scanGGUFs() {
@@ -1043,13 +1076,6 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
 
         // Binary engine
         SectionCard("BINARY ENGINE", "Ollama ARM64 executable for Android") {
-            OllamaTextField(
-                vm.downloadUrlState, { vm.downloadUrlState = it },
-                "Download URL",
-                Modifier.fillMaxWidth(),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                tag = "download_url_input"
-            )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column {
                     Text(
@@ -1313,10 +1339,22 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
 
             // Check health button
             OutlinedButton(
-                onClick = { vm.checkLlamaHealth() },
+                onClick = { vm.checkLlamaHealth(context) },
                 modifier = Modifier.fillMaxWidth(),
                 border = BorderStroke(1.dp, OllamaGreen)
             ) { Text("Check llama-server Health", color = OllamaGreen, fontSize = 12.sp) }
+            if (vm.llamaHealthStatus.isNotBlank()) {
+                Text(
+                    vm.llamaHealthStatus,
+                    color = when {
+                        vm.llamaHealthStatus.startsWith("✅") -> OllamaGreen
+                        vm.llamaHealthStatus.startsWith("❌") -> OllamaRed
+                        else -> OllamaTextDim
+                    },
+                    fontSize = 12.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
         }
 
         Spacer(Modifier.height(8.dp))
@@ -1463,9 +1501,15 @@ fun ModelsScreen(vm: MainViewModel, context: Context) {
                 Divider(Modifier.weight(1f), color = OllamaBorder)
             }
 
-            // Download progress
+            // Download progress + cancel
             if (vm.isDownloadingGGUF) {
-                Text(vm.ggufDownloadStatus, color = OllamaGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text(vm.ggufDownloadStatus, color = OllamaGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    TextButton(
+                        onClick = { vm.cancelGGUFDownload() },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                    ) { Text("✕ Cancel", color = OllamaRed, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                }
                 LinearProgressIndicator({ vm.ggufDownloadProgress / 100f }, Modifier.fillMaxWidth(), color = OllamaGreen, trackColor = OllamaBorder)
             }
 
