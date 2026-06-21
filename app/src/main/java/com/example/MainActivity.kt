@@ -148,6 +148,27 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     var isValidatingKey  by mutableStateOf(false)
     var cloudAuthStatus  by mutableStateOf("")   // feedback message for the UI
 
+    // ── llama.cpp dual-backend ─────────────────────────────────────────────
+    var activeBackend          by mutableStateOf("ollama")  // "ollama" | "llamacpp"
+    val llamaServer            = LlamaCppServer(ctx)
+    var llamaBinaryInstalled   by mutableStateOf(false)
+    var llamaServiceActive     by mutableStateOf(false)
+    var llamaApiOnline         by mutableStateOf(false)
+    var llamaSelectedModel     by mutableStateOf<File?>(null)
+    var llamaAvailableGGUFs    by mutableStateOf<List<File>>(emptyList())
+    var llamaGpuLayers         by mutableStateOf(99)
+    var llamaContextSize       by mutableStateOf(4096)
+    var llamaThreads           by mutableStateOf(4)
+    var llamaBatchSize         by mutableStateOf(512)
+    var llamaPort              by mutableStateOf("8080")
+    var llamaTemperature       by mutableStateOf(0.7f)
+    var isInstallingLlama      by mutableStateOf(false)
+    var llamaInstallProgress   by mutableStateOf(0)
+    var llamaInstallStatus     by mutableStateOf("")
+    var isDownloadingGGUF      by mutableStateOf(false)
+    var ggufDownloadProgress   by mutableStateOf(0)
+    var ggufDownloadStatus     by mutableStateOf("")
+
     private val prefs = ctx.getSharedPreferences("ollama_prefs", Context.MODE_PRIVATE)
 
     init {
@@ -157,6 +178,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
 
         // Native lib (libollama.so) is always preferred — check it first
         checkBinaryInstalled()
+        llamaBinaryInstalled = llamaServer.isBinaryInstalled
 
         // Init agent working dir — prefer external app-specific storage so files
         // are visible in any file manager under Android/data/<pkg>/files/OllamaAgent/
@@ -254,6 +276,76 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
                 Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
             }
         }
+    }
+
+    // ── llama.cpp backend functions ───────────────────────────────────────────
+
+    fun installLlamaBinary(context: Context) {
+        if (isInstallingLlama) return
+        isInstallingLlama = true; llamaInstallProgress = 0; llamaInstallStatus = "Starting…"
+        llamaServer.downloadBinary(
+            onProgress = { pct, msg -> viewModelScope.launch(Dispatchers.Main) { llamaInstallProgress = pct; llamaInstallStatus = msg } },
+            onDone = { ok, msg -> viewModelScope.launch(Dispatchers.Main) {
+                isInstallingLlama = false; llamaInstallStatus = msg
+                llamaBinaryInstalled = llamaServer.isBinaryInstalled
+                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+            }}
+        )
+    }
+
+    fun toggleLlamaService(context: Context) {
+        if (LlamaService.isRunning) {
+            context.stopService(Intent(context, LlamaService::class.java))
+            llamaServiceActive = false
+        } else {
+            val model = llamaSelectedModel ?: run {
+                Toast.makeText(context, "Select a GGUF model first", Toast.LENGTH_SHORT).show()
+                return
+            }
+            context.startForegroundService(Intent(context, LlamaService::class.java).apply {
+                putExtra("model_path", model.absolutePath)
+                putExtra("host", "127.0.0.1")
+                putExtra("port", llamaPort)
+                putExtra("gpu_layers", llamaGpuLayers)
+                putExtra("ctx_size", llamaContextSize)
+                putExtra("threads", llamaThreads)
+                putExtra("batch_size", llamaBatchSize)
+            })
+            viewModelScope.launch(Dispatchers.Main) {
+                delay(1500)
+                llamaServiceActive = LlamaService.isRunning
+                if (llamaServiceActive) checkLlamaHealth()
+            }
+        }
+    }
+
+    fun checkLlamaHealth() {
+        LlamaCppApi().checkHealth("http://127.0.0.1:$llamaPort") { ok, _ ->
+            viewModelScope.launch(Dispatchers.Main) { llamaApiOnline = ok }
+        }
+    }
+
+    fun scanGGUFs() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val files = llamaServer.scanLocalGGUFs()
+            withContext(Dispatchers.Main) {
+                llamaAvailableGGUFs = files
+                if (llamaSelectedModel == null && files.isNotEmpty()) llamaSelectedModel = files.first()
+            }
+        }
+    }
+
+    fun downloadGGUF(context: Context, model: GGUFModel) {
+        if (isDownloadingGGUF) return
+        isDownloadingGGUF = true; ggufDownloadProgress = 0; ggufDownloadStatus = "Starting…"
+        llamaServer.downloadGGUF(model,
+            onProgress = { pct, msg -> viewModelScope.launch(Dispatchers.Main) { ggufDownloadProgress = pct; ggufDownloadStatus = msg } },
+            onDone = { ok, msg, file -> viewModelScope.launch(Dispatchers.Main) {
+                isDownloadingGGUF = false; ggufDownloadStatus = msg
+                if (ok && file != null) { scanGGUFs(); llamaSelectedModel = file }
+                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+            }}
+        )
     }
 
     // ── Cloud Auth — `ollama login` browser flow OR manual API key ───────────
@@ -512,11 +604,19 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
             }
         }
 
-        if (isCloud) {
-            // Route directly to https://ollama.com/api/chat — bypasses the local binary
-            api.cloudChatStream(cloudApiKey, selectedModelChat, apiMessages, onToken, onDone)
-        } else {
-            api.chatStream("http://$hostUrlState", selectedModelChat, apiMessages, onToken, onDone)
+        when {
+            isCloud ->
+                api.cloudChatStream(cloudApiKey, selectedModelChat, apiMessages, onToken, onDone)
+            activeBackend == "llamacpp" ->
+                LlamaCppApi().chatStream(
+                    "http://127.0.0.1:$llamaPort", apiMessages,
+                    temperature = llamaTemperature,
+                    maxTokens   = 2048,
+                    onToken     = onToken,
+                    onComplete  = onDone
+                )
+            else ->
+                api.chatStream("http://$hostUrlState", selectedModelChat, apiMessages, onToken, onDone)
         }
     }
 
@@ -591,11 +691,28 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     fun runAgent(context: Context) {
         val task = agentInput.trim()
         if (task.isEmpty() || agentModel.isEmpty()) return
-        if (!apiOnline) { Toast.makeText(context, "Server must be running for agent", Toast.LENGTH_SHORT).show(); return }
+        val isCloudModel = agentModel.endsWith(":cloud")
+        val needsServer  = !isCloudModel && activeBackend == "ollama"
+        if (needsServer && !apiOnline) {
+            Toast.makeText(context, "Ollama server must be running for local agent", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val needsLlama = !isCloudModel && activeBackend == "llamacpp"
+        if (needsLlama && !llamaApiOnline) {
+            Toast.makeText(context, "llama.cpp server must be running for local agent", Toast.LENGTH_SHORT).show()
+            return
+        }
         agentInput = ""; isAgentRunning = true
         agentSteps.add(AgentStep("user", task))
         agentJob = viewModelScope.launch(Dispatchers.IO) {
-            agentEngine.runAgentLoop(task, agentModel, "http://$hostUrlState") { step ->
+            agentEngine.runAgentLoop(
+                userTask       = task,
+                model          = agentModel,
+                baseUrl        = "http://$hostUrlState",
+                cloudApiKey    = cloudApiKey,
+                backend        = activeBackend,
+                llamaCppBaseUrl = "http://127.0.0.1:$llamaPort"
+            ) { step ->
                 withContext(Dispatchers.Main) { agentSteps.add(step) }
             }
             withContext(Dispatchers.Main) { isAgentRunning = false; agentJob = null; refreshFileTree() }
@@ -611,10 +728,16 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     }
 
     fun spawnSubAgent(context: Context, subTask: String) {
-        val parentStepCount = agentSteps.size
         agentSteps.add(AgentStep("spawn", "🌱 Spawning sub-agent: $subTask"))
         viewModelScope.launch(Dispatchers.IO) {
-            agentEngine.runAgentLoop(subTask, agentModel, "http://$hostUrlState") { step ->
+            agentEngine.runAgentLoop(
+                userTask        = subTask,
+                model           = agentModel,
+                baseUrl         = "http://$hostUrlState",
+                cloudApiKey     = cloudApiKey,
+                backend         = activeBackend,
+                llamaCppBaseUrl = "http://127.0.0.1:$llamaPort"
+            ) { step ->
                 withContext(Dispatchers.Main) { agentSteps.add(AgentStep(step.type, "  [sub] ${step.content}", step.isError)) }
             }
             withContext(Dispatchers.Main) { isAgentRunning = false; refreshFileTree() }
@@ -1093,6 +1216,109 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
                 color = OllamaTextDim, fontSize = 10.sp
             )
         }
+
+        // ── llama.cpp backend section ────────────────────────────────────────
+        SectionCard("llama.cpp BACKEND", "Vulkan GPU accelerated • GGUF models") {
+
+            // Backend switcher
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+                    .background(OllamaCardAlt).padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                listOf("ollama" to "Ollama", "llamacpp" to "llama.cpp").forEach { (key, label) ->
+                    val selected = vm.activeBackend == key
+                    Box(
+                        Modifier.weight(1f).clip(RoundedCornerShape(6.dp))
+                            .background(if (selected) OllamaGreen else Color.Transparent)
+                            .clickable { vm.activeBackend = key }
+                            .padding(vertical = 10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(label, color = if (selected) OllamaBg else OllamaTextDim,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal, fontSize = 13.sp)
+                    }
+                }
+            }
+
+            // llama-server binary
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column {
+                    Text("llama-server binary", color = OllamaText, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text(
+                        if (vm.llamaBinaryInstalled) "✓ Installed (b${LlamaCppServer.BINARY_RELEASE})"
+                        else "✗ Not installed",
+                        color = if (vm.llamaBinaryInstalled) OllamaGreen else OllamaRed, fontSize = 12.sp
+                    )
+                    if (vm.isInstallingLlama) Text(vm.llamaInstallStatus, color = OllamaTextDim, fontSize = 11.sp)
+                }
+                Button(
+                    onClick = { vm.installLlamaBinary(context) },
+                    enabled = !vm.isInstallingLlama,
+                    colors = ButtonDefaults.buttonColors(containerColor = OllamaGreen, contentColor = OllamaBg)
+                ) {
+                    if (vm.isInstallingLlama) CircularProgressIndicator(Modifier.size(14.dp), color = OllamaBg, strokeWidth = 2.dp)
+                    else Text(if (vm.llamaBinaryInstalled) "Reinstall" else "Install", fontWeight = FontWeight.Bold)
+                }
+            }
+            if (vm.isInstallingLlama && vm.llamaInstallProgress >= 0) {
+                LinearProgressIndicator({ vm.llamaInstallProgress / 100f }, Modifier.fillMaxWidth(), color = OllamaGreen, trackColor = OllamaBorder)
+            }
+
+            // Server status + toggle
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column {
+                    Text(
+                        if (vm.llamaApiOnline) "● Running · Port ${vm.llamaPort}"
+                        else if (vm.llamaServiceActive) "● Starting…"
+                        else "○ Stopped",
+                        color = if (vm.llamaApiOnline) OllamaGreen else OllamaTextDim, fontWeight = FontWeight.Bold, fontSize = 14.sp
+                    )
+                    vm.llamaSelectedModel?.let { Text("Model: ${it.name}", color = OllamaTextDim, fontSize = 10.sp) }
+                }
+                Switch(
+                    checked = vm.llamaServiceActive || vm.llamaApiOnline,
+                    onCheckedChange = { vm.toggleLlamaService(context) },
+                    enabled = vm.llamaBinaryInstalled && vm.llamaSelectedModel != null,
+                    colors = SwitchDefaults.colors(checkedThumbColor = OllamaBg, checkedTrackColor = OllamaGreen)
+                )
+            }
+
+            // Port config
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                OllamaTextField(vm.llamaPort, { vm.llamaPort = it }, "Port", Modifier.width(100.dp),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next))
+                OllamaTextField(vm.llamaGpuLayers.toString(), { vm.llamaGpuLayers = it.toIntOrNull() ?: 99 }, "GPU Layers", Modifier.width(110.dp),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next))
+                OllamaTextField(vm.llamaContextSize.toString(), { vm.llamaContextSize = it.toIntOrNull() ?: 4096 }, "Context", Modifier.weight(1f),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done))
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OllamaTextField(vm.llamaThreads.toString(), { vm.llamaThreads = it.toIntOrNull() ?: 4 }, "Threads", Modifier.weight(1f),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next))
+                OllamaTextField(vm.llamaBatchSize.toString(), { vm.llamaBatchSize = it.toIntOrNull() ?: 512 }, "Batch", Modifier.weight(1f),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done))
+            }
+
+            // Temperature
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("Temperature", color = OllamaText, fontSize = 13.sp)
+                Text(String.format("%.2f", vm.llamaTemperature), color = OllamaGreen, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+            }
+            Slider(
+                value = vm.llamaTemperature, onValueChange = { vm.llamaTemperature = it },
+                valueRange = 0f..2f, steps = 39,
+                colors = SliderDefaults.colors(thumbColor = OllamaGreen, activeTrackColor = OllamaGreen, inactiveTrackColor = OllamaBorder)
+            )
+
+            // Check health button
+            OutlinedButton(
+                onClick = { vm.checkLlamaHealth() },
+                modifier = Modifier.fillMaxWidth(),
+                border = BorderStroke(1.dp, OllamaGreen)
+            ) { Text("Check llama-server Health", color = OllamaGreen, fontSize = 12.sp) }
+        }
+
         Spacer(Modifier.height(8.dp))
     }
 }
@@ -1187,6 +1413,86 @@ fun ModelsScreen(vm: MainViewModel, context: Context) {
                                 modifier = Modifier.size(32.dp)
                             ) { Icon(Icons.Default.Delete, null, tint = OllamaRed, modifier = Modifier.size(18.dp)) }
                         }
+                    }
+                }
+            }
+        }
+
+        // ── llama.cpp GGUF Models ──────────────────────────────────────────
+        SectionCard("llama.cpp GGUF MODELS", "Select a .gguf file to run with llama-server") {
+
+            // Scan button
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column {
+                    Text("Local GGUF files", color = OllamaText, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text("${vm.llamaAvailableGGUFs.size} found", color = OllamaTextDim, fontSize = 11.sp)
+                }
+                Button(
+                    onClick = { vm.scanGGUFs() },
+                    colors = ButtonDefaults.buttonColors(containerColor = OllamaGreen, contentColor = OllamaBg)
+                ) { Text("Scan", fontWeight = FontWeight.Bold) }
+            }
+
+            // Found GGUF files
+            if (vm.llamaAvailableGGUFs.isNotEmpty()) {
+                vm.llamaAvailableGGUFs.forEach { file ->
+                    val selected = vm.llamaSelectedModel?.absolutePath == file.absolutePath
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (selected) Color(0xFF1A3A2A) else OllamaCardAlt)
+                            .border(1.dp, if (selected) OllamaGreen else OllamaBorder, RoundedCornerShape(8.dp))
+                            .clickable { vm.llamaSelectedModel = file }
+                            .padding(10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(file.name, color = if (selected) OllamaGreen else OllamaText, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(String.format("%.2f GB", file.length() / 1e9), color = OllamaTextDim, fontSize = 10.sp)
+                        }
+                        if (selected) Icon(Icons.Default.CheckCircle, null, tint = OllamaGreen, modifier = Modifier.size(18.dp))
+                    }
+                }
+            }
+
+            // Divider
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Divider(Modifier.weight(1f), color = OllamaBorder)
+                Text("DOWNLOAD CURATED MODELS", color = OllamaTextDim, fontSize = 9.sp, letterSpacing = 1.sp)
+                Divider(Modifier.weight(1f), color = OllamaBorder)
+            }
+
+            // Download progress
+            if (vm.isDownloadingGGUF) {
+                Text(vm.ggufDownloadStatus, color = OllamaGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                LinearProgressIndicator({ vm.ggufDownloadProgress / 100f }, Modifier.fillMaxWidth(), color = OllamaGreen, trackColor = OllamaBorder)
+            }
+
+            // Curated models list
+            LlamaCppServer.CURATED_GGUF_MODELS.forEach { model ->
+                val alreadyDownloaded = vm.llamaAvailableGGUFs.any { it.name == model.fileName }
+                Row(
+                    Modifier.fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(OllamaCard)
+                        .border(1.dp, OllamaBorder, RoundedCornerShape(8.dp))
+                        .padding(10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(model.displayName, color = OllamaText, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        Text(model.size, color = OllamaTextDim, fontSize = 10.sp)
+                        if (alreadyDownloaded) Text("✓ Already downloaded", color = OllamaGreen, fontSize = 10.sp)
+                    }
+                    OutlinedButton(
+                        onClick = { if (!alreadyDownloaded) vm.downloadGGUF(context, model) else vm.llamaSelectedModel = vm.llamaAvailableGGUFs.first { it.name == model.fileName } },
+                        enabled = !vm.isDownloadingGGUF,
+                        border = BorderStroke(1.dp, if (alreadyDownloaded) OllamaGreen else OllamaBorder),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Text(if (alreadyDownloaded) "Select" else "Download", color = if (alreadyDownloaded) OllamaGreen else OllamaText, fontSize = 12.sp)
                     }
                 }
             }
