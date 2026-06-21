@@ -12,6 +12,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -1112,13 +1113,6 @@ fun ChatScreen(vm: MainViewModel, context: Context) {
     }
     LaunchedEffect(vm.selectedModelChat) { if (vm.selectedModelChat.isNotEmpty() && vm.chatHistory.isEmpty()) vm.startChatSession() }
 
-    // Auto-scroll to bottom when keyboard opens so input stays visible
-    val imeVisible = WindowInsets.isImeVisible
-    LaunchedEffect(imeVisible) {
-        if (imeVisible && vm.chatHistory.isNotEmpty())
-            listState.animateScrollToItem(vm.chatHistory.size - 1)
-    }
-
     Column(Modifier.fillMaxSize().imePadding()) {
         // Header bar
         Row(
@@ -1440,13 +1434,6 @@ fun FolderPickerDialog(
 
 @Composable
 fun AgentChatPane(vm: MainViewModel, context: Context, listState: androidx.compose.foundation.lazy.LazyListState, focusManager: androidx.compose.ui.focus.FocusManager) {
-    // Auto-scroll when keyboard opens so the input bar stays visible
-    val imeVisible = WindowInsets.isImeVisible
-    LaunchedEffect(imeVisible) {
-        if (imeVisible && vm.agentSteps.isNotEmpty())
-            listState.animateScrollToItem(vm.agentSteps.size - 1)
-    }
-
     Column(Modifier.fillMaxSize().imePadding()) {
         LazyColumn(state = listState, modifier = Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(vertical = 10.dp)) {
             if (vm.agentSteps.isEmpty()) {
