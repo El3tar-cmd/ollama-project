@@ -593,13 +593,18 @@ Platform: Android arm64 | Shell: /system/bin/sh
         model: String,
         baseUrl: String,
         maxSteps: Int = 25,
+        cloudApiKey: String = "",
+        backend: String = "ollama",
+        llamaCppBaseUrl: String = "http://127.0.0.1:8080",
         onStep: suspend (AgentStep) -> Unit
     ) {
         val messages = mutableListOf<ChatMessage>()
         messages.add(ChatMessage("system", systemPrompt()))
         messages.add(ChatMessage("user", userTask))
 
-        val api = OllamaApi()
+        val ollamaApi   = OllamaApi()
+        val llamaApi    = LlamaCppApi()
+        val isCloud     = model.endsWith(":cloud")
         var steps = 0
         var consecutiveErrors = 0
         val MAX_CONSECUTIVE_ERRORS = 3
@@ -612,16 +617,19 @@ Platform: Android arm64 | Shell: /system/bin/sh
 
             try {
                 suspendCancellableCoroutine<Unit> { cont ->
-                    val call = api.chatStream(
-                        baseUrl        = baseUrl,
-                        modelName      = model,
-                        messages       = messages,
-                        onTokenGenerated = { token -> fullResponse += token },
-                        onComplete     = { success, msg ->
-                            if (!success) { streamOk = false; streamError = msg }
-                            if (!cont.isCompleted) cont.resume(Unit)
-                        }
-                    )
+                    val onToken: (String) -> Unit = { token -> fullResponse += token }
+                    val onDone:  (Boolean, String) -> Unit = { success, msg ->
+                        if (!success) { streamOk = false; streamError = msg }
+                        if (!cont.isCompleted) cont.resume(Unit)
+                    }
+                    val call = when {
+                        isCloud && cloudApiKey.isNotBlank() ->
+                            ollamaApi.cloudChatStream(cloudApiKey, model, messages, onToken, onDone)
+                        backend == "llamacpp" ->
+                            llamaApi.chatStream(llamaCppBaseUrl, messages, onToken = onToken, onComplete = onDone)
+                        else ->
+                            ollamaApi.chatStream(baseUrl, model, messages, onToken, onDone)
+                    }
                     cont.invokeOnCancellation { call.cancel() }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
