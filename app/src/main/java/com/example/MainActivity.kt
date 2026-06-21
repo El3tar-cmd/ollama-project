@@ -1018,12 +1018,11 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
                         Text("Get Key →", color = OllamaGreen, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     }
                 }
-                var keyVisible by remember { mutableStateOf(false) }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     OllamaTextField(
                         value = vm.manualApiKeyInput,
                         onValueChange = { vm.manualApiKeyInput = it },
-                        placeholder = "ollama_…",
+                        label = "ollama_…",
                         modifier = Modifier.weight(1f),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                         keyboardActions = KeyboardActions(onDone = { vm.validateAndSaveApiKey(context, vm.manualApiKeyInput) })
