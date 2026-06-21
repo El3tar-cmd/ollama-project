@@ -1336,14 +1336,24 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
 
             // Server status + toggle
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Column {
+                Column(Modifier.weight(1f)) {
                     Text(
                         if (vm.llamaApiOnline) "● Running · Port ${vm.llamaPort}"
                         else if (vm.llamaServiceActive) "● Starting…"
                         else "○ Stopped",
                         color = if (vm.llamaApiOnline) OllamaGreen else OllamaTextDim, fontWeight = FontWeight.Bold, fontSize = 14.sp
                     )
-                    vm.llamaSelectedModel?.let { Text("Model: ${it.name}", color = OllamaTextDim, fontSize = 10.sp) }
+                    if (vm.llamaSelectedModel != null) {
+                        Text("Model: ${vm.llamaSelectedModel!!.name}", color = OllamaTextDim, fontSize = 10.sp)
+                    } else if (vm.llamaBinaryInstalled) {
+                        Text(
+                            "⚠ Go to Models tab → download a GGUF model → select it",
+                            color = Color(0xFFFFAA33), fontSize = 11.sp
+                        )
+                    }
+                    if (vm.llamaHealthStatus.isNotBlank() && !vm.llamaApiOnline) {
+                        Text(vm.llamaHealthStatus, color = OllamaTextDim, fontSize = 11.sp)
+                    }
                 }
                 Switch(
                     checked = vm.llamaServiceActive || vm.llamaApiOnline,
