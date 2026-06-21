@@ -39,6 +39,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -1111,7 +1112,14 @@ fun ChatScreen(vm: MainViewModel, context: Context) {
     }
     LaunchedEffect(vm.selectedModelChat) { if (vm.selectedModelChat.isNotEmpty() && vm.chatHistory.isEmpty()) vm.startChatSession() }
 
-    Column(Modifier.fillMaxSize()) {
+    // Auto-scroll to bottom when keyboard opens so input stays visible
+    val imeVisible = WindowInsets.isImeVisible
+    LaunchedEffect(imeVisible) {
+        if (imeVisible && vm.chatHistory.isNotEmpty())
+            listState.animateScrollToItem(vm.chatHistory.size - 1)
+    }
+
+    Column(Modifier.fillMaxSize().imePadding()) {
         // Header bar
         Row(
             Modifier.fillMaxWidth().background(OllamaSurface).padding(horizontal = 16.dp, vertical = 10.dp),
@@ -1432,7 +1440,14 @@ fun FolderPickerDialog(
 
 @Composable
 fun AgentChatPane(vm: MainViewModel, context: Context, listState: androidx.compose.foundation.lazy.LazyListState, focusManager: androidx.compose.ui.focus.FocusManager) {
-    Column(Modifier.fillMaxSize()) {
+    // Auto-scroll when keyboard opens so the input bar stays visible
+    val imeVisible = WindowInsets.isImeVisible
+    LaunchedEffect(imeVisible) {
+        if (imeVisible && vm.agentSteps.isNotEmpty())
+            listState.animateScrollToItem(vm.agentSteps.size - 1)
+    }
+
+    Column(Modifier.fillMaxSize().imePadding()) {
         LazyColumn(state = listState, modifier = Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(vertical = 10.dp)) {
             if (vm.agentSteps.isEmpty()) {
                 item {
@@ -1487,18 +1502,7 @@ fun AgentChatPane(vm: MainViewModel, context: Context, listState: androidx.compo
 
 @Composable
 fun AgentStepBubble(step: AgentStep) {
-    val (bg, textColor, icon) = when (step.type) {
-        "user"        -> Triple(OllamaGreen,       OllamaBg,      "👤")
-        "assistant"   -> Triple(OllamaCard,        OllamaText,    "🤖")
-        "think"       -> Triple(Color(0xFF1A1A2E), OllamaPurple,  "💭")
-        "tool_call"   -> Triple(Color(0xFF1A2A1A), OllamaGreen,   "🔧")
-        "tool_result" -> Triple(Color(0xFF0D1A0D), TerminalGreen, "📤")
-        "spawn"       -> Triple(Color(0xFF1A1A2E), OllamaBlue,    "🌱")
-        "error"       -> Triple(Color(0xFF2A0D0D), OllamaRed,     "❌")
-        else          -> Triple(OllamaCard,        OllamaTextDim, "•")
-    }
-
-    val displayContent = if (step.type == "assistant") {
+    val rawContent = if (step.type == "assistant") {
         step.content
             .replace(Regex("```tool[\\s\\S]*?```"), "")
             .replace(Regex("```json[\\s\\S]*?```"), "")
@@ -1506,24 +1510,111 @@ fun AgentStepBubble(step: AgentStep) {
             .trim()
     } else step.content
 
-    if (displayContent.isBlank() && step.type == "assistant") return
+    if (rawContent.isBlank() && step.type == "assistant") return
 
-    // Collapse threshold — tool results and think blocks can be very long
+    val isThink = step.type in listOf("think", "sequential_thinking")
+    val isTool  = step.type == "tool_result"
     val THRESHOLD = 220
-    val collapsible = displayContent.length > THRESHOLD &&
-                      step.type in listOf("tool_result", "think", "sequential_thinking")
-    // tool_result starts collapsed; think starts collapsed only when very long
-    val defaultExpanded = when {
-        step.type == "tool_result" && displayContent.length > THRESHOLD -> false
-        step.type in listOf("think", "sequential_thinking") && displayContent.length > 600 -> false
-        else -> true
-    }
-    var expanded by remember { mutableStateOf(defaultExpanded) }
 
-    // Compute what to show when collapsed
-    val firstLine = displayContent.lines().firstOrNull()?.take(120) ?: ""
-    val lineCount = displayContent.lines().size
-    val shownText = if (!expanded && collapsible) firstLine else displayContent
+    // Collapse state — computed once (step content/type don't change after add)
+    val startCollapsed = (isTool && rawContent.length > THRESHOLD) ||
+                         (isThink && rawContent.length > 500)
+    var expanded by remember { mutableStateOf(!startCollapsed) }
+
+    // ── Think / Reasoning card — full-width, distinct design ─────────────
+    if (isThink) {
+        // Strip markdown blockquote '>' that models sometimes prepend
+        val cleaned = rawContent.lines().joinToString("\n") { line ->
+            line.trimStart().removePrefix(">").trimStart()
+        }
+        val lines      = cleaned.lines()
+        val lineCount  = lines.size
+        val canCollapse = lineCount > 4
+        val shown = if (!expanded && canCollapse)
+            lines.take(3).joinToString("\n") + "\n…"
+        else cleaned
+
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(Color(0xFF0D0D20))
+                .border(BorderStroke(1.dp, OllamaPurple.copy(alpha = 0.25f)), RoundedCornerShape(10.dp))
+        ) {
+            // Header
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 7.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(7.dp)
+                ) {
+                    // Accent bar
+                    Box(Modifier.width(3.dp).height(13.dp).background(OllamaPurple, RoundedCornerShape(2.dp)))
+                    Text(
+                        "THINKING",
+                        color = OllamaPurple,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.5.sp
+                    )
+                }
+                Text(
+                    "$lineCount lines",
+                    color = OllamaPurple.copy(alpha = 0.4f),
+                    fontSize = 9.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+            HorizontalDivider(color = OllamaPurple.copy(alpha = 0.18f), thickness = 0.5.dp)
+            // Body
+            Text(
+                text = shown,
+                color = Color(0xFFBFAEE0),
+                fontSize = 11.5.sp,
+                fontStyle = FontStyle.Italic,
+                lineHeight = 18.sp,
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+            )
+            // Collapse toggle
+            if (canCollapse) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { expanded = !expanded }
+                        .background(OllamaPurple.copy(alpha = 0.07f))
+                        .padding(horizontal = 14.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        if (expanded) "▲ collapse" else "▼ show all  ($lineCount lines)",
+                        color = OllamaPurple.copy(alpha = 0.55f),
+                        fontSize = 9.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+            }
+        }
+        return
+    }
+
+    // ── Regular bubble ────────────────────────────────────────────────────
+    val (bg, textColor, icon) = when (step.type) {
+        "user"        -> Triple(OllamaGreen,       OllamaBg,      "👤")
+        "assistant"   -> Triple(OllamaCard,        OllamaText,    "🤖")
+        "tool_call"   -> Triple(Color(0xFF1A2A1A), OllamaGreen,   "🔧")
+        "tool_result" -> Triple(Color(0xFF0D1A0D), TerminalGreen, "📤")
+        "spawn"       -> Triple(Color(0xFF1A1A2E), OllamaBlue,    "🌱")
+        "error"       -> Triple(Color(0xFF2A0D0D), OllamaRed,     "❌")
+        else          -> Triple(OllamaCard,        OllamaTextDim, "•")
+    }
+
+    val lineCount   = rawContent.lines().size
+    val canCollapse = isTool && rawContent.length > THRESHOLD
+    val firstLine   = rawContent.lines().firstOrNull()?.take(130) ?: ""
+    val shownText   = if (!expanded && canCollapse) firstLine else rawContent
 
     val isUser = step.type == "user"
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start) {
@@ -1533,17 +1624,14 @@ fun AgentStepBubble(step: AgentStep) {
                 .clip(RoundedCornerShape(10.dp))
                 .background(bg)
         ) {
-            // Main content
             Text(
                 text = if (step.type != "user") "$icon $shownText" else shownText,
                 color = textColor,
                 fontSize = 12.sp,
-                fontFamily = if (step.type in listOf("tool_result", "think")) FontFamily.Monospace else FontFamily.Default,
+                fontFamily = if (isTool) FontFamily.Monospace else FontFamily.Default,
                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
             )
-            // Expand / collapse toggle
-            if (collapsible) {
-                HorizontalDivider(color = bg.copy(alpha = 0f), thickness = 0.dp)
+            if (canCollapse) {
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -1559,13 +1647,11 @@ fun AgentStepBubble(step: AgentStep) {
                         fontSize = 9.sp,
                         fontFamily = FontFamily.Monospace
                     )
-                    if (!expanded) {
-                        Text(
-                            "${displayContent.length} chars",
-                            color = textColor.copy(alpha = 0.45f),
-                            fontSize = 9.sp
-                        )
-                    }
+                    if (!expanded) Text(
+                        "${rawContent.length} chars",
+                        color = textColor.copy(alpha = 0.45f),
+                        fontSize = 9.sp
+                    )
                 }
             }
         }
