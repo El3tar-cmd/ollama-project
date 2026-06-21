@@ -525,6 +525,34 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         }
     }
 
+    fun deleteFile(file: File) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                if (file.isDirectory) file.deleteRecursively() else file.delete()
+                withContext(Dispatchers.Main) { refreshFileTree() }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { agentSteps.add(AgentStep("error", "❌ Delete failed: ${e.message}")) }
+            }
+        }
+    }
+
+    fun renameFile(file: File, newName: String) {
+        val trimmed = newName.trim()
+        if (trimmed.isBlank()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val target = File(file.parentFile, trimmed)
+                val ok = file.renameTo(target)
+                withContext(Dispatchers.Main) {
+                    if (!ok) agentSteps.add(AgentStep("error", "❌ Rename failed: could not rename"))
+                    refreshFileTree()
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { agentSteps.add(AgentStep("error", "❌ Rename failed: ${e.message}")) }
+            }
+        }
+    }
+
     private var agentJob: kotlinx.coroutines.Job? = null
 
     fun runAgent(context: Context) {
@@ -1307,18 +1335,32 @@ fun FolderPickerDialog(
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("Pick Project Folder", color = OllamaText, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                 // Quick shortcuts
+                val ctx = LocalContext.current
+                val termuxHome = "/data/data/com.termux/files/home"
+                val hasTermux  = remember {
+                    File(termuxHome).exists() ||
+                    try { ctx.packageManager.getPackageInfo("com.termux", 0); true }
+                    catch (_: Exception) { false }
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     listOf(
-                        "Internal" to "/storage/emulated/0",
+                        "Internal"  to "/storage/emulated/0",
                         "Downloads" to "/storage/emulated/0/Download",
                         "Documents" to "/storage/emulated/0/Documents"
-                    ).forEach { (label, path) ->
+                    ).plus(if (hasTermux) listOf("Termux" to termuxHome) else emptyList())
+                     .forEach { (label, path) ->
                         if (File(path).exists()) {
                             TextButton(
                                 onClick = { currentPath = path },
                                 contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
                                 modifier = Modifier.clip(RoundedCornerShape(4.dp)).background(OllamaSurface)
-                            ) { Text(label, color = OllamaGreen, fontSize = 10.sp) }
+                            ) {
+                                Text(
+                                    label,
+                                    color = if (label == "Termux") OllamaBlue else OllamaGreen,
+                                    fontSize = 10.sp
+                                )
+                            }
                         }
                     }
                 }
@@ -1456,7 +1498,6 @@ fun AgentStepBubble(step: AgentStep) {
         else          -> Triple(OllamaCard,        OllamaTextDim, "•")
     }
 
-    // Strip raw tool/json blocks from assistant messages so the bubble stays clean
     val displayContent = if (step.type == "assistant") {
         step.content
             .replace(Regex("```tool[\\s\\S]*?```"), "")
@@ -1467,21 +1508,66 @@ fun AgentStepBubble(step: AgentStep) {
 
     if (displayContent.isBlank() && step.type == "assistant") return
 
+    // Collapse threshold — tool results and think blocks can be very long
+    val THRESHOLD = 220
+    val collapsible = displayContent.length > THRESHOLD &&
+                      step.type in listOf("tool_result", "think", "sequential_thinking")
+    // tool_result starts collapsed; think starts collapsed only when very long
+    val defaultExpanded = when {
+        step.type == "tool_result" && displayContent.length > THRESHOLD -> false
+        step.type in listOf("think", "sequential_thinking") && displayContent.length > 600 -> false
+        else -> true
+    }
+    var expanded by remember { mutableStateOf(defaultExpanded) }
+
+    // Compute what to show when collapsed
+    val firstLine = displayContent.lines().firstOrNull()?.take(120) ?: ""
+    val lineCount = displayContent.lines().size
+    val shownText = if (!expanded && collapsible) firstLine else displayContent
+
     val isUser = step.type == "user"
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start) {
-        Box(
+        Column(
             Modifier
-                .widthIn(max = 310.dp)
+                .widthIn(max = 320.dp)
                 .clip(RoundedCornerShape(10.dp))
                 .background(bg)
-                .padding(10.dp)
         ) {
+            // Main content
             Text(
-                text = if (step.type != "user") "$icon $displayContent" else displayContent,
+                text = if (step.type != "user") "$icon $shownText" else shownText,
                 color = textColor,
                 fontSize = 12.sp,
-                fontFamily = if (step.type in listOf("tool_result", "think")) FontFamily.Monospace else FontFamily.Default
+                fontFamily = if (step.type in listOf("tool_result", "think")) FontFamily.Monospace else FontFamily.Default,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
             )
+            // Expand / collapse toggle
+            if (collapsible) {
+                HorizontalDivider(color = bg.copy(alpha = 0f), thickness = 0.dp)
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { expanded = !expanded }
+                        .background(Color.Black.copy(alpha = 0.15f))
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        if (expanded) "▲ collapse" else "▼ show all  ($lineCount lines)",
+                        color = textColor.copy(alpha = 0.65f),
+                        fontSize = 9.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    if (!expanded) {
+                        Text(
+                            "${displayContent.length} chars",
+                            color = textColor.copy(alpha = 0.45f),
+                            fontSize = 9.sp
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -1796,14 +1882,69 @@ fun AgentFilesPane(vm: MainViewModel, context: Context) {
             }
         }
     } else {
-        // File tree view
+        // ── File tree with delete + rename ────────────────────────────────────
+        var deleteTarget by remember { mutableStateOf<File?>(null) }
+        var renameTarget by remember { mutableStateOf<File?>(null) }
+        var newNameInput by remember { mutableStateOf("") }
+
+        // ── Delete confirmation dialog ──────────────────────────────────────
+        deleteTarget?.let { tgt ->
+            AlertDialog(
+                onDismissRequest = { deleteTarget = null },
+                containerColor   = OllamaCard,
+                title = { Text("Delete ${if (tgt.isDirectory) "folder" else "file"}?", color = OllamaText, fontWeight = FontWeight.Bold) },
+                text  = { Text("\"${tgt.name}\" will be permanently deleted.", color = OllamaTextDim, fontSize = 13.sp) },
+                confirmButton = {
+                    Button(
+                        onClick = { vm.deleteFile(tgt); deleteTarget = null },
+                        colors  = ButtonDefaults.buttonColors(containerColor = OllamaRed)
+                    ) { Text("Delete", color = Color.White, fontWeight = FontWeight.Bold) }
+                },
+                dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("Cancel", color = OllamaTextDim) } }
+            )
+        }
+
+        // ── Rename dialog ───────────────────────────────────────────────────
+        renameTarget?.let { tgt ->
+            LaunchedEffect(tgt) { newNameInput = tgt.name }
+            AlertDialog(
+                onDismissRequest = { renameTarget = null },
+                containerColor   = OllamaCard,
+                title = { Text("Rename", color = OllamaText, fontWeight = FontWeight.Bold) },
+                text  = {
+                    OutlinedTextField(
+                        value = newNameInput,
+                        onValueChange = { newNameInput = it },
+                        label  = { Text("New name", color = OllamaTextDim) },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor   = OllamaGreen,
+                            unfocusedBorderColor = OllamaBorder,
+                            focusedLabelColor    = OllamaGreen,
+                            cursorColor          = OllamaGreen,
+                            focusedTextColor     = OllamaText,
+                            unfocusedTextColor   = OllamaText
+                        )
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick  = { vm.renameFile(tgt, newNameInput); renameTarget = null },
+                        enabled  = newNameInput.trim().isNotBlank() && newNameInput.trim() != tgt.name,
+                        colors   = ButtonDefaults.buttonColors(containerColor = OllamaGreen)
+                    ) { Text("Rename", color = OllamaBg, fontWeight = FontWeight.Bold) }
+                },
+                dismissButton = { TextButton(onClick = { renameTarget = null }) { Text("Cancel", color = OllamaTextDim) } }
+            )
+        }
+
         Column(Modifier.fillMaxSize()) {
             Row(
                 Modifier.fillMaxWidth().background(OllamaSurface).padding(horizontal = 12.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
             ) {
                 val parent = File(vm.agentWorkingDir).parentFile
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (parent != null) {
                         TextButton(onClick = { vm.updateAgentWorkingDir(parent.absolutePath) }, contentPadding = PaddingValues(0.dp)) {
                             Text("↑ Up", color = OllamaTextDim, fontSize = 12.sp)
@@ -1815,22 +1956,41 @@ fun AgentFilesPane(vm: MainViewModel, context: Context) {
                     Icon(Icons.Default.Refresh, null, tint = OllamaTextDim, modifier = Modifier.size(16.dp))
                 }
             }
+
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 4.dp)) {
                 items(vm.agentFileTree) { file ->
                     Row(
                         Modifier
                             .fillMaxWidth()
                             .clickable { vm.openFile(file) }
-                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                            .padding(start = 12.dp, end = 4.dp, top = 7.dp, bottom = 7.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text(if (file.isDirectory) "📂" else "📄", fontSize = 16.sp)
+                        Text(if (file.isDirectory) "📂" else "📄", fontSize = 15.sp)
                         Column(Modifier.weight(1f)) {
-                            Text(file.name, color = if (file.isDirectory) OllamaBlue else OllamaText, fontSize = 13.sp)
+                            Text(
+                                file.name,
+                                color = if (file.isDirectory) OllamaBlue else OllamaText,
+                                fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis
+                            )
                             if (file.isFile) Text(formatFileSize(file.length()), color = OllamaTextDim, fontSize = 10.sp)
                         }
-                        if (file.isDirectory) Icon(Icons.Default.ArrowForward, null, tint = OllamaTextDim, modifier = Modifier.size(14.dp))
+                        // ── Rename ──
+                        IconButton(
+                            onClick  = { renameTarget = file },
+                            modifier = Modifier.size(30.dp)
+                        ) {
+                            Icon(Icons.Default.Edit, "Rename", tint = OllamaTextDim, modifier = Modifier.size(15.dp))
+                        }
+                        // ── Delete ──
+                        IconButton(
+                            onClick  = { deleteTarget = file },
+                            modifier = Modifier.size(30.dp)
+                        ) {
+                            Icon(Icons.Default.Delete, "Delete", tint = OllamaRed.copy(alpha = 0.65f), modifier = Modifier.size(15.dp))
+                        }
+                        if (file.isDirectory) Icon(Icons.Default.ArrowForward, null, tint = OllamaTextDim, modifier = Modifier.size(13.dp))
                     }
                     HorizontalDivider(color = OllamaBorder, thickness = 0.5.dp)
                 }
