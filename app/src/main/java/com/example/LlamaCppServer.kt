@@ -5,8 +5,7 @@ import android.os.Environment
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.zip.ZipInputStream
-import java.util.concurrent.TimeUnit
+import java.util.zip.GZIPInputStream
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Manages the llama-server binary and process lifecycle
@@ -14,9 +13,9 @@ import java.util.concurrent.TimeUnit
 class LlamaCppServer(private val context: Context) {
 
     companion object {
-        const val BINARY_RELEASE = "b4623"
+        const val BINARY_RELEASE = "b9744"
         const val BINARY_URL =
-            "https://github.com/ggerganov/llama.cpp/releases/download/b$BINARY_RELEASE/llama-b$BINARY_RELEASE-bin-android-arm64-v8a.zip"
+            "https://github.com/ggml-org/llama.cpp/releases/download/$BINARY_RELEASE/llama-$BINARY_RELEASE-bin-android-arm64.tar.gz"
 
         val CURATED_GGUF_MODELS = listOf(
             GGUFModel("Qwen2.5-Coder 1.5B Q4",
@@ -58,7 +57,6 @@ class LlamaCppServer(private val context: Context) {
     fun scanLocalGGUFs(): List<File> {
         val found = mutableListOf<File>()
         found.addAll(modelsDir.walkTopDown().filter { it.extension == "gguf" }.toList())
-        // also scan common external paths
         val extPaths = listOf(
             Environment.getExternalStorageDirectory().absolutePath + "/Download",
             Environment.getExternalStorageDirectory().absolutePath + "/Documents",
@@ -72,7 +70,7 @@ class LlamaCppServer(private val context: Context) {
         return found.distinctBy { it.absolutePath }
     }
 
-    // ── Download binary ───────────────────────────────────────────────────────
+    // ── Download binary (tar.gz) ──────────────────────────────────────────────
     fun downloadBinary(
         url: String = BINARY_URL,
         onProgress: (Int, String) -> Unit,
@@ -83,35 +81,86 @@ class LlamaCppServer(private val context: Context) {
                 onProgress(0, "Connecting…")
                 val conn = URL(url).openConnection() as HttpURLConnection
                 conn.instanceFollowRedirects = true
+                conn.connectTimeout = 30_000
+                conn.readTimeout = 300_000
                 conn.connect()
-                val total = conn.contentLength
-                val zipStream = ZipInputStream(conn.inputStream.buffered())
-                var entry = zipStream.nextEntry
+
+                val total = conn.contentLengthLong
                 val binDir = File(context.filesDir, "bin").also { it.mkdirs() }
-                var found = false
-                while (entry != null) {
-                    val name = entry.name
-                    if (name.contains("llama-server") && !entry.isDirectory) {
-                        val out = binaryFile
-                        out.outputStream().use { os ->
-                            var downloaded = 0L
-                            val buf = ByteArray(8192)
-                            var n: Int
-                            while (zipStream.read(buf).also { n = it } != -1) {
-                                os.write(buf, 0, n)
-                                downloaded += n
-                                if (total > 0) onProgress((downloaded * 100 / total).toInt(), "Extracting…")
-                            }
-                        }
-                        out.setExecutable(true, false)
-                        found = true
-                        break
+
+                // Stream the .tar.gz and parse manually (no Apache Commons needed)
+                val gzip = GZIPInputStream(conn.inputStream.buffered(65536))
+
+                var serverFound = false
+                var libFound = false
+
+                // Parse TAR format manually
+                val headerBuf = ByteArray(512)
+                while (true) {
+                    var read = 0
+                    while (read < 512) {
+                        val n = gzip.read(headerBuf, read, 512 - read)
+                        if (n == -1) break
+                        read += n
                     }
-                    entry = zipStream.nextEntry
+                    if (read < 512) break
+
+                    // Check for end-of-archive (two zero blocks)
+                    if (headerBuf.all { it == 0.toByte() }) break
+
+                    // Parse name (bytes 0-99) and size (bytes 124-135, octal)
+                    val name = String(headerBuf, 0, 100).trimEnd('\u0000').trim()
+                    val sizeStr = String(headerBuf, 124, 12).trimEnd('\u0000').trim()
+                    val fileSize = if (sizeStr.isEmpty()) 0L else sizeStr.toLong(8)
+
+                    val isLlamaServer = name.endsWith("llama-server") && !name.endsWith("/")
+                    val isLibImpl    = name.contains("libllama-server-impl.so")
+
+                    if (isLlamaServer || isLibImpl) {
+                        val dest = if (isLlamaServer) binaryFile else File(binDir, "libllama-server-impl.so")
+                        onProgress(0, "Extracting ${dest.name}…")
+                        var written = 0L
+                        val buf = ByteArray(65536)
+                        val out = dest.outputStream()
+                        while (written < fileSize) {
+                            val toRead = minOf(buf.size.toLong(), fileSize - written).toInt()
+                            val n = gzip.read(buf, 0, toRead)
+                            if (n == -1) break
+                            out.write(buf, 0, n)
+                            written += n
+                            if (total > 0) onProgress((written * 100 / total).toInt(), "Extracting ${dest.name}…")
+                        }
+                        out.flush(); out.close()
+                        dest.setExecutable(true, false)
+
+                        // Skip padding to next 512-byte block
+                        val pad = ((fileSize + 511) / 512 * 512 - fileSize).toInt()
+                        if (pad > 0) gzip.skip(pad.toLong())
+
+                        if (isLlamaServer) serverFound = true
+                        if (isLibImpl)     libFound = true
+                    } else {
+                        // Skip file data + padding
+                        val toSkip = (fileSize + 511) / 512 * 512
+                        var skipped = 0L
+                        while (skipped < toSkip) {
+                            val s = gzip.skip(toSkip - skipped)
+                            if (s <= 0) break
+                            skipped += s
+                        }
+                    }
+
+                    if (serverFound && libFound) break
                 }
+
+                gzip.close()
                 conn.disconnect()
-                if (found) onDone(true, "llama-server installed ✅")
-                else onDone(false, "llama-server binary not found in ZIP")
+
+                when {
+                    serverFound -> onDone(true, "llama-server $BINARY_RELEASE installed ✅" +
+                        if (!libFound) " (libllama-server-impl.so not found — may still work)" else "")
+                    else        -> onDone(false, "llama-server binary not found in archive")
+                }
             } catch (e: Exception) {
                 onDone(false, "Download failed: ${e.message}")
             }
