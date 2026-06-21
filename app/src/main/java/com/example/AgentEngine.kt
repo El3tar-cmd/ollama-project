@@ -48,6 +48,7 @@ Format (one tool per block):
 ═══ FILE TOOLS ═══
 - list_dir:    {"name":"list_dir","path":"WORKING_DIR"}   (alias: list)
 - read_file:   {"name":"read_file","path":"WORKING_DIR/file.txt"}
+- read_lines:  {"name":"read_lines","path":"WORKING_DIR/file.txt","start":1,"end":50}
 - write_file:  {"name":"write_file","path":"WORKING_DIR/file.txt","content":"full content here"}
 - append_file: {"name":"append_file","path":"WORKING_DIR/file.txt","content":"text to append"}
 - edit_file:   {"name":"edit_file","path":"WORKING_DIR/file.txt","old":"exact old text","new":"new text"}
@@ -78,6 +79,7 @@ RULES:
 7. If a tool fails, reflect on the error and retry with a fix.
 8. NEVER write placeholder/fake content — always real content.
 9. ALWAYS output a ```tool block — never just describe what to do.
+10. For large files, prefer read_lines with a range (e.g., start:1 end:50) over read_file to avoid huge output.
 
 Platform: Android arm64 | Shell: /system/bin/sh
 """.trimIndent()
@@ -164,6 +166,7 @@ Platform: Android arm64 | Shell: /system/bin/sh
             "list_dir", "list"
                           -> toolListDir(tool.optString("path", tool.optString("dir", workingDir)))
             "read_file"   -> toolReadFile(tool.optString("path", ""))
+            "read_lines"  -> toolReadLines(tool.optString("path", ""), tool.optInt("start", 1), tool.optInt("end", 50))
             "write_file"  -> toolWriteFile(tool.optString("path", ""), tool.optString("content", ""))
             "append_file" -> toolAppendFile(tool.optString("path", ""), tool.optString("content", ""))
             "edit_file"   -> toolEditFile(tool.optString("path", ""), tool.optString("old", ""), tool.optString("new", ""))
@@ -219,6 +222,22 @@ Platform: Android arm64 | Shell: /system/bin/sh
             AgentStep("tool_result", "📄 $path ($lines lines, ${formatSize(file.length())})\n```\n$content\n```")
         } catch (e: Exception) {
             AgentStep("tool_result", "❌ read_file error: ${e.message}", isError = true)
+        }
+    }
+
+    private fun toolReadLines(path: String, start: Int, end: Int): AgentStep {
+        return try {
+            val file = File(path)
+            if (!file.exists()) return AgentStep("tool_result", "❌ Not found: $path", isError = true)
+            val lines = file.readLines()
+            val total = lines.size
+            val s = (start - 1).coerceIn(0, total)
+            val e = end.coerceIn(s, total)
+            val slice = lines.subList(s, e)
+            val out = slice.mapIndexed { i, l -> "${s + i + 1}: $l" }.joinToString("\n")
+            AgentStep("tool_result", "📄 $path (lines $start–${s + slice.size} of $total)\n$out")
+        } catch (ex: Exception) {
+            AgentStep("tool_result", "❌ read_lines error: ${ex.message}", isError = true)
         }
     }
 
