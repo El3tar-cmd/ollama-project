@@ -231,6 +231,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     private fun startApiWatcher() {
         viewModelScope.launch(Dispatchers.IO) {
             while (true) {
+                // ── Ollama health ────────────────────────────────────────────────────
                 val base = "http://$hostUrlState"
                 api.checkRunning(base) { online, msg ->
                     apiOnline = online
@@ -246,6 +247,17 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
                             }
                         }
                     }
+                }
+                // ── llama.cpp health (only while service is active) ──────────────────
+                if (llamaServiceActive || LlamaService.isRunning) {
+                    LlamaCppApi().checkHealth("http://127.0.0.1:$llamaPort") { ok, _ ->
+                        llamaApiOnline = ok
+                        if (!ok && LlamaService.isRunning == false) {
+                            llamaServiceActive = false
+                        }
+                    }
+                } else {
+                    llamaApiOnline = false
                 }
                 delay(3000)
             }
@@ -318,6 +330,8 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         if (LlamaService.isRunning) {
             context.stopService(Intent(context, LlamaService::class.java))
             llamaServiceActive = false
+            llamaApiOnline = false
+            llamaHealthStatus = ""
         } else {
             val model = llamaSelectedModel ?: run {
                 Toast.makeText(context, "Select a GGUF model first", Toast.LENGTH_SHORT).show()
@@ -332,10 +346,32 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
                 putExtra("threads", llamaThreads)
                 putExtra("batch_size", llamaBatchSize)
             })
-            viewModelScope.launch(Dispatchers.Main) {
-                delay(1500)
-                llamaServiceActive = LlamaService.isRunning
-                if (llamaServiceActive) checkLlamaHealth()
+            llamaServiceActive = true
+            llamaHealthStatus = "⏳ Starting server…"
+            // Poll until the HTTP server is up (up to 30s)
+            viewModelScope.launch(Dispatchers.IO) {
+                repeat(30) { attempt ->
+                    delay(1000)
+                    if (!LlamaService.isRunning) {
+                        viewModelScope.launch(Dispatchers.Main) {
+                            llamaServiceActive = false
+                            llamaApiOnline = false
+                            llamaHealthStatus = "❌ Server process exited — check Logs for details"
+                        }
+                        return@launch
+                    }
+                    LlamaCppApi().checkHealth("http://127.0.0.1:$llamaPort") { ok, msg ->
+                        viewModelScope.launch(Dispatchers.Main) {
+                            if (ok) {
+                                llamaApiOnline = true
+                                llamaHealthStatus = "✅ Server running on port $llamaPort"
+                            } else if (attempt == 29) {
+                                llamaHealthStatus = "❌ Timeout — $msg"
+                            }
+                        }
+                    }
+                    if (llamaApiOnline) return@launch
+                }
             }
         }
     }
@@ -853,7 +889,10 @@ fun MainAppScreen() {
                     }
                 },
                 actions = {
-                    StatusPill(online = vm.apiOnline)
+                    StatusPill(
+                        online = if (vm.activeBackend == "llamacpp") vm.llamaApiOnline else vm.apiOnline,
+                        label  = if (vm.activeBackend == "llamacpp") "llama.cpp" else null
+                    )
                     Spacer(Modifier.width(12.dp))
                 }
             )
@@ -969,7 +1008,7 @@ fun MainAppScreen() {
 // Shared UI components
 // ─────────────────────────────────────────────
 @Composable
-fun StatusPill(online: Boolean) {
+fun StatusPill(online: Boolean, label: String? = null) {
     Row(
         Modifier
             .clip(RoundedCornerShape(12.dp))
@@ -979,7 +1018,11 @@ fun StatusPill(online: Boolean) {
         horizontalArrangement = Arrangement.spacedBy(5.dp)
     ) {
         Box(Modifier.size(7.dp).clip(CircleShape).background(if (online) OllamaGreen else OllamaRed))
-        Text(if (online) "Online" else "Offline", color = if (online) OllamaGreen else OllamaRed, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        val statusText = if (label != null)
+            if (online) "$label ●" else "$label ○"
+        else
+            if (online) "Online" else "Offline"
+        Text(statusText, color = if (online) OllamaGreen else OllamaRed, fontSize = 11.sp, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -1272,7 +1315,7 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
                 Column {
                     Text("llama-server binary", color = OllamaText, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     Text(
-                        if (vm.llamaBinaryInstalled) "✓ Installed (b${LlamaCppServer.BINARY_RELEASE})"
+                        if (vm.llamaBinaryInstalled) "✓ Installed (${LlamaCppServer.BINARY_RELEASE})"
                         else "✗ Not installed",
                         color = if (vm.llamaBinaryInstalled) OllamaGreen else OllamaRed, fontSize = 12.sp
                     )
