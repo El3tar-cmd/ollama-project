@@ -46,9 +46,10 @@ class OllamaAuth(private val context: Context) {
         savePubKey(pubB64, deviceName)
         savePrivKey(rawPriv, rawPub, typeBytes, pubWire, deviceName)
 
+        // NO_PADDING strips trailing '=' — Ollama's connect page rejects padded base64
         val keyParam = Base64.encodeToString(
             "ssh-ed25519 $pubB64".toByteArray(Charsets.US_ASCII),
-            Base64.NO_WRAP
+            Base64.NO_WRAP or Base64.NO_PADDING
         )
         return "https://ollama.com/connect?name=${deviceName.replace(" ", "%20")}&key=$keyParam"
     }
