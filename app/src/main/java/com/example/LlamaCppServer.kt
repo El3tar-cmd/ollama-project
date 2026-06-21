@@ -130,11 +130,14 @@ class LlamaCppServer(private val context: Context) {
                 val gzip = GZIPInputStream(conn.inputStream.buffered(65536))
 
                 var serverFound = false
-                var libFound = false
+                val extractedLibs = mutableListOf<String>()
+                var bytesRead = 0L
 
-                // Parse TAR format manually
+                // Parse TAR format manually — extract binary + ALL .so libraries
                 val headerBuf = ByteArray(512)
                 while (true) {
+                    if (cancelDownload) { onDone(false, "❌ Download cancelled"); break }
+
                     var read = 0
                     while (read < 512) {
                         val n = gzip.read(headerBuf, read, 512 - read)
@@ -142,43 +145,41 @@ class LlamaCppServer(private val context: Context) {
                         read += n
                     }
                     if (read < 512) break
+                    if (headerBuf.all { it == 0.toByte() }) break   // end-of-archive
 
-                    // Check for end-of-archive (two zero blocks)
-                    if (headerBuf.all { it == 0.toByte() }) break
-
-                    // Parse name (bytes 0-99) and size (bytes 124-135, octal)
-                    val name = String(headerBuf, 0, 100).trimEnd('\u0000').trim()
-                    val sizeStr = String(headerBuf, 124, 12).trimEnd('\u0000').trim()
+                    val name     = String(headerBuf, 0, 100).trimEnd('\u0000').trim()
+                    val sizeStr  = String(headerBuf, 124, 12).trimEnd('\u0000').trim()
                     val fileSize = if (sizeStr.isEmpty()) 0L else sizeStr.toLong(8)
+                    val typeflag = headerBuf[156].toInt().toChar()
 
-                    val isLlamaServer = name.endsWith("llama-server") && !name.endsWith("/")
-                    val isLibImpl    = name.contains("libllama-server-impl.so")
+                    val baseName      = name.substringAfterLast('/')
+                    val isLlamaServer = baseName == "llama-server" && typeflag != '5'
+                    val isSharedLib   = baseName.endsWith(".so") && typeflag != '5'
 
-                    if (isLlamaServer || isLibImpl) {
-                        val dest = if (isLlamaServer) binaryFile else File(binDir, "libllama-server-impl.so")
-                        onProgress(0, "Extracting ${dest.name}…")
+                    if (isLlamaServer || isSharedLib) {
+                        val dest = if (isLlamaServer) binaryFile else File(binDir, baseName)
+                        onProgress(-1, "Extracting $baseName…")
                         var written = 0L
                         val buf = ByteArray(65536)
-                        val out = dest.outputStream()
-                        while (written < fileSize) {
-                            val toRead = minOf(buf.size.toLong(), fileSize - written).toInt()
-                            val n = gzip.read(buf, 0, toRead)
-                            if (n == -1) break
-                            out.write(buf, 0, n)
-                            written += n
-                            if (total > 0) onProgress((written * 100 / total).toInt(), "Extracting ${dest.name}…")
+                        dest.outputStream().use { out ->
+                            while (written < fileSize) {
+                                val toRead = minOf(buf.size.toLong(), fileSize - written).toInt()
+                                val n = gzip.read(buf, 0, toRead)
+                                if (n == -1) break
+                                out.write(buf, 0, n)
+                                written += n
+                                bytesRead += n
+                                if (total > 0) onProgress((bytesRead * 100 / total).toInt().coerceAtMost(99), "Extracting $baseName…")
+                            }
                         }
-                        out.flush(); out.close()
                         dest.setExecutable(true, false)
 
-                        // Skip padding to next 512-byte block
                         val pad = ((fileSize + 511) / 512 * 512 - fileSize).toInt()
                         if (pad > 0) gzip.skip(pad.toLong())
 
                         if (isLlamaServer) serverFound = true
-                        if (isLibImpl)     libFound = true
+                        else extractedLibs.add(baseName)
                     } else {
-                        // Skip file data + padding
                         val toSkip = (fileSize + 511) / 512 * 512
                         var skipped = 0L
                         while (skipped < toSkip) {
@@ -187,16 +188,14 @@ class LlamaCppServer(private val context: Context) {
                             skipped += s
                         }
                     }
-
-                    if (serverFound && libFound) break
                 }
 
                 gzip.close()
                 conn.disconnect()
 
                 when {
-                    serverFound -> onDone(true, "llama-server $BINARY_RELEASE installed ✅" +
-                        if (!libFound) " (libllama-server-impl.so not found — may still work)" else "")
+                    serverFound -> onDone(true,
+                        "llama-server $BINARY_RELEASE installed ✅\nLibraries: ${if (extractedLibs.isEmpty()) "none (static binary)" else extractedLibs.joinToString()}")
                     else        -> onDone(false, "llama-server binary not found in archive")
                 }
             } catch (e: Exception) {
