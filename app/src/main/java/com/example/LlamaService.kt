@@ -95,7 +95,9 @@ class LlamaService : Service() {
     )
 
     private fun buildEnv(): Map<String, String> {
+        val binDir = java.io.File(filesDir, "bin").absolutePath
         val ldPath = listOf(
+            binDir,                                      // libllama-server-impl.so lives here
             applicationInfo.nativeLibraryDir,
             "/system/lib64",
             "/apex/com.android.runtime/lib64",
