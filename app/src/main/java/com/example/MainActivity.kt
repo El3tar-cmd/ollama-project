@@ -465,28 +465,59 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     fun sendChatMessage(context: Context) {
         val text = chatMessageInput.trim()
         if (text.isEmpty() || selectedModelChat.isEmpty()) return
-        if (!apiOnline) { Toast.makeText(context, "Server offline", Toast.LENGTH_SHORT).show(); return }
-        chatHistory.add(ChatMessage("user", text)); chatMessageInput = ""
+
+        // Detect cloud models by the ':cloud' suffix (e.g. glm-4.7:cloud)
+        val isCloud = selectedModelChat.endsWith(":cloud")
+
+        when {
+            isCloud && cloudApiKey.isBlank() -> {
+                Toast.makeText(
+                    context,
+                    "Cloud model needs an API key — add it in Settings → Cloud Auth",
+                    Toast.LENGTH_LONG
+                ).show()
+                return
+            }
+            !isCloud && !apiOnline -> {
+                Toast.makeText(context, "Server offline", Toast.LENGTH_SHORT).show()
+                return
+            }
+        }
+
+        chatHistory.add(ChatMessage("user", text))
+        chatMessageInput = ""
         isGeneratingResponse = true
         val idx = chatHistory.size
         chatHistory.add(ChatMessage("assistant", ""))
         var response = ""
-        // Drop leading assistant messages (e.g. the welcome bubble) — LLMs expect
-        // conversation to start with a user turn, and some backends reject otherwise.
+
+        // Drop leading assistant messages — LLMs expect conversation to start with user turn
         val apiMessages = chatHistory.subList(0, idx)
             .dropWhile { it.role != "user" }
             .toList()
-        api.chatStream("http://$hostUrlState", selectedModelChat, apiMessages,
-            onTokenGenerated = { token -> viewModelScope.launch(Dispatchers.Main) { response += token; chatHistory[idx] = ChatMessage("assistant", response) } },
-            onComplete = { ok, msg -> viewModelScope.launch(Dispatchers.Main) {
+
+        val onToken: (String) -> Unit = { token ->
+            viewModelScope.launch(Dispatchers.Main) {
+                response += token
+                chatHistory[idx] = ChatMessage("assistant", response)
+            }
+        }
+        val onDone: (Boolean, String) -> Unit = { ok, msg ->
+            viewModelScope.launch(Dispatchers.Main) {
                 isGeneratingResponse = false
-                if (!ok) {
-                    chatHistory[idx] = ChatMessage("assistant", "⚠️ $msg")
-                } else if (response.isBlank()) {
-                    chatHistory[idx] = ChatMessage("assistant", "⚠️ Empty response from server. Check Logs tab for details.")
+                when {
+                    !ok          -> chatHistory[idx] = ChatMessage("assistant", "⚠️ $msg")
+                    response.isBlank() -> chatHistory[idx] = ChatMessage("assistant", "⚠️ Empty response. Check Logs tab.")
                 }
-            }}
-        )
+            }
+        }
+
+        if (isCloud) {
+            // Route directly to https://ollama.com/api/chat — bypasses the local binary
+            api.cloudChatStream(cloudApiKey, selectedModelChat, apiMessages, onToken, onDone)
+        } else {
+            api.chatStream("http://$hostUrlState", selectedModelChat, apiMessages, onToken, onDone)
+        }
     }
 
     // ── Agent ─────────────────────────────────────────────────────────────
@@ -934,8 +965,9 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
         }
 
         // Cloud auth
-        SectionCard("CLOUD AUTH", "Sign in to use Ollama cloud models") {
-            // Status badge
+        SectionCard("CLOUD AUTH", "Required for cloud models (e.g. glm-4.7:cloud)") {
+
+            // ── Status badge ───────────────────────────────────────────────
             if (vm.isLoggedIn) {
                 Row(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
@@ -943,55 +975,123 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(Icons.Default.AccountCircle, null, tint = OllamaGreen, modifier = Modifier.size(18.dp))
-                    Text(
-                        if (vm.cloudApiKey.isNotBlank()) "Authenticated with API key" else "Authenticated via Ollama",
-                        color = OllamaGreen, fontWeight = FontWeight.Bold, fontSize = 13.sp,
-                        modifier = Modifier.weight(1f)
-                    )
+                    Icon(Icons.Default.CheckCircle, null, tint = OllamaGreen, modifier = Modifier.size(18.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            if (vm.cloudApiKey.isNotBlank()) "✅ API key active" else "Logged in (no API key yet)",
+                            color = OllamaGreen, fontWeight = FontWeight.Bold, fontSize = 13.sp
+                        )
+                        if (vm.cloudApiKey.isNotBlank())
+                            Text("Cloud models route directly to Ollama Cloud", color = OllamaGreen.copy(alpha = 0.7f), fontSize = 10.sp)
+                        else
+                            Text("Add an API key below to use cloud models", color = OllamaRed.copy(alpha = 0.8f), fontSize = 10.sp)
+                    }
                 }
             }
 
-            // Status/feedback message
             if (vm.cloudAuthStatus.isNotBlank()) {
                 Text(vm.cloudAuthStatus, color = if (vm.cloudAuthStatus.startsWith("✅")) OllamaGreen else OllamaRed, fontSize = 12.sp)
             }
 
-            // Sign-in button row
+            // ── API Key — Primary / Recommended ──────────────────────────
+            Column(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+                    .background(OllamaCardAlt).padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text("API Key", color = OllamaText, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        Text("Recommended — works instantly", color = OllamaGreen, fontSize = 10.sp)
+                    }
+                    TextButton(
+                        onClick = {
+                            try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://ollama.com/settings/api"))) }
+                            catch (_: Exception) {}
+                        },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text("Get Key →", color = OllamaGreen, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+                var keyVisible by remember { mutableStateOf(false) }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OllamaTextField(
+                        value = vm.manualApiKeyInput,
+                        onValueChange = { vm.manualApiKeyInput = it },
+                        placeholder = "ollama_…",
+                        modifier = Modifier.weight(1f),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = { vm.validateAndSaveApiKey(context, vm.manualApiKeyInput) })
+                    )
+                    Button(
+                        onClick = { vm.validateAndSaveApiKey(context, vm.manualApiKeyInput) },
+                        enabled = vm.manualApiKeyInput.isNotBlank() && !vm.isValidatingKey,
+                        colors = ButtonDefaults.buttonColors(containerColor = OllamaGreen, contentColor = OllamaBg)
+                    ) {
+                        if (vm.isValidatingKey) CircularProgressIndicator(Modifier.size(14.dp), color = OllamaBg, strokeWidth = 2.dp)
+                        else Text("Save", fontWeight = FontWeight.Bold)
+                    }
+                }
+                if (vm.cloudApiKey.isNotBlank()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(Icons.Default.CheckCircle, null, tint = OllamaGreen, modifier = Modifier.size(12.dp))
+                        Text("Key saved  •  ${vm.cloudApiKey.take(8)}…", color = OllamaTextDim, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                    }
+                }
+            }
+
+            // ── OR divider ─────────────────────────────────────────────────
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                HorizontalDivider(Modifier.weight(1f), color = OllamaBorder)
+                Text("OR", color = OllamaTextDim, fontSize = 10.sp, letterSpacing = 1.sp)
+                HorizontalDivider(Modifier.weight(1f), color = OllamaBorder)
+            }
+
+            // ── Browser login (SSH key flow) ───────────────────────────────
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Button(
                     onClick = { vm.triggerLogin(context) },
                     modifier = Modifier.weight(1f),
                     enabled = !vm.isSigningIn,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (vm.isLoggedIn) OllamaCard else OllamaGreen,
-                        contentColor   = if (vm.isLoggedIn) OllamaTextDim else OllamaBg
+                        containerColor = if (vm.isLoggedIn) OllamaCard else OllamaSurface,
+                        contentColor   = if (vm.isLoggedIn) OllamaTextDim else OllamaText
                     ),
-                    border = if (vm.isLoggedIn) androidx.compose.foundation.BorderStroke(1.dp, OllamaBorder) else null
+                    border = BorderStroke(1.dp, OllamaBorder)
                 ) {
                     if (vm.isSigningIn) {
-                        CircularProgressIndicator(Modifier.size(14.dp), color = OllamaBg, strokeWidth = 2.dp)
+                        CircularProgressIndicator(Modifier.size(14.dp), color = OllamaText, strokeWidth = 2.dp)
                         Spacer(Modifier.width(6.dp))
                         Text("Waiting…")
                     } else {
                         Icon(Icons.Default.AccountCircle, null, Modifier.size(16.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text(if (vm.isLoggedIn) "Re-login" else "Login", fontWeight = FontWeight.Bold)
+                        Text(if (vm.isLoggedIn) "Re-login" else "Login via Browser", fontWeight = FontWeight.SemiBold)
                     }
                 }
                 if (vm.isLoggedIn) {
                     OutlinedButton(
                         onClick = { vm.triggerLogout(context) },
                         modifier = Modifier.weight(1f),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, OllamaBorder)
+                        border = BorderStroke(1.dp, OllamaBorder)
                     ) { Text("Logout", color = OllamaTextDim) }
                 }
             }
-
             Text(
-                "Tap Login — a browser page will open so you can authorize your device. " +
-                "After approving, tap \"Done\" in the dialog that appears here.",
-                color = OllamaTextDim, fontSize = 11.sp
+                "Browser login registers an SSH key — requires newer Ollama binary for cloud models.\nAPI key above works immediately.",
+                color = OllamaTextDim, fontSize = 10.sp
             )
         }
         Spacer(Modifier.height(8.dp))
