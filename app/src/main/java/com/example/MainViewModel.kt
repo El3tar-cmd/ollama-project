@@ -20,6 +20,7 @@ import com.example.data.model.ChatMessage
 import com.example.data.model.OllamaModel
 import com.example.data.model.ShellLine
 import com.example.data.model.ShellLineType
+import com.example.ui.editor.getLanguageFromExtension
 
 class MainViewModel(private val ctx: Context) : ViewModel() {
     private val api      = OllamaApi()
