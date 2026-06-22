@@ -715,7 +715,6 @@ Platform: Android arm64 | Shell: /system/bin/sh
         maxSteps: Int = 25,
         cloudApiKey: String = "",
         backend: String = "ollama",
-        llamaCppBaseUrl: String = "http://127.0.0.1:8080",
         onAskUser: (suspend (String) -> String)? = null,
         onStep: suspend (AgentStep) -> Unit
     ) {
@@ -733,7 +732,6 @@ Platform: Android arm64 | Shell: /system/bin/sh
         messages.add(ChatMessage("user", userTask))
 
         val ollamaApi   = OllamaApi()
-        val llamaApi    = LlamaCppApi()
         val isCloud     = model.endsWith(":cloud")
         var steps = 0
         var consecutiveErrors = 0
@@ -755,8 +753,6 @@ Platform: Android arm64 | Shell: /system/bin/sh
                     val call = when {
                         isCloud && cloudApiKey.isNotBlank() ->
                             ollamaApi.cloudChatStream(cloudApiKey, model, messages, onToken, onDone)
-                        backend == "llamacpp" ->
-                            llamaApi.chatStream(llamaCppBaseUrl, messages, onToken = onToken, onComplete = onDone)
                         else ->
                             ollamaApi.chatStream(baseUrl, model, messages, onToken, onDone)
                     }
