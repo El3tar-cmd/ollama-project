@@ -28,46 +28,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     val executor         = OllamaExecutor(ctx)
     val agentEngine      = AgentEngine(ctx)
 
-    // Server config
-    init {
-        llamaGpuLayers    = settingsPrefs.getInt("llama_gpu_layers", 99)
-        llamaContextSize  = settingsPrefs.getInt("llama_ctx", 4096)
-        llamaThreads      = settingsPrefs.getInt("llama_threads", 4)
-        llamaBatchSize    = settingsPrefs.getInt("llama_batch", 512)
-        llamaTemperature  = settingsPrefs.getFloat("llama_temp", 0.7f)
-        llamaPort         = settingsPrefs.getString("llama_port", "8080") ?: "8080"
-        selectedModelChat = settingsPrefs.getString("sel_model_chat", "") ?: ""
-        agentModel        = settingsPrefs.getString("agent_model", "") ?: ""
-        viewModelScope.launch {
-            kotlinx.coroutines.flow.merge(
-                snapshotFlow { llamaGpuLayers }.drop(1),
-                snapshotFlow { llamaContextSize }.drop(1),
-                snapshotFlow { llamaThreads }.drop(1),
-                snapshotFlow { llamaBatchSize }.drop(1),
-                snapshotFlow { llamaTemperature }.drop(1)
-            ).collect { saveSettings() }
-        }
-        viewModelScope.launch {
-            kotlinx.coroutines.flow.merge(
-                snapshotFlow { llamaPort }.drop(1),
-                snapshotFlow { selectedModelChat }.drop(1),
-                snapshotFlow { agentModel }.drop(1)
-            ).collect { saveSettings() }
-        }
-    }
 
-    private fun saveSettings() {
-        settingsPrefs.edit()
-            .putInt("llama_gpu_layers", llamaGpuLayers)
-            .putInt("llama_ctx",        llamaContextSize)
-            .putInt("llama_threads",    llamaThreads)
-            .putInt("llama_batch",      llamaBatchSize)
-            .putFloat("llama_temp",     llamaTemperature)
-            .putString("llama_port",    llamaPort)
-            .putString("sel_model_chat",selectedModelChat)
-            .putString("agent_model",   agentModel)
-            .apply()
-    }
 
     var hostUrlState     by mutableStateOf("127.0.0.1:11434")
     var originsState     by mutableStateOf("*")
@@ -249,6 +210,22 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     private val prefs = ctx.getSharedPreferences("ollama_prefs", Context.MODE_PRIVATE)
 
     init {
+        // Load persisted settings
+        llamaGpuLayers    = settingsPrefs.getInt("llama_gpu_layers", 99)
+        llamaContextSize  = settingsPrefs.getInt("llama_ctx", 4096)
+        llamaThreads      = settingsPrefs.getInt("llama_threads", 4)
+        llamaBatchSize    = settingsPrefs.getInt("llama_batch", 512)
+        llamaTemperature  = settingsPrefs.getFloat("llama_temp", 0.7f)
+        llamaPort         = settingsPrefs.getString("llama_port", "8080") ?: "8080"
+        selectedModelChat = settingsPrefs.getString("sel_model_chat", "") ?: ""
+        agentModel        = settingsPrefs.getString("agent_model", "") ?: ""
+        // Periodic auto-save every 3 seconds
+        viewModelScope.launch(Dispatchers.IO) {
+            while (true) {
+                kotlinx.coroutines.delay(3000)
+                withContext(Dispatchers.Main) { saveSettings() }
+            }
+        }
         cloudApiKey = prefs.getString("cloud_api_key", "") ?: ""
         isLoggedIn  = cloudApiKey.isNotBlank()
         checkBinaryInstalled()
@@ -830,6 +807,19 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
                 withContext(Dispatchers.Main) { shellLines.add(ShellLine("❌ ${e.message}", ShellLineType.ERROR)) }
             }
         }
+    }
+
+    private fun saveSettings() {
+        settingsPrefs.edit()
+            .putInt("llama_gpu_layers", llamaGpuLayers)
+            .putInt("llama_ctx",        llamaContextSize)
+            .putInt("llama_threads",    llamaThreads)
+            .putInt("llama_batch",      llamaBatchSize)
+            .putFloat("llama_temp",     llamaTemperature)
+            .putString("llama_port",    llamaPort)
+            .putString("sel_model_chat",selectedModelChat)
+            .putString("agent_model",   agentModel)
+            .apply()
     }
 
     fun clearLogs() { synchronized(OllamaService.logBuffer) { OllamaService.logBuffer.clear() }; liveLogs.clear() }
