@@ -52,7 +52,7 @@ class MlcEngine(private val context: Context) {
     // ── Load a model into the engine ──────────────────────────────────────────
     fun loadModel(modelDir: File, onLog: (String) -> Unit) {
         onLog("⚠️ $MLC_UNAVAILABLE")
-        onLog("💡 Switch to Ollama backend in Settings to use local models.")
+        onLog("❌ Switch to Ollama backend in Settings to run local models.")
     }
 
     fun unloadModel() {
