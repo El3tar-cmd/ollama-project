@@ -2,6 +2,8 @@ package com.example.ui.terminal
 
 import android.content.Context
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -30,6 +32,12 @@ import androidx.compose.ui.unit.sp
 import com.example.MainViewModel
 import com.example.ui.theme.*
 
+fun formatFileSize(bytes: Long): String = when {
+    bytes < 1024        -> "${bytes}B"
+    bytes < 1048576     -> "${bytes / 1024}KB"
+    else                -> String.format("%.1fMB", bytes / 1048576.0)
+}
+
 private enum class TerminalTab { DAEMON, WORKSPACE }
 
 @Composable
@@ -38,41 +46,39 @@ fun TerminalScreen(vm: MainViewModel, context: Context) {
 
     Column(Modifier.fillMaxSize()) {
 
-        // ── Header bar with tabs ──────────────────────────────────────────────
+        // ── Tab bar ─────────────────────────────────────────────────────────
         Row(
-            Modifier
-                .fillMaxWidth()
-                .background(OllamaSurface)
-                .padding(horizontal = 12.dp),
+            Modifier.fillMaxWidth().background(OllamaSurface),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Row {
                 TerminalTab.values().forEach { tab ->
                     val selected = activeTab == tab
-                    val label = when (tab) {
-                        TerminalTab.DAEMON    -> "DAEMON LOGS"
-                        TerminalTab.WORKSPACE -> "WORKSPACE"
-                    }
+                    val label    = if (tab == TerminalTab.DAEMON) "DAEMON LOGS" else "WORKSPACE"
+                    val interactionSource = remember { MutableInteractionSource() }
                     Box(
                         Modifier
-                            .padding(end = 2.dp)
                             .clip(RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp))
                             .background(if (selected) TerminalBg else Color.Transparent)
+                            .clickable(
+                                interactionSource = interactionSource,
+                                indication = null
+                            ) { activeTab = tab }
                     ) {
-                        Text(
-                            label,
-                            color = if (selected) OllamaGreen else OllamaTextDim,
-                            fontSize = 10.sp,
-                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                            fontFamily = FontFamily.Monospace,
-                            letterSpacing = 0.8.sp,
-                            modifier = Modifier
-                                .clickableNoRipple { activeTab = tab }
-                                .padding(horizontal = 12.dp, vertical = 10.dp)
-                        )
-                        if (selected) {
-                            Box(Modifier.fillMaxWidth().height(2.dp).background(OllamaGreen).align(Alignment.BottomCenter))
+                        Column {
+                            Text(
+                                label,
+                                color = if (selected) OllamaGreen else OllamaTextDim,
+                                fontSize = 10.sp,
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                fontFamily = FontFamily.Monospace,
+                                letterSpacing = 0.8.sp,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                            )
+                            if (selected) {
+                                Box(Modifier.fillMaxWidth().height(2.dp).background(OllamaGreen))
+                            }
                         }
                     }
                 }
@@ -80,7 +86,7 @@ fun TerminalScreen(vm: MainViewModel, context: Context) {
             if (activeTab == TerminalTab.DAEMON) {
                 TextButton(
                     onClick = { vm.clearLogs() },
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
                 ) { Text("Clear", color = OllamaRed, fontSize = 11.sp) }
             }
         }
@@ -95,15 +101,15 @@ fun TerminalScreen(vm: MainViewModel, context: Context) {
 }
 
 @Composable
-private fun DaemonLogsPane(vm: MainViewModel) {
-    val listState = rememberLazyListState()
+private fun ColumnScope.DaemonLogsPane(vm: MainViewModel) {
+    val listState    = rememberLazyListState()
     LaunchedEffect(vm.liveLogs.size) {
         if (vm.liveLogs.isNotEmpty()) listState.animateScrollToItem(vm.liveLogs.size - 1)
     }
 
-    // Prompt line at top showing which backend
-    val backendLabel = if (vm.activeBackend == "llamacpp") "llama.cpp" else "ollama"
-    val isOnline     = if (vm.activeBackend == "llamacpp") vm.llamaApiOnline else vm.apiOnline
+    val isLlama   = vm.activeBackend == "llamacpp"
+    val isOnline  = if (isLlama) vm.llamaApiOnline else vm.apiOnline
+    val backend   = if (isLlama) "llama.cpp" else "ollama"
 
     Row(
         Modifier.fillMaxWidth().background(Color(0xFF0A1A0A)).padding(horizontal = 12.dp, vertical = 6.dp),
@@ -112,23 +118,22 @@ private fun DaemonLogsPane(vm: MainViewModel) {
     ) {
         Box(Modifier.size(6.dp).clip(RoundedCornerShape(3.dp))
             .background(if (isOnline) OllamaGreen else OllamaRed))
-        Text("$backendLabel daemon", color = OllamaGreen, fontSize = 10.sp,
+        Text("$backend daemon", color = OllamaGreen, fontSize = 10.sp,
             fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
         Text(if (isOnline) "running" else "offline",
             color = if (isOnline) OllamaGreen.copy(alpha = 0.6f) else OllamaRed.copy(alpha = 0.6f),
             fontSize = 10.sp, fontFamily = FontFamily.Monospace)
         Spacer(Modifier.weight(1f))
-        Text("${vm.liveLogs.size} lines", color = OllamaTextDim, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+        Text("${vm.liveLogs.size} lines", color = OllamaTextDim,
+            fontSize = 9.sp, fontFamily = FontFamily.Monospace)
     }
 
-    Box(Modifier.fillMaxSize().background(TerminalBg)) {
+    Box(Modifier.weight(1f).fillMaxWidth().background(TerminalBg)) {
         if (vm.liveLogs.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    "No logs yet.\nStart the daemon to see output.",
+                Text("No logs yet.\nStart the daemon to see output.",
                     color = OllamaTextDim, textAlign = TextAlign.Center,
-                    fontSize = 12.sp, fontFamily = FontFamily.Monospace
-                )
+                    fontSize = 12.sp, fontFamily = FontFamily.Monospace)
             }
         } else {
             SelectionContainer {
@@ -139,10 +144,10 @@ private fun DaemonLogsPane(vm: MainViewModel) {
                 ) {
                     items(vm.liveLogs) { line ->
                         val color = when {
-                            line.startsWith("❌") || line.contains("error", ignoreCase = true)   -> Color(0xFFFF6B6B)
-                            line.startsWith("✅") || line.contains("success", ignoreCase = true)  -> OllamaGreen
-                            line.startsWith(">")                                                  -> Color(0xFFFFCC44)
-                            line.startsWith("[llama.cpp]")                                        -> OllamaBlue
+                            line.startsWith("❌") || line.contains("error", ignoreCase = true)  -> Color(0xFFFF6B6B)
+                            line.startsWith("✅") || line.contains("success", ignoreCase = true) -> OllamaGreen
+                            line.startsWith(">")                                                 -> Color(0xFFFFCC44)
+                            line.startsWith("[llama.cpp]")                                       -> OllamaBlue
                             else -> TerminalGreen
                         }
                         Text(line, color = color, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
@@ -154,43 +159,33 @@ private fun DaemonLogsPane(vm: MainViewModel) {
 }
 
 @Composable
-private fun WorkspacePane(vm: MainViewModel, context: Context) {
+private fun ColumnScope.WorkspacePane(vm: MainViewModel, context: Context) {
     val listState    = rememberLazyListState()
     val focusManager = LocalFocusManager.current
-
-    // Workspace shell log — reuse terminalInput but send bash in working dir
-    val workDir = vm.agentWorkingDir.ifBlank { context.filesDir.absolutePath }
+    val workDir      = vm.agentWorkingDir.ifBlank { context.filesDir.absolutePath }
 
     LaunchedEffect(vm.liveLogs.size) {
         if (vm.liveLogs.isNotEmpty()) listState.animateScrollToItem(vm.liveLogs.size - 1)
     }
 
-    // Working directory header
+    // Working dir header
     Row(
         Modifier.fillMaxWidth().background(Color(0xFF0A0A1A)).padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         Text("📁", fontSize = 12.sp)
-        Text(
-            workDir,
-            color = OllamaGreen,
-            fontSize = 10.sp,
-            fontFamily = FontFamily.Monospace,
-            fontWeight = FontWeight.Bold,
-            maxLines = 1
-        )
+        Text(workDir, color = OllamaGreen, fontSize = 10.sp,
+            fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, maxLines = 1)
     }
 
-    // Log output (shared liveLogs filtered or all)
-    Box(Modifier.weight(1f).background(TerminalBg)) {
+    // Log output
+    Box(Modifier.weight(1f).fillMaxWidth().background(TerminalBg)) {
         if (vm.liveLogs.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    "Run a command below\nin the workspace directory.",
+                Text("Run a command below\nin the workspace directory.",
                     color = OllamaTextDim, textAlign = TextAlign.Center,
-                    fontSize = 12.sp, fontFamily = FontFamily.Monospace
-                )
+                    fontSize = 12.sp, fontFamily = FontFamily.Monospace)
             }
         } else {
             SelectionContainer {
@@ -201,9 +196,9 @@ private fun WorkspacePane(vm: MainViewModel, context: Context) {
                 ) {
                     items(vm.liveLogs) { line ->
                         val color = when {
-                            line.startsWith(">") || line.startsWith("$ ")  -> Color(0xFFFFCC44)
-                            line.startsWith("❌") || line.contains("error", ignoreCase = true) -> Color(0xFFFF6B6B)
-                            line.startsWith("✅") -> OllamaGreen
+                            line.startsWith(">") || line.startsWith("$ ")                       -> Color(0xFFFFCC44)
+                            line.startsWith("❌") || line.contains("error", ignoreCase = true)  -> Color(0xFFFF6B6B)
+                            line.startsWith("✅")                                               -> OllamaGreen
                             else -> TerminalGreen
                         }
                         Text(line, color = color, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
@@ -213,19 +208,14 @@ private fun WorkspacePane(vm: MainViewModel, context: Context) {
         }
     }
 
-    // Shell input bar
+    // Shell input
     Row(
         Modifier.fillMaxWidth().background(OllamaSurface).padding(8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Text(
-            "$ ",
-            color = OllamaGreen,
-            fontFamily = FontFamily.Monospace,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Bold
-        )
+        Text("$", color = OllamaGreen, fontFamily = FontFamily.Monospace,
+            fontSize = 13.sp, fontWeight = FontWeight.Bold)
         OutlinedTextField(
             value = vm.terminalInput,
             onValueChange = { vm.terminalInput = it },
@@ -237,34 +227,22 @@ private fun WorkspacePane(vm: MainViewModel, context: Context) {
             singleLine = true,
             textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp, color = TerminalGreen),
             colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor   = OllamaGreen,
-                unfocusedBorderColor = OllamaBorder,
-                cursorColor          = OllamaGreen,
+                focusedBorderColor      = OllamaGreen,
+                unfocusedBorderColor    = OllamaBorder,
+                cursorColor             = OllamaGreen,
                 focusedContainerColor   = Color(0xFF0A1A0A),
                 unfocusedContainerColor = Color(0xFF0A1A0A)
             ),
             shape = RoundedCornerShape(6.dp),
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
             keyboardActions = KeyboardActions(onSend = {
-                focusManager.clearFocus()
-                vm.runTerminalCommand(context)
+                focusManager.clearFocus(); vm.runTerminalCommand(context)
             })
         )
         IconButton(
             onClick = { focusManager.clearFocus(); vm.runTerminalCommand(context) },
-            modifier = Modifier.size(44.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(OllamaGreen)
-                .testTag("terminal_exec_btn")
+            modifier = Modifier.size(44.dp).clip(RoundedCornerShape(8.dp))
+                .background(OllamaGreen).testTag("terminal_exec_btn")
         ) { Icon(Icons.Default.Send, null, tint = OllamaBg, modifier = Modifier.size(18.dp)) }
     }
 }
-
-// Helper — clickable without ripple effect
-private fun Modifier.clickableNoRipple(onClick: () -> Unit): Modifier =
-    this.then(
-        androidx.compose.foundation.clickable(
-            indication = null,
-            interactionSource = androidx.compose.foundation.interaction.MutableInteractionSource()
-        ) { onClick() }
-    )
