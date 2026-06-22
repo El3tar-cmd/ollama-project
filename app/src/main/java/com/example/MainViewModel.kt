@@ -24,10 +24,51 @@ import com.example.ui.editor.getLanguageFromExtension
 
 class MainViewModel(private val ctx: Context) : ViewModel() {
     private val api      = OllamaApi()
+    private val settingsPrefs = ctx.getSharedPreferences("devhive_prefs", android.content.Context.MODE_PRIVATE)
     val executor         = OllamaExecutor(ctx)
     val agentEngine      = AgentEngine(ctx)
 
     // Server config
+    init {
+        llamaGpuLayers    = settingsPrefs.getInt("llama_gpu_layers", 99)
+        llamaContextSize  = settingsPrefs.getInt("llama_ctx", 4096)
+        llamaThreads      = settingsPrefs.getInt("llama_threads", 4)
+        llamaBatchSize    = settingsPrefs.getInt("llama_batch", 512)
+        llamaTemperature  = settingsPrefs.getFloat("llama_temp", 0.7f)
+        llamaPort         = settingsPrefs.getString("llama_port", "8080") ?: "8080"
+        selectedModelChat = settingsPrefs.getString("sel_model_chat", "") ?: ""
+        agentModel        = settingsPrefs.getString("agent_model", "") ?: ""
+        viewModelScope.launch {
+            kotlinx.coroutines.flow.merge(
+                snapshotFlow { llamaGpuLayers }.drop(1),
+                snapshotFlow { llamaContextSize }.drop(1),
+                snapshotFlow { llamaThreads }.drop(1),
+                snapshotFlow { llamaBatchSize }.drop(1),
+                snapshotFlow { llamaTemperature }.drop(1)
+            ).collect { saveSettings() }
+        }
+        viewModelScope.launch {
+            kotlinx.coroutines.flow.merge(
+                snapshotFlow { llamaPort }.drop(1),
+                snapshotFlow { selectedModelChat }.drop(1),
+                snapshotFlow { agentModel }.drop(1)
+            ).collect { saveSettings() }
+        }
+    }
+
+    private fun saveSettings() {
+        settingsPrefs.edit()
+            .putInt("llama_gpu_layers", llamaGpuLayers)
+            .putInt("llama_ctx",        llamaContextSize)
+            .putInt("llama_threads",    llamaThreads)
+            .putInt("llama_batch",      llamaBatchSize)
+            .putFloat("llama_temp",     llamaTemperature)
+            .putString("llama_port",    llamaPort)
+            .putString("sel_model_chat",selectedModelChat)
+            .putString("agent_model",   agentModel)
+            .apply()
+    }
+
     var hostUrlState     by mutableStateOf("127.0.0.1:11434")
     var originsState     by mutableStateOf("*")
     var downloadUrlState by mutableStateOf("https://github.com/El3tar-cmd/ollama-project/raw/main/app/src/main/jniLibs/arm64-v8a/libollama.so")
@@ -573,8 +614,8 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         chatHistory.add(ChatMessage("assistant", ""))
         var response = ""
         val sysPrompt = buildString {
-            append("You are DevHive — an expert AI coding assistant running locally on Android. ")
-            append("Be concise, precise, and helpful. Answer in the same language the user uses.")
+            append("You are DevHive, an AI assistant built by DevHive Company, running locally on Android. ")
+            append("Be helpful and concise. Answer in the user's language.")
             agentSelectedFile?.let { f ->
                 append(" Current file: ${f.name}.")
                 val lang = getLanguageFromExtension(f.name)
