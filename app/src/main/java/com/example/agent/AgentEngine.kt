@@ -1,7 +1,6 @@
 package com.example.agent
 
-import android.content.Context
-import com.example.agent.tools.ToolExecutor
+import android.util.Log
 import com.example.data.api.LlamaCppApi
 import com.example.data.api.OllamaApi
 import com.example.data.model.AgentStep
@@ -11,25 +10,82 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
-class AgentEngine(private val context: Context) {
+class AgentEngine(private val context: android.content.Context) {
 
     var workingDir: String = context.filesDir.absolutePath
 
-    private val toolExecutor by lazy { ToolExecutor(context) { workingDir } }
+    private val toolExecutor by lazy { com.example.agent.tools.ToolExecutor(context) { workingDir } }
+    private val thinkRegex   = Regex("<think>([\\s\\S]*?)</think>", RegexOption.IGNORE_CASE)
 
-    private val thinkRegex = Regex("<think>([\\s\\S]*?)</think>", RegexOption.IGNORE_CASE)
+    // ── Estimate task complexity ──────────────────────────────────────────────
+    private fun isComplexTask(task: String): Boolean {
+        val words = task.trim().split(Regex("\\s+")).size
+        val complexKeywords = listOf(
+            "project", "مشروع", "create", "build", "implement", "develop",
+            "refactor", "migrate", "integrate", "design", "architecture",
+            "multiple", "several", "full", "complete", "system", "app",
+            "اعمل", "ابني", "طور", "انشئ", "نظام", "تطبيق"
+        )
+        return words > 20 || complexKeywords.any { task.contains(it, ignoreCase = true) }
+    }
 
+    // ── Generate task plan ────────────────────────────────────────────────────
+    private suspend fun generatePlan(
+        task: String, model: String, baseUrl: String,
+        cloudApiKey: String, backend: String
+    ): String {
+        val api  = OllamaApi()
+        var plan = ""
+        val planMessages = listOf(
+            ChatMessage("system",
+                "You are a task planner. Create a concise numbered plan (5-8 steps max) " +
+                "for the following task. Output ONLY the numbered list. Each step on its own line. " +
+                "Be specific and actionable. Use the same language as the user."),
+            ChatMessage("user", task)
+        )
+        try {
+            suspendCancellableCoroutine<Unit> { cont ->
+                val onTok: (String) -> Unit  = { plan += it }
+                val onDone: (Boolean, String) -> Unit = { _, _ ->
+                    if (!cont.isCompleted) cont.resume(Unit)
+                }
+                when {
+                    cloudApiKey.isNotBlank() && model.endsWith(":cloud") ->
+                        api.cloudChatStream(cloudApiKey, model, planMessages,
+                            onTokenGenerated = onTok, onComplete = onDone)
+                    backend == "llamacpp" ->
+                        LlamaCppApi().chatStream(baseUrl, planMessages,
+                            onToken = onTok, onComplete = onDone)
+                    else ->
+                        api.chatStream(baseUrl, model, planMessages,
+                            onTokenGenerated = onTok, onComplete = onDone)
+                }
+            }
+        } catch (_: Exception) {}
+        return plan.trim()
+    }
+
+    // ── Main agent loop ───────────────────────────────────────────────────────
     suspend fun runAgentLoop(
         userTask: String,
         model: String,
         baseUrl: String,
-        maxSteps: Int = 25,
+        maxSteps: Int    = 25,
         cloudApiKey: String = "",
-        backend: String = "ollama",
+        backend: String  = "ollama",
         onAskUser: (suspend (String) -> String)? = null,
         onStep: suspend (AgentStep) -> Unit
     ) {
         toolExecutor.askUserFn = onAskUser
+
+        // ── Planning phase for complex tasks ──────────────────────────────────
+        if (isComplexTask(userTask)) {
+            onStep(AgentStep("info", "🗂️ Generating task plan…"))
+            val plan = generatePlan(userTask, model, baseUrl, cloudApiKey, backend)
+            if (plan.isNotBlank()) {
+                onStep(AgentStep("plan", plan))
+            }
+        }
 
         val messages = mutableListOf(
             ChatMessage("system", buildSystemPrompt(workingDir)),
@@ -74,7 +130,7 @@ class AgentEngine(private val context: Context) {
             if (!streamOk) {
                 errs++
                 onStep(AgentStep("error", "❌ $streamErr", true))
-                if (errs >= 3) { onStep(AgentStep("info", "⚠️ Too many errors — is the server running?")); break }
+                if (errs >= 3) { onStep(AgentStep("info", "⚠️ Too many errors.")); break }
                 delay(1000); continue
             }
             if (response.isBlank()) {
@@ -85,7 +141,7 @@ class AgentEngine(private val context: Context) {
             }
             errs = 0
 
-            // ── Extract <think> blocks → show as collapsible think steps ──
+            // Extract <think> blocks
             thinkRegex.findAll(response).forEach { m ->
                 val thinkContent = m.groupValues[1].trim()
                 if (thinkContent.isNotBlank()) onStep(AgentStep("think", thinkContent))
@@ -93,7 +149,7 @@ class AgentEngine(private val context: Context) {
 
             val toolCalls = parseToolCalls(response)
 
-            // ── Strip think blocks + tool markers from display text ──
+            // Strip think + tool markers from display
             val display = response
                 .replace(thinkRegex, "")
                 .replace(Regex("""WRITE_FILE>>[^\n]+\n[\s\S]*?<<WRITE_FILE"""), "")
@@ -105,7 +161,9 @@ class AgentEngine(private val context: Context) {
 
             if (toolCalls.isEmpty()) {
                 messages.add(ChatMessage("assistant", response))
-                val nudgeCount = messages.count { it.role == "user" && it.content.startsWith("[NUDGE]") }
+                val nudgeCount = messages.count {
+                    it.role == "user" && it.content.startsWith("[NUDGE]")
+                }
                 if (nudgeCount < 2) {
                     messages.add(ChatMessage("user",
                         "[NUDGE] You MUST output a tool call to continue. Examples:\n" +
@@ -114,8 +172,7 @@ class AgentEngine(private val context: Context) {
                     ))
                     continue
                 }
-                // Max nudges reached — finish gracefully
-                onStep(AgentStep("info", "ℹ️ Task complete (model gave no tool call after nudges)."))
+                onStep(AgentStep("info", "ℹ️ Task complete."))
                 break
             }
 
@@ -136,17 +193,17 @@ class AgentEngine(private val context: Context) {
             messages.add(ChatMessage("user",
                 "Tool results:\n$resultBuf\nProceed. Output the next TOOL>> or WRITE_FILE>> block."))
 
+            // Trim context if too long
             if (messages.size > 30) {
                 val head = messages.take(2)
                 val tail = messages.takeLast(12)
-                messages.clear()
-                messages.addAll(head)
-                messages.add(ChatMessage("system", "[Earlier steps trimmed — context limit management]"))
+                messages.clear(); messages.addAll(head)
+                messages.add(ChatMessage("system", "[Earlier steps trimmed — context limit]"))
                 messages.addAll(tail)
             }
         }
 
         if (steps >= maxSteps)
-            onStep(AgentStep("info", "⚠️ Max steps ($maxSteps) reached. Task may be incomplete."))
+            onStep(AgentStep("info", "⚠️ Max steps ($maxSteps) reached."))
     }
 }
