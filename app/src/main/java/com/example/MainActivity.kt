@@ -34,11 +34,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -50,6 +52,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
@@ -131,6 +134,38 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     var agentSelectedFile       by mutableStateOf<File?>(null)
     var agentFileContent        by mutableStateOf("")
     var showFileTree            by mutableStateOf(true)
+    // Multiple tabs for open files
+    val openFiles               = mutableStateListOf<File>()
+    var activeTabIndex          by mutableStateOf(0)
+
+    fun openInNewTab(file: File) {
+        if (!openFiles.contains(file)) {
+            openFiles.add(file)
+        }
+        activeTabIndex = openFiles.indexOf(file)
+        openFile(file)
+    }
+
+    fun closeTab(index: Int) {
+        if (index in openFiles.indices) {
+            openFiles.removeAt(index)
+            if (openFiles.isEmpty()) {
+                agentSelectedFile = null
+                agentFileContent = ""
+                activeTabIndex = 0
+            } else {
+                activeTabIndex = minOf(activeTabIndex, openFiles.size - 1)
+                openFile(openFiles[activeTabIndex])
+            }
+        }
+    }
+
+    fun switchToTab(index: Int) {
+        if (index in openFiles.indices) {
+            activeTabIndex = index
+            openFile(openFiles[index])
+        }
+    }
     // ask_user support
     var agentPendingQuestion    by mutableStateOf<String?>(null)
     var agentQuestionInput      by mutableStateOf("")
@@ -2689,11 +2724,431 @@ fun MarkdownViewer(markdown: String, modifier: Modifier = Modifier) {
 }
 
 // ─────────────────────────────────────────────
+// FILE TYPE ICONS & SYNTAX HIGHLIGHTING
+// ─────────────────────────────────────────────
+@Composable
+fun getFileIcon(file: File): String {
+    return if (file.isDirectory) "📂" else {
+        val ext = file.name.substringAfterLast('.', "").lowercase()
+        when (ext) {
+            // Code files
+            "kt", "kts" -> "🟉"
+            "java"      -> "☕"
+            "py"        -> "🐍"
+            "js", "mjs" -> "📜"
+            "ts", "tsx" -> "🔷"
+            "json"      -> "📋"
+            "xml"       -> "📰"
+            "html", "htm" -> "🌐"
+            "css"       -> "🎨"
+            "gradle"    -> "🟢"
+            "md", "markdown" -> "📝"
+            "txt"       -> "📄"
+            "sh", "bash" -> "🖥️"
+            "yml", "yaml" -> "⚙️"
+            "toml"      -> "⚙️"
+            "gitignore" -> "🚫"
+            "png", "jpg", "jpeg", "gif", "webp", "svg" -> "🖼️"
+            "mp3", "wav", "ogg" -> "🎵"
+            "mp4", "webm", "mov" -> "🎬"
+            "zip", "tar", "gz", "rar" -> "📦"
+            "pdf"       -> "📕"
+            "doc", "docx" -> "📘"
+            "exe", "apk"  -> "⚡"
+            "so", "dll", "dylib" -> "🔧"
+            else -> "📄"
+        }
+    }
+}
+
+fun getLanguageFromExtension(filename: String): String {
+    val ext = filename.substringAfterLast('.', "").lowercase()
+    return when (ext) {
+        "kt", "kts" -> "kotlin"
+        "java"      -> "java"
+        "py"        -> "python"
+        "js"        -> "javascript"
+        "ts", "tsx" -> "typescript"
+        "json"      -> "json"
+        "xml"       -> "xml"
+        "html", "htm" -> "html"
+        "css"       -> "css"
+        "gradle"    -> "groovy"
+        "md"        -> "markdown"
+        "sh", "bash" -> "bash"
+        "yml", "yaml" -> "yaml"
+        else        -> "plain"
+    }
+}
+
+// Syntax highlighting colors
+val SyntaxKeyword = Color(0xFFFF79C6)    // Pink
+val SyntaxString  = Color(0xFFF1FA8C)    // Yellow
+val SyntaxNumber  = Color(0xFFBD93F9)    // Purple
+val SyntaxComment = Color(0xFF6272A4)    // Gray-blue
+val SyntaxFunction= Color(0xFF50FA7B)    // Green
+val SyntaxType    = Color(0xFF8BE9FD)    // Cyan
+val SyntaxError   = Color(0xFFFF5555)    // Red
+val SyntaxTag     = Color(0xFFFF79C6)    // Pink
+val SyntaxAttr    = Color(0xFF50FA7B)    // Green
+
+@Composable
+fun highlightSyntax(code: String, language: String): AnnotatedString {
+    return buildAnnotatedString {
+        val lines = code.split('\n')
+        for ((lineIndex, line) in lines.withIndex()) {
+            if (lineIndex > 0) append('\n')
+            
+            var remaining = line
+            val tokens = mutableListOf<Pair<String, Color>>()
+            
+            when (language) {
+                "kotlin", "java", "javascript", "typescript", "python" -> {
+                    // Comments
+                    val commentRegex = Regex("(//.*|#.*|/\*[\s\S]*?\*/)")
+                    var processed = line
+                    commentRegex.findAll(line).forEach { match ->
+                        tokens.add(Pair(match.value, SyntaxComment))
+                    }
+                    
+                    // Strings
+                    val stringRegex = Regex("(\"[^\\\"]*\\\\.*\"|'[^\\']*\\\\.*')")
+                    stringRegex.findAll(line).forEach { match ->
+                        tokens.add(Pair(match.value, SyntaxString))
+                    }
+                    
+                    // Numbers
+                    val numRegex = Regex("\\b\\d+(\\.\\d+)?\\b")
+                    numRegex.findAll(line).forEach { match ->
+                        tokens.add(Pair(match.value, SyntaxNumber))
+                    }
+                    
+                    // Keywords
+                    val keywords = listOf("fun", "val", "var", "class", "object", "interface", "enum", 
+                        "if", "else", "when", "for", "while", "do", "return", "break", "continue",
+                        "import", "package", "private", "public", "protected", "internal", "override",
+                        "abstract", "sealed", "data", "suspend", "inline", "lateinit", "companion",
+                        "def", "from", "as", "try", "except", "finally", "with", "lambda",
+                        "const", "let", "const", "async", "await", "new", "this", "super", "static",
+                        "true", "false", "null", "void", "int", "String", "Boolean", "Float", "Double")
+                    keywords.forEach { kw ->
+                        val kwRegex = Regex("\\b$kw\\b")
+                        kwRegex.findAll(line).forEach { match ->
+                            tokens.add(Pair(match.value, SyntaxKeyword))
+                        }
+                    }
+                    
+                    // Functions
+                    val funcRegex = Regex("\\b[a-zA-Z_][a-zA-Z0-9_]*(?=\\()")
+                    funcRegex.findAll(line).forEach { match ->
+                        if (match.value !in keywords) {
+                            tokens.add(Pair(match.value, SyntaxFunction))
+                        }
+                    }
+                    
+                    // Types
+                    val typeRegex = Regex("\\b[A-Z][a-zA-Z0-9_]*\\b")
+                    typeRegex.findAll(line).forEach { match ->
+                        if (match.value !in keywords) {
+                            tokens.add(Pair(match.value, SyntaxType))
+                        }
+                    }
+                }
+                "json" -> {
+                    val keyRegex = Regex("\"[^\"]+\"(?=\\s*:)")
+                    keyRegex.findAll(line).forEach { match ->
+                        tokens.add(Pair(match.value, SyntaxTag))
+                    }
+                    val stringRegex = Regex(": \"[^\"]*\"")
+                    stringRegex.findAll(line).forEach { match ->
+                        val start = match.value.indexOf("\"") + 1
+                        val end = match.value.lastIndexOf("\"")
+                        if (start < end) {
+                            tokens.add(Pair(match.value.substring(start, end), SyntaxString))
+                        }
+                    }
+                    val numRegex = Regex(": \\d+(\\.\\d+)?")
+                    numRegex.findAll(line).forEach { match ->
+                        val num = match.value.replace(Regex(": "), "")
+                        tokens.add(Pair(num, SyntaxNumber))
+                    }
+                }
+                "html", "xml" -> {
+                    val tagRegex = Regex("</?[a-zA-Z][a-zA-Z0-9-]*")
+                    tagRegex.findAll(line).forEach { match ->
+                        tokens.add(Pair(match.value, SyntaxTag))
+                    }
+                    val attrRegex = Regex("\\b[a-zA-Z-]+(?==)")
+                    attrRegex.findAll(line).forEach { match ->
+                        tokens.add(Pair(match.value, SyntaxAttr))
+                    }
+                    val stringRegex = Regex("\"[^\"]*\"")
+                    stringRegex.findAll(line).forEach { match ->
+                        tokens.add(Pair(match.value, SyntaxString))
+                    }
+                    val commentRegex = Regex("<!--[\s\S]*?-->")
+                    commentRegex.findAll(line).forEach { match ->
+                        tokens.add(Pair(match.value, SyntaxComment))
+                    }
+                }
+                "css" -> {
+                    val selectorRegex = Regex("^[^{]+")
+                    selectorRegex.findAll(line).forEach { match ->
+                        tokens.add(Pair(match.value.trim(), SyntaxTag))
+                    }
+                    val propRegex = Regex("[a-z-]+(?=:)")
+                    propRegex.findAll(line).forEach { match ->
+                        tokens.add(Pair(match.value, SyntaxAttr))
+                    }
+                    val valueRegex = Regex(": [^;]+;")
+                    valueRegex.findAll(line).forEach { match ->
+                        tokens.add(Pair(match.value.substring(1).trim(), SyntaxString))
+                    }
+                }
+                "yaml" -> {
+                    val keyRegex = Regex("^[a-zA-Z_][a-zA-Z0-9_]*(?=:)")
+                    keyRegex.findAll(line).forEach { match ->
+                        tokens.add(Pair(match.value, SyntaxTag))
+                    }
+                    val stringRegex = Regex("\"[^\"]*\"")
+                    stringRegex.findAll(line).forEach { match ->
+                        tokens.add(Pair(match.value, SyntaxString))
+                    }
+                }
+                "markdown" -> {
+                    val headingRegex = Regex("^#{1,6}\\s.*")
+                    headingRegex.findAll(line).forEach { match ->
+                        tokens.add(Pair(match.value, SyntaxKeyword))
+                    }
+                    val boldRegex = Regex("\\*\\*[^*]+\\*\\*")
+                    boldRegex.findAll(line).forEach { match ->
+                        tokens.add(Pair(match.value, SyntaxFunction))
+                    }
+                    val codeRegex = Regex("`[^`]+`")
+                    codeRegex.findAll(line).forEach { match ->
+                        tokens.add(Pair(match.value, SyntaxString))
+                    }
+                    val linkRegex = Regex("\\[([^\\]]+)\\]\\(([^)]+)\\)")
+                    linkRegex.findAll(line).forEach { match ->
+                        tokens.add(Pair(match.value, SyntaxType))
+                    }
+                }
+                else -> {}
+            }
+            
+            // Build annotated string
+            var pos = 0
+            val sortedTokens = tokens.sortedBy { line.indexOf(it.first) }
+            for ((text, color) in sortedTokens) {
+                val idx = line.indexOf(text, pos)
+                if (idx >= pos) {
+                    append(line.substring(pos, idx))
+                    pushStyle(SpanStyle(color = color))
+                    append(text)
+                    pop()
+                    pos = idx + text.length
+                }
+            }
+            if (pos < line.length) {
+                append(line.substring(pos))
+            }
+        }
+    }
+}
+
+// Enhanced code editor with line numbers
+@Composable
+fun EnhancedCodeEditor(
+    code: String,
+    onCodeChange: (String) -> Unit,
+    language: String,
+    modifier: Modifier = Modifier
+) {
+    var textFieldValue by remember(code) { mutableStateOf(code) }
+    var lineCount by remember(code) { mutableStateOf(code.lines().size.coerceAtLeast(1)) }
+    
+    LaunchedEffect(code) {
+        if (textFieldValue != code) {
+            textFieldValue = code
+        }
+    }
+    
+    Row(modifier = modifier.background(TerminalBg)) {
+        // Line numbers
+        Column(
+            modifier = Modifier
+                .width(40.dp)
+                .fillMaxHeight()
+                .background(OllamaSurface)
+                .padding(vertical = 8.dp),
+            horizontalAlignment = Alignment.End
+        ) {
+            for (i in 1..lineCount) {
+                Text(
+                    i.toString(),
+                    color = OllamaTextDim,
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.padding(end = 8.dp)
+                )
+            }
+        }
+        
+        // Code editor
+        Box(modifier = Modifier.weight(1f)) {
+            BasicTextField(
+                value = textFieldValue,
+                onValueChange = { newValue ->
+                    textFieldValue = newValue
+                    lineCount = newValue.lines().size.coerceAtLeast(1)
+                    onCodeChange(newValue)
+                },
+                modifier = Modifier.fillMaxSize().padding(8.dp),
+                textStyle = TextStyle(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                    color = OllamaText
+                ),
+                cursorBrush = Brush.verticalGradient(
+                    colors = listOf(OllamaGreen, OllamaGreen)
+                ),
+                decorationBox = { innerTextField ->
+                    Box {
+                        if (textFieldValue.isEmpty()) {
+                            Text(
+                                "Start typing...",
+                                color = OllamaTextDim.copy(alpha = 0.5f),
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 12.sp
+                            )
+                        }
+                        innerTextField()
+                    }
+                }
+            )
+        }
+    }
+}
+
+// ─────────────────────────────────────────────
 // AGENT FILES PANE
 // ─────────────────────────────────────────────
 @Composable
 fun AgentFilesPane(vm: MainViewModel, context: Context) {
-    if (vm.agentSelectedFile != null) {
+    // Tab bar for multiple open files
+    if (vm.openFiles.isNotEmpty()) {
+        Column(Modifier.fillMaxSize()) {
+            // Tab bar
+            Row(
+                Modifier.fillMaxWidth().background(OllamaSurface).padding(horizontal = 4.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                vm.openFiles.forEachIndexed { index, file ->
+                    val isActive = index == vm.activeTabIndex
+                    val language = getLanguageFromExtension(file.name)
+                    
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(if (isActive) OllamaCard else Color.Transparent)
+                            .clickable { vm.switchToTab(index) }
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text(getFileIcon(file), fontSize = 12.sp)
+                        Text(
+                            file.name,
+                            color = if (isActive) OllamaGreen else OllamaTextDim,
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            modifier = Modifier.widthIn(max = 120.dp),
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        IconButton(
+                            onClick = { vm.closeTab(index) },
+                            modifier = Modifier.size(16.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Close, "Close tab",
+                                tint = OllamaTextDim, modifier = Modifier.size(12.dp)
+                            )
+                        }
+                    }
+                }
+            }
+            
+            HorizontalDivider(color = OllamaBorder, thickness = 1.dp)
+            
+            // Editor content
+            if (vm.agentSelectedFile != null) {
+                val file = vm.agentSelectedFile!!
+                val language = getLanguageFromExtension(file.name)
+                val isMarkdown = file.name.endsWith(".md", ignoreCase = true) ||
+                                file.name.endsWith(".markdown", ignoreCase = true)
+                var isPreview by remember { mutableStateOf(isMarkdown) }
+
+                Column(Modifier.fillMaxSize().padding(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(getFileIcon(file), fontSize = 16.sp)
+                            Text(
+                                file.name,
+                                color = OllamaGreen,
+                                fontWeight = FontWeight.Bold, fontSize = 13.sp,
+                                modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis
+                            )
+                            Text("[$language]", color = OllamaTextDim, fontSize = 10.sp)
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            if (isMarkdown) {
+                                TextButton(
+                                    onClick = { isPreview = !isPreview },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                ) {
+                                    Text(if (isPreview) "✏️ Edit" else "👁 Preview", color = OllamaBlue, fontSize = 11.sp)
+                                }
+                            }
+                            OutlinedButton(
+                                onClick = { vm.saveCurrentFile(); Toast.makeText(context, "Saved ✓", Toast.LENGTH_SHORT).show() },
+                                border = androidx.compose.foundation.BorderStroke(1.dp, OllamaGreen),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                            ) { Text("Save", color = OllamaGreen, fontSize = 12.sp) }
+                            TextButton(onClick = { 
+                                val idx = vm.activeTabIndex
+                                vm.closeTab(idx) 
+                            }) { Text("Close", color = OllamaTextDim, fontSize = 12.sp) }
+                        }
+                    }
+
+                    if (isPreview && isMarkdown) {
+                        Box(
+                            Modifier.fillMaxWidth().weight(1f)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(OllamaCard)
+                                .border(1.dp, OllamaBorder, RoundedCornerShape(8.dp))
+                        ) {
+                            MarkdownViewer(vm.agentFileContent, Modifier.fillMaxSize())
+                        }
+                    } else {
+                        Box(
+                            Modifier.fillMaxWidth().weight(1f)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(TerminalBg)
+                                .border(1.dp, OllamaBorder, RoundedCornerShape(8.dp))
+                        ) {
+                            EnhancedCodeEditor(
+                                code = vm.agentFileContent,
+                                onCodeChange = { vm.agentFileContent = it },
+                                language = language,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    } else if (vm.agentSelectedFile != null) {
         val isMarkdown = vm.agentSelectedFile!!.name.endsWith(".md", ignoreCase = true) ||
                          vm.agentSelectedFile!!.name.endsWith(".markdown", ignoreCase = true)
         var isPreview  by remember { mutableStateOf(isMarkdown) }
@@ -2836,12 +3291,12 @@ fun AgentFilesPane(vm: MainViewModel, context: Context) {
                     Row(
                         Modifier
                             .fillMaxWidth()
-                            .clickable { vm.openFile(file) }
+                            .clickable { vm.openInNewTab(file) }
                             .padding(start = 12.dp, end = 4.dp, top = 7.dp, bottom = 7.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text(if (file.isDirectory) "📂" else "📄", fontSize = 15.sp)
+                        Text(getFileIcon(file), fontSize = 15.sp)
                         Column(Modifier.weight(1f)) {
                             Text(
                                 file.name,
