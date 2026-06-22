@@ -10,6 +10,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
@@ -41,13 +42,13 @@ import com.example.ui.server.ServerScreen
 import com.example.ui.terminal.TerminalScreen
 import com.example.ui.theme.*
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainAppScreen() {
     val context = LocalContext.current
     val vm: MainViewModel = viewModel(factory = object : androidx.lifecycle.ViewModelProvider.Factory {
         override fun <T : ViewModel> create(modelClass: Class<T>): T = MainViewModel(context.applicationContext) as T
     })
+
     var activeTab by remember { mutableStateOf(AppTab.SERVER) }
 
     LaunchedEffect(Unit) {
@@ -63,68 +64,173 @@ fun MainAppScreen() {
         }
     }
 
-    Scaffold(
-        containerColor = OllamaBg,
-        topBar = {
-            TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = OllamaSurface, titleContentColor = OllamaText),
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Box(
-                            Modifier.size(32.dp).clip(RoundedCornerShape(8.dp)).background(Color(0xFFF5C518)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Image(
-                                painter = painterResource(R.drawable.devhive_logo),
-                                contentDescription = "DevHive Logo",
-                                modifier = Modifier.size(30.dp),
-                                contentScale = androidx.compose.ui.layout.ContentScale.Fit
+    val isOnline = if (vm.activeBackend == "llamacpp") vm.llamaApiOnline else vm.apiOnline
+    val backendLabel = if (vm.activeBackend == "llamacpp") "llama.cpp" else "Ollama"
+
+    Scaffold(containerColor = OllamaBg) { innerPadding ->
+        Row(
+            Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+        ) {
+            // ─── VSCode Activity Bar (left strip) ───────────────────────────
+            Column(
+                Modifier
+                    .width(52.dp)
+                    .fillMaxHeight()
+                    .background(Color(0xFF1E1E1E)),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // Logo at top
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(52.dp)
+                        .background(Color(0xFF252526)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        painter = painterResource(R.drawable.devhive_logo),
+                        contentDescription = "DevHive",
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+
+                HorizontalDivider(color = Color(0xFF3C3C3C), thickness = 0.5.dp)
+                Spacer(Modifier.height(6.dp))
+
+                // Tab icons
+                AppTab.values().forEach { tab ->
+                    val selected = activeTab == tab
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(52.dp)
+                            .background(if (selected) Color(0xFF2D2D2D) else Color.Transparent)
+                            .clickable { activeTab = tab }
+                    ) {
+                        // Active indicator — left green bar (VSCode style)
+                        if (selected) {
+                            Box(
+                                Modifier
+                                    .width(2.dp)
+                                    .fillMaxHeight()
+                                    .background(OllamaGreen)
+                                    .align(Alignment.CenterStart)
                             )
                         }
-                        Text("DevHive", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = OllamaText)
-                        Text("IDE", fontWeight = FontWeight.Light, fontSize = 18.sp, color = OllamaGreen)
-                    }
-                },
-                actions = {
-                    StatusPill(
-                        online = if (vm.activeBackend == "llamacpp") vm.llamaApiOnline else vm.apiOnline,
-                        label  = if (vm.activeBackend == "llamacpp") "llama.cpp" else null
-                    )
-                    Spacer(Modifier.width(12.dp))
-                }
-            )
-        },
-        bottomBar = {
-            NavigationBar(containerColor = OllamaSurface, tonalElevation = 0.dp) {
-                AppTab.values().forEach { tab ->
-                    NavigationBarItem(
-                        selected  = activeTab == tab,
-                        onClick   = { activeTab = tab },
-                        icon      = { Icon(tab.icon, contentDescription = tab.label, modifier = Modifier.size(20.dp)) },
-                        label     = { Text(tab.label, fontSize = 10.sp) },
-                        colors    = NavigationBarItemDefaults.colors(
-                            selectedIconColor   = OllamaGreen,
-                            selectedTextColor   = OllamaGreen,
-                            indicatorColor      = OllamaCard,
-                            unselectedIconColor = OllamaTextDim,
-                            unselectedTextColor = OllamaTextDim
+                        Icon(
+                            imageVector = tab.icon,
+                            contentDescription = tab.label,
+                            tint = if (selected) OllamaGreen else Color(0xFF858585),
+                            modifier = Modifier
+                                .size(22.dp)
+                                .align(Alignment.Center)
                         )
+                    }
+                }
+
+                Spacer(Modifier.weight(1f))
+
+                // Connection dot at bottom
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(44.dp)
+                        .background(Color(0xFF1E1E1E)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(
+                        Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(if (isOnline) OllamaGreen else Color(0xFFCC3333))
                     )
                 }
             }
-        }
-    ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding).background(OllamaBg)) {
-            when (activeTab) {
-                AppTab.SERVER   -> ServerScreen(vm, context)
-                AppTab.MODELS   -> ModelsScreen(vm, context)
-                AppTab.CHAT     -> ChatScreen(vm, context)
-                AppTab.AGENT    -> AgentScreen(vm, context)
-                AppTab.TERMINAL -> TerminalScreen(vm, context)
+
+            // ─── Vertical divider ───────────────────────────────────────────
+            Box(Modifier.width(1.dp).fillMaxHeight().background(Color(0xFF3C3C3C)))
+
+            // ─── Main content area ──────────────────────────────────────────
+            Column(Modifier.weight(1f).fillMaxHeight()) {
+
+                // Thin VSCode-style title bar
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(34.dp)
+                        .background(Color(0xFF252526))
+                        .padding(horizontal = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            "DevHive",
+                            color = Color(0xFFCCCCCC),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text("IDE", color = OllamaGreen, fontSize = 11.sp)
+                        Text("›", color = Color(0xFF858585), fontSize = 11.sp)
+                        Text(
+                            activeTab.label,
+                            color = Color(0xFF858585),
+                            fontSize = 11.sp
+                        )
+                    }
+                    StatusPill(
+                        online = isOnline,
+                        label  = if (vm.activeBackend == "llamacpp") "llama.cpp" else null
+                    )
+                }
+
+                HorizontalDivider(color = Color(0xFF3C3C3C), thickness = 0.5.dp)
+
+                // Content area
+                Box(Modifier.weight(1f).background(OllamaBg)) {
+                    when (activeTab) {
+                        AppTab.SERVER   -> ServerScreen(vm, context)
+                        AppTab.MODELS   -> ModelsScreen(vm, context)
+                        AppTab.CHAT     -> ChatScreen(vm, context)
+                        AppTab.AGENT    -> AgentScreen(vm, context)
+                        AppTab.TERMINAL -> TerminalScreen(vm, context)
+                    }
+                }
+
+                // VSCode status bar (bottom, green)
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(22.dp)
+                        .background(OllamaGreen.copy(alpha = 0.9f))
+                        .padding(horizontal = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("⬡", color = OllamaBg, fontSize = 11.sp)
+                        Text("DevHive IDE", color = OllamaBg, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Text(
+                        if (isOnline) "● $backendLabel" else "○ offline",
+                        color = OllamaBg.copy(alpha = 0.8f),
+                        fontSize = 9.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
             }
         }
     }
 
+    // ─── Login dialog (unchanged) ────────────────────────────────────────────
     val url = vm.authLoginUrl
     if (url != null) {
         val clipboard = LocalClipboardManager.current
@@ -141,8 +247,11 @@ fun MainAppScreen() {
                         color = OllamaTextDim, fontSize = 13.sp
                     )
                     Box(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
-                            .background(OllamaCardAlt).padding(8.dp)
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(OllamaCardAlt)
+                            .padding(8.dp)
                             .clickable {
                                 clipboard.setText(AnnotatedString(url))
                                 Toast.makeText(context, "Link copied", Toast.LENGTH_SHORT).show()
