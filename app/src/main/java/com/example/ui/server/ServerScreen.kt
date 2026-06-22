@@ -1,4 +1,4 @@
-package com.example
+package com.example.ui.server
 
 import android.content.Context
 import android.content.Intent
@@ -29,6 +29,9 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.MainViewModel
+import com.example.ui.components.OllamaTextField
+import com.example.ui.components.SectionCard
 import com.example.ui.theme.*
 
 @Composable
@@ -38,7 +41,6 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
         Modifier.fillMaxSize().verticalScroll(scroll).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Status header
         Row(
             Modifier
                 .fillMaxWidth()
@@ -75,7 +77,6 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
             }
         }
 
-        // Binary engine
         SectionCard("BINARY ENGINE", "Ollama ARM64 executable for Android") {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column {
@@ -105,7 +106,6 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
             }
         }
 
-        // Network config
         SectionCard("NETWORK CONFIG") {
             OllamaTextField(vm.hostUrlState, { vm.hostUrlState = it }, "OLLAMA_HOST", Modifier.fillMaxWidth(), tag = "host_input",
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Next))
@@ -114,7 +114,6 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
             Text("Set host to 0.0.0.0:11434 to expose server to your local Wi-Fi network.", color = OllamaTextDim, fontSize = 11.sp)
         }
 
-        // Cloud auth
         SectionCard("CLOUD AUTH", "Required for cloud models (e.g. glm-4.7:cloud)") {
             if (vm.isLoggedIn) {
                 Row(
@@ -234,7 +233,6 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
             )
         }
 
-        // llama.cpp backend section
         SectionCard("llama.cpp BACKEND", "Vulkan GPU accelerated • GGUF models") {
             Row(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))

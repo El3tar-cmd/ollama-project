@@ -1,5 +1,7 @@
-package com.example
+package com.example.data.api
 
+import com.example.data.model.ChatMessage
+import com.example.data.model.OllamaModel
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -7,31 +9,16 @@ import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
-data class OllamaModel(
-    val name: String,
-    val size: Long
-)
-
-data class ChatMessage(
-    val role: String,
-    val content: String
-)
-
 class OllamaApi {
 
     private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
 
-    /** Standard OkHttp client for local daemon calls. */
     private val localClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.MINUTES)
         .writeTimeout(15, TimeUnit.MINUTES)
         .build()
 
-    /**
-     * Build an OkHttp client that injects `Authorization: Bearer <apiKey>` on
-     * every request — used for Ollama Cloud calls to https://ollama.com.
-     */
     private fun cloudClient(apiKey: String): OkHttpClient =
         OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
@@ -44,10 +31,6 @@ class OllamaApi {
                 chain.proceed(req)
             }
             .build()
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Local daemon helpers
-    // ─────────────────────────────────────────────────────────────────────────
 
     fun checkRunning(baseUrl: String, callback: (Boolean, String) -> Unit) {
         val request = Request.Builder().url(baseUrl).build()
@@ -147,10 +130,6 @@ class OllamaApi {
         })
     }
 
-    /**
-     * Streaming chat against the LOCAL Ollama daemon.
-     * No auth header needed — daemon is on localhost.
-     */
     fun chatStream(
         baseUrl: String,
         modelName: String,
@@ -177,14 +156,6 @@ class OllamaApi {
         return call
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Ollama Cloud helpers  (host: https://ollama.com, auth: Bearer token)
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /**
-     * Validate that [apiKey] can authenticate with Ollama Cloud.
-     * Hits GET /api/tags — a 200 response means the key is valid.
-     */
     fun validateCloudApiKey(apiKey: String, callback: (Boolean, String) -> Unit) {
         if (apiKey.isBlank()) { callback(false, "API key is empty"); return }
         val request = Request.Builder()
@@ -206,9 +177,6 @@ class OllamaApi {
         })
     }
 
-    /**
-     * List models available in Ollama Cloud for this account.
-     */
     fun listCloudModels(apiKey: String, callback: (List<OllamaModel>?, String) -> Unit) {
         if (apiKey.isBlank()) { callback(null, "API key is empty"); return }
         val request = Request.Builder().url("https://ollama.com/api/tags").build()
@@ -240,10 +208,6 @@ class OllamaApi {
         })
     }
 
-    /**
-     * Streaming chat against Ollama Cloud.
-     * Sends `Authorization: Bearer <apiKey>` to https://ollama.com/api/chat.
-     */
     fun cloudChatStream(
         apiKey: String,
         modelName: String,
@@ -269,10 +233,6 @@ class OllamaApi {
         call.enqueue(streamChatCallback(call, onTokenGenerated, onComplete))
         return call
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Shared streaming callback
-    // ─────────────────────────────────────────────────────────────────────────
 
     private fun streamChatCallback(
         call: Call,

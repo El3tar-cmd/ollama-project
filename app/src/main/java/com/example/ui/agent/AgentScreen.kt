@@ -1,4 +1,4 @@
-package com.example
+package com.example.ui.agent
 
 import android.content.Context
 import androidx.activity.compose.BackHandler
@@ -10,6 +10,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -23,10 +25,11 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.MainViewModel
+import com.example.ui.components.OllamaTextField
 import com.example.ui.theme.*
 import java.io.File
 
@@ -176,7 +179,7 @@ fun AgentScreen(vm: MainViewModel, context: Context) {
                         vm.agentQuestionInput, { vm.agentQuestionInput = it },
                         "Your answer…", Modifier.fillMaxWidth(), maxLines = 4,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                        keyboardActions = androidx.compose.foundation.text.KeyboardActions(onDone = { vm.submitAgentAnswer() })
+                        keyboardActions = KeyboardActions(onDone = { vm.submitAgentAnswer() })
                     )
                 }
             },

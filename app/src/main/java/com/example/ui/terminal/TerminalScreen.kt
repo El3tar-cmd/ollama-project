@@ -1,4 +1,4 @@
-package com.example
+package com.example.ui.terminal
 
 import android.content.Context
 import androidx.compose.foundation.background
@@ -27,6 +27,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.MainViewModel
 import com.example.ui.theme.*
 
 fun formatFileSize(bytes: Long): String = when {

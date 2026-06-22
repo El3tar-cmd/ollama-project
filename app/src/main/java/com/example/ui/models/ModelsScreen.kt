@@ -1,4 +1,4 @@
-package com.example
+package com.example.ui.models
 
 import android.content.Context
 import androidx.compose.foundation.BorderStroke
@@ -28,6 +28,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.LlamaCppServer
+import com.example.MainViewModel
+import com.example.ui.components.OllamaTextField
+import com.example.ui.components.SectionCard
 import com.example.ui.theme.*
 
 @Composable
@@ -124,7 +128,6 @@ fun ModelsScreen(vm: MainViewModel, context: Context) {
             }
         }
 
-        // GGUF Models for llama.cpp
         SectionCard("GGUF MODELS", "Download quantized GGUF models for llama.cpp") {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column {
@@ -207,7 +210,6 @@ fun ModelsScreen(vm: MainViewModel, context: Context) {
             }
         }
 
-        // HuggingFace Model Downloader
         SectionCard("DOWNLOAD FROM HUGGINGFACE", "Enter repo and filename to download any model") {
             val focusManager2 = LocalFocusManager.current
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {

@@ -1,4 +1,4 @@
-package com.example
+package com.example.ui.chat
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -22,18 +22,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.model.MdSegment
 import com.example.ui.theme.*
-
-sealed class MdSegment {
-    data class Heading(val level: Int, val text: String) : MdSegment()
-    data class Paragraph(val text: String) : MdSegment()
-    data class BulletItem(val indent: Int, val text: String) : MdSegment()
-    data class NumberedItem(val num: Int, val text: String) : MdSegment()
-    data class MdCodeBlock(val lang: String, val code: String) : MdSegment()
-    data class Quote(val text: String) : MdSegment()
-    object Rule : MdSegment()
-    object Blank : MdSegment()
-}
 
 fun inlineMd(raw: String): AnnotatedString = buildAnnotatedString {
     var i = 0

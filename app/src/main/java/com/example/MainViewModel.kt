@@ -12,6 +12,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.TimeUnit
+import com.example.agent.AgentEngine
+import com.example.data.api.LlamaCppApi
+import com.example.data.api.OllamaApi
+import com.example.data.model.AgentStep
+import com.example.data.model.ChatMessage
+import com.example.data.model.OllamaModel
+import com.example.data.model.ShellLine
+import com.example.data.model.ShellLineType
 
 class MainViewModel(private val ctx: Context) : ViewModel() {
     private val api      = OllamaApi()

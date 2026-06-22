@@ -1,4 +1,4 @@
-package com.example
+package com.example.ui.chat
 
 import android.content.Context
 import androidx.compose.foundation.background
@@ -31,12 +31,11 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.MainViewModel
+import com.example.data.model.ChatMessage
+import com.example.data.model.ChatSegment
+import com.example.ui.components.OllamaTextField
 import com.example.ui.theme.*
-
-sealed class ChatSegment {
-    data class PlainText(val text: String) : ChatSegment()
-    data class CodeBlock(val language: String, val code: String) : ChatSegment()
-}
 
 fun parseChatContent(content: String): List<ChatSegment> {
     if (content.isBlank()) return listOf(ChatSegment.PlainText(content))

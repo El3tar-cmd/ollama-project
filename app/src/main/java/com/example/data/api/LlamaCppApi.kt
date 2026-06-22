@@ -1,5 +1,6 @@
-package com.example
+package com.example.data.api
 
+import com.example.data.model.ChatMessage
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -82,7 +83,6 @@ class LlamaCppApi {
                                     .getJSONArray("choices")
                                     .getJSONObject(0)
                                     .getJSONObject("delta")
-                                // Fix: optString returns "null" string when value is JSON null
                                 val token = if (delta.isNull("content")) ""
                                             else delta.optString("content", "")
                                 if (token.isNotEmpty()) onToken(token)

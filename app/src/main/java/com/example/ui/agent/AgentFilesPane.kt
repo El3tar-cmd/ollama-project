@@ -1,4 +1,4 @@
-package com.example
+package com.example.ui.agent
 
 import android.content.Context
 import android.widget.Toast
@@ -22,6 +22,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.MainViewModel
+import com.example.ui.chat.MarkdownViewer
+import com.example.ui.editor.EnhancedCodeEditor
+import com.example.ui.editor.getFileIcon
+import com.example.ui.editor.getLanguageFromExtension
+import com.example.ui.terminal.formatFileSize
 import com.example.ui.theme.*
 import java.io.File
 
@@ -449,9 +455,9 @@ fun AgentFilesPane(vm: MainViewModel, context: Context) {
                                 Text(
                                     file.name,
                                     color = when {
-                                        isActive      -> OllamaGreen
+                                        isActive         -> OllamaGreen
                                         file.isDirectory -> OllamaBlue
-                                        else          -> OllamaText
+                                        else             -> OllamaText
                                     },
                                     fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
                                     fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis
