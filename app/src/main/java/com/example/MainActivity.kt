@@ -143,7 +143,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         agentQuestionInput   = ""
     }
 
-    // HuggingFace custom GGUF downloader (separate from curated download)
+    // HuggingFace model downloader (separate from curated download)
     var hfRepo           by mutableStateOf("")
     var hfFile           by mutableStateOf("")
     var hfDownloadProgress by mutableStateOf(-1f)
@@ -165,7 +165,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
                     .connectTimeout(30, TimeUnit.SECONDS)
                     .readTimeout(5, TimeUnit.MINUTES)
                     .build()
-                val req  = okhttp3.Request.Builder().url(url).header("User-Agent", "OllamaDevhive/1.0").build()
+                val req  = okhttp3.Request.Builder().url(url).header("User-Agent", "DevHiveIDE/1.0").build()
                 val resp = client.newCall(req).execute()
                 if (!resp.isSuccessful) {
                     withContext(Dispatchers.Main) { hfDownloadStatus = "❌ HTTP ${resp.code}"; hfDownloadProgress = -1f }
@@ -879,11 +879,11 @@ fun MainAppScreen() {
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Box(
-                            Modifier.size(28.dp).clip(CircleShape).background(OllamaGreen),
+                            Modifier.size(28.dp).clip(RoundedCornerShape(6.dp)).background(OllamaGreen),
                             contentAlignment = Alignment.Center
-                        ) { Text("O", color = OllamaBg, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp) }
-                        Text("Ollama", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = OllamaText)
-                        Text("Devhive", fontWeight = FontWeight.Light, fontSize = 18.sp, color = OllamaGreen)
+                        ) { Text("{}", color = OllamaBg, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp, fontFamily = FontFamily.Monospace) }
+                        Text("DevHive", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = OllamaText)
+                        Text("IDE", fontWeight = FontWeight.Light, fontSize = 18.sp, color = OllamaGreen)
                     }
                 },
                 actions = {
@@ -1308,82 +1308,84 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
                 }
             }
 
-            // Engine status + load/unload switch
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        when {
-                            vm.mlcEngineRunning -> "● Running — ${vm.mlcEngine.loadedModelName ?: ""}"
-                            vm.isLoadingMlc     -> "● Loading…"
-                            else                -> "○ No model loaded"
-                        },
-                        color = if (vm.mlcEngineRunning) OllamaGreen else OllamaTextDim,
-                        fontWeight = FontWeight.Bold, fontSize = 14.sp
-                    )
-                    if (vm.mlcLoadStatus.isNotBlank()) Text(vm.mlcLoadStatus, color = OllamaTextDim, fontSize = 10.sp)
-                    if (vm.mlcSelectedModel == null)
-                        Text("⚠ Go to Models tab → download an MLC model → select it", color = Color(0xFFFFAA33), fontSize = 11.sp)
-                }
-                Switch(
-                    checked = vm.mlcEngineRunning,
-                    onCheckedChange = { on -> if (on) vm.loadMlcModel(context) else vm.unloadMlcModel() },
-                    enabled = vm.mlcSelectedModel != null && !vm.isLoadingMlc,
-                    colors = SwitchDefaults.colors(checkedThumbColor = OllamaBg, checkedTrackColor = OllamaGreen)
-                )
-            }
-            if (vm.isLoadingMlc) LinearProgressIndicator(Modifier.fillMaxWidth(), color = OllamaGreen, trackColor = OllamaBorder)
-
-            // Selected model display
-            if (vm.mlcSelectedModel != null) {
+            if (vm.activeBackend == "mlc") {
+                // Engine status + load/unload switch
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text("Selected model", color = OllamaTextDim, fontSize = 10.sp)
-                        Text(vm.mlcSelectedModel!!.name, color = OllamaText, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            when {
+                                vm.mlcEngineRunning -> "● Running — ${vm.mlcEngine.loadedModelName ?: ""}"
+                                vm.isLoadingMlc     -> "● Loading…"
+                                else                -> "○ No model loaded"
+                            },
+                            color = if (vm.mlcEngineRunning) OllamaGreen else OllamaTextDim,
+                            fontWeight = FontWeight.Bold, fontSize = 14.sp
+                        )
+                        if (vm.mlcLoadStatus.isNotBlank()) Text(vm.mlcLoadStatus, color = OllamaTextDim, fontSize = 10.sp)
+                        if (vm.mlcSelectedModel == null)
+                            Text("⚠ Go to Models tab → download an MLC model → select it", color = Color(0xFFFFAA33), fontSize = 11.sp)
                     }
-                    OutlinedButton(
-                        onClick = { vm.scanMlcModels() },
-                        border = BorderStroke(1.dp, OllamaBorder),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                    ) { Text("Rescan", color = OllamaTextDim, fontSize = 12.sp) }
-                }
-            }
-
-            // Context + max tokens
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OllamaTextField(vm.mlcContextSize.toString(), { vm.mlcContextSize = it.toIntOrNull() ?: 2048 }, "Context", Modifier.weight(1f),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next))
-                OllamaTextField(vm.mlcMaxTokens.toString(), { vm.mlcMaxTokens = it.toIntOrNull() ?: 2048 }, "Max Tokens", Modifier.weight(1f),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done))
-            }
-
-            // Temperature
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("Temperature", color = OllamaText, fontSize = 13.sp)
-                Text(String.format("%.2f", vm.mlcTemperature), color = OllamaGreen, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
-            }
-            Slider(
-                value = vm.mlcTemperature, onValueChange = { vm.mlcTemperature = it },
-                valueRange = 0f..2f, steps = 39,
-                colors = SliderDefaults.colors(thumbColor = OllamaGreen, activeTrackColor = OllamaGreen, inactiveTrackColor = OllamaBorder)
-            )
-
-            // Vulkan info (auto-detected — no toggle needed, MLC handles it internally)
-            LaunchedEffect(Unit) { vm.checkVulkanSupport(context) }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Vulkan GPU", color = OllamaText, fontSize = 13.sp)
-                    Text(
-                        if (vm.deviceHasVulkan) "✅ Supported — GPU inference active"
-                        else "⚠ Not detected — CPU inference only",
-                        color = if (vm.deviceHasVulkan) OllamaGreen else Color(0xFFFFAA33), fontSize = 10.sp
+                    Switch(
+                        checked = vm.mlcEngineRunning,
+                        onCheckedChange = { on -> if (on) vm.loadMlcModel(context) else vm.unloadMlcModel() },
+                        enabled = vm.mlcSelectedModel != null && !vm.isLoadingMlc,
+                        colors = SwitchDefaults.colors(checkedThumbColor = OllamaBg, checkedTrackColor = OllamaGreen)
                     )
                 }
-                Box(Modifier.size(10.dp).clip(CircleShape).background(if (vm.deviceHasVulkan) OllamaGreen else OllamaRed))
+                if (vm.isLoadingMlc) LinearProgressIndicator(Modifier.fillMaxWidth(), color = OllamaGreen, trackColor = OllamaBorder)
+
+                // Selected model display
+                if (vm.mlcSelectedModel != null) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Selected model", color = OllamaTextDim, fontSize = 10.sp)
+                            Text(vm.mlcSelectedModel!!.name, color = OllamaText, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        OutlinedButton(
+                            onClick = { vm.scanMlcModels() },
+                            border = BorderStroke(1.dp, OllamaBorder),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                        ) { Text("Rescan", color = OllamaTextDim, fontSize = 12.sp) }
+                    }
+                }
+
+                // Context + max tokens
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OllamaTextField(vm.mlcContextSize.toString(), { vm.mlcContextSize = it.toIntOrNull() ?: 2048 }, "Context", Modifier.weight(1f),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next))
+                    OllamaTextField(vm.mlcMaxTokens.toString(), { vm.mlcMaxTokens = it.toIntOrNull() ?: 2048 }, "Max Tokens", Modifier.weight(1f),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done))
+                }
+
+                // Temperature
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text("Temperature", color = OllamaText, fontSize = 13.sp)
+                    Text(String.format("%.2f", vm.mlcTemperature), color = OllamaGreen, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+                }
+                Slider(
+                    value = vm.mlcTemperature, onValueChange = { vm.mlcTemperature = it },
+                    valueRange = 0f..2f, steps = 39,
+                    colors = SliderDefaults.colors(thumbColor = OllamaGreen, activeTrackColor = OllamaGreen, inactiveTrackColor = OllamaBorder)
+                )
+
+                // Vulkan info (auto-detected — MLC handles it internally)
+                LaunchedEffect(Unit) { vm.checkVulkanSupport(context) }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Vulkan GPU", color = OllamaText, fontSize = 13.sp)
+                        Text(
+                            if (vm.deviceHasVulkan) "✅ Supported — GPU inference active"
+                            else "⚠ Not detected — CPU inference only",
+                            color = if (vm.deviceHasVulkan) OllamaGreen else Color(0xFFFFAA33), fontSize = 10.sp
+                        )
+                    }
+                    Box(Modifier.size(10.dp).clip(CircleShape).background(if (vm.deviceHasVulkan) OllamaGreen else OllamaRed))
+                }
+                Text(
+                    "MLC LLM runs in-process via JNI — no external binary, no Knox/SELinux restriction.",
+                    color = OllamaTextDim, fontSize = 10.sp
+                )
             }
-            Text(
-                "MLC LLM runs in-process via JNI — no external binary, no Knox/SELinux restriction.",
-                color = OllamaTextDim, fontSize = 10.sp
-            )
         }
 
         Spacer(Modifier.height(8.dp))
@@ -1575,13 +1577,13 @@ fun ModelsScreen(vm: MainViewModel, context: Context) {
             }
         }
 
-        // ── HuggingFace Custom GGUF Downloader ────────────────────────────────
-        SectionCard("DOWNLOAD FROM HUGGINGFACE", "Enter repo and filename to download any GGUF") {
+        // ── HuggingFace Model Downloader ──────────────────────────────────────
+        SectionCard("DOWNLOAD FROM HUGGINGFACE", "Enter repo and filename to download any model") {
             val focusManager2 = LocalFocusManager.current
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 OllamaTextField(
                     vm.hfRepo, { vm.hfRepo = it },
-                    "owner/repo (e.g. bartowski/Llama-3.2-1B-Instruct-GGUF)",
+                    "owner/repo (e.g. bartowski/Llama-3.2-1B-Instruct)",
                     Modifier.weight(1f), tag = "hf_repo_input",
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next)
                 )
@@ -1590,7 +1592,7 @@ fun ModelsScreen(vm: MainViewModel, context: Context) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 OllamaTextField(
                     vm.hfFile, { vm.hfFile = it },
-                    "filename.gguf",
+                    "filename (e.g. model.gguf)",
                     Modifier.weight(1f), tag = "hf_file_input",
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                     keyboardActions = KeyboardActions(onDone = { focusManager2.clearFocus(); vm.downloadFromHF(context) })
@@ -1792,7 +1794,7 @@ fun AgentScreen(vm: MainViewModel, context: Context) {
         // Agent header
         Column(Modifier.fillMaxWidth().background(OllamaSurface).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                // Model selector — Ollama dropdown OR llama.cpp label
+                // Model selector — dropdown for active backend
                 if (false) { } else {
                     ExposedDropdownMenuBox(
                         expanded = modelDropdownExpanded && vm.modelList.isNotEmpty(),

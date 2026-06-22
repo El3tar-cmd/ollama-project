@@ -42,7 +42,7 @@ class OllamaService : Service() {
         val apiKey  = intent?.getStringExtra("api_key") ?: ""
 
         logBuffer.clear()
-        addLog("Ollama Devhive service initializing...")
+        addLog("DevHive IDE service initializing...")
 
         startForeground(NOTIF_ID, buildNotification("Starting…", "Launching Ollama daemon"))
 
@@ -108,7 +108,7 @@ class OllamaService : Service() {
         isRunning = false
         activeProcess?.let { ollamaExecutor.stopOllamaService(it); activeProcess = null }
         serviceInstance = null
-        addLog("Ollama Devhive service stopped.")
+        addLog("DevHive IDE service stopped.")
         super.onDestroy()
     }
 }

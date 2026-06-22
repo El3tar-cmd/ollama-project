@@ -1,6 +1,6 @@
 <resources>
-    <string name="app_name">Ollama Devhive</string>
-    <string name="notification_channel">Ollama Devhive Daemon</string>
-    <string name="notification_title">Ollama Devhive Running</string>
+    <string name="app_name">DevHive IDE</string>
+    <string name="notification_channel">DevHive IDE Daemon</string>
+    <string name="notification_title">DevHive IDE Running</string>
     <string name="notification_msg">Local LLM inference environment is active on your device</string>
 </resources>

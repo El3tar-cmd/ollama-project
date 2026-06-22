@@ -691,7 +691,7 @@ Platform: Android arm64 | Shell: /system/bin/sh
             val req = Request.Builder()
                 .url(urlStr)
                 .method(mth, reqBody)
-                .header("User-Agent", "Mozilla/5.0 OllamaDevhive/1.0")
+                .header("User-Agent", "Mozilla/5.0 DevHiveIDE/1.0")
                 .header("Accept", "text/html,application/json,application/xhtml+xml,*/*;q=0.8")
                 .header("Accept-Language", "en-US,en;q=0.9")
                 .build()
