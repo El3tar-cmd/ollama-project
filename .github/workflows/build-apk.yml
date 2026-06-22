@@ -31,58 +31,36 @@ jobs:
         with:
           ndk-version: r27c
 
-      - name: Install Vulkan shader compiler
-        run: sudo apt-get update && sudo apt-get install -y glslang-tools
+      - name: Install Vulkan shader compiler and curl
+        run: sudo apt-get update && sudo apt-get install -y glslang-tools curl
 
-      - name: Cross-compile llama.cpp with Vulkan for Android
-        env:
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+      - name: Download prebuilt llama-server
         run: |
-          git clone --depth 1 --branch b9754 https://github.com/ggml-org/llama.cpp /tmp/llama-src
-          cd /tmp/llama-src
-
-          # Find glslc or glslangValidator
-          GLSLC_PATH=$(which glslc 2>/dev/null || which glslangValidator 2>/dev/null || echo "")
-
-          cmake -B build \
-            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-28 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DGGML_VULKAN=ON \
-            -DBUILD_SHARED_LIBS=ON \
-            -DGGML_OPENMP=OFF
-
-          cmake --build build --target llama-server -j$(nproc) || {
-            echo "::warning::Vulkan build failed, falling back to CPU-only build"
-            rm -rf build
-            cmake -B build \
-              -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
-              -DANDROID_ABI=arm64-v8a \
-              -DANDROID_PLATFORM=android-28 \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DBUILD_SHARED_LIBS=ON \
-              -DGGML_OPENMP=OFF
-            cmake --build build --target llama-server -j$(nproc)
-          }
-
-          echo "Build complete. Listing output:"
-          find build -name '*.so' -o -name 'llama-server' | head -40
-
-      - name: Bundle llama-server into jniLibs
-        run: |
+          # Use the same download logic as Gradle build
           JNIDIR=app/src/main/jniLibs/arm64-v8a
           mkdir -p $JNIDIR
 
-          # Copy the server binary
-          cp /tmp/llama-src/build/bin/llama-server $JNIDIR/libllama_server.so
-          chmod +x $JNIDIR/libllama_server.so
+          curl -L -o /tmp/llama-android.tar.gz "https://github.com/ggml-org/llama.cpp/releases/download/b9754/llama-b9754-bin-android-arm64.tar.gz"
+          tar -xzf /tmp/llama-android.tar.gz -C /tmp
 
-          # Copy all shared libraries
-          find /tmp/llama-src/build -name 'lib*.so' -exec cp {} $JNIDIR/ \;
+          # Find and copy llama-server binary
+          find /tmp -name 'llama-server' -type f -executable | head -1 | xargs -I {} cp {} $JNIDIR/libllama_server.so
+
+          # Find and copy all .so files
+          find /tmp -name '*.so' -type f | xargs -I {} cp {} $JNIDIR/
+
+          # Make llama-server executable
+          chmod +x $JNIDIR/libllama_server.so
 
           echo "Bundled files:"
           ls -lh $JNIDIR/
+
+      - name: Setup NDK for Gradle
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME" >> $GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=$ANDROID_NDK_HOME" >> $GITHUB_ENV
 
       - name: Make gradlew executable
         run: chmod +x gradlew

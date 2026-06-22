@@ -73,6 +73,9 @@ android {
         }
     }
 
+    // Disable NDK build since we bundle prebuilt binaries
+    ndkVersion = "27.0.12077973"
+
     testOptions {
         unitTests { isIncludeAndroidResources = true }
     }
