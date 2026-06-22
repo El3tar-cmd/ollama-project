@@ -304,7 +304,7 @@ fun AgentScreen(vm: MainViewModel, context: Context) {
                     Box(Modifier.tabIndicatorOffset(tabPositions[agentTab]).height(2.dp).background(OllamaGreen))
                 }
             ) {
-                listOf("Chat", "Files", "Steps").forEachIndexed { i, title ->
+                listOf("Chat", "Files", "Steps", "Terminal").forEachIndexed { i, title ->
                     Tab(
                         selected = agentTab == i,
                         onClick = { agentTab = i },
@@ -318,6 +318,7 @@ fun AgentScreen(vm: MainViewModel, context: Context) {
             0 -> AgentChatPane(vm, context, agentListState, focusManager)
             1 -> AgentFilesPane(vm, context)
             2 -> AgentStepsPane(vm)
+            3 -> AgentTerminalPane(vm, context)
         }
     }
 }
