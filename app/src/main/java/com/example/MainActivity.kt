@@ -1771,7 +1771,8 @@ fun ChatScreen(vm: MainViewModel, context: Context) {
                         Icon(Icons.Default.KeyboardArrowDown, null, tint = OllamaGreen, modifier = Modifier.size(16.dp))
                     }
                 }
-                ExposedDropdownMenu(
+
+                DropdownMenu(
                     expanded = modelDropdownExpanded,
                     onDismissRequest = { modelDropdownExpanded = false },
                     containerColor = OllamaCard
