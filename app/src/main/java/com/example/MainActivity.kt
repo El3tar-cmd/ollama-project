@@ -143,24 +143,24 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         agentQuestionInput   = ""
     }
 
-    // GGUF HuggingFace downloader
-    var ggufHFRepo          by mutableStateOf("")
-    var ggufHFFile          by mutableStateOf("")
-    var ggufDownloadProgress by mutableStateOf(-1f)
-    var ggufDownloadStatus   by mutableStateOf("")
-    private var ggufDownloadJob: kotlinx.coroutines.Job? = null
+    // HuggingFace custom GGUF downloader (separate from curated download)
+    var hfRepo           by mutableStateOf("")
+    var hfFile           by mutableStateOf("")
+    var hfDownloadProgress by mutableStateOf(-1f)
+    var hfDownloadStatus   by mutableStateOf("")
+    private var hfDownloadJob: kotlinx.coroutines.Job? = null
 
-    fun downloadGGUFFromHF(context: Context) {
-        val repo = ggufHFRepo.trim()
-        val file = ggufHFFile.trim()
+    fun downloadFromHF(context: Context) {
+        val repo = hfRepo.trim()
+        val file = hfFile.trim()
         if (repo.isBlank() || file.isBlank()) return
         val url  = "https://huggingface.co/$repo/resolve/main/$file"
         val destDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
         val dest = java.io.File(destDir, file)
-        ggufDownloadJob?.cancel()
-        ggufDownloadJob = viewModelScope.launch(Dispatchers.IO) {
+        hfDownloadJob?.cancel()
+        hfDownloadJob = viewModelScope.launch(Dispatchers.IO) {
             try {
-                withContext(Dispatchers.Main) { ggufDownloadStatus = "⬇️ Connecting…"; ggufDownloadProgress = 0f }
+                withContext(Dispatchers.Main) { hfDownloadStatus = "⬇️ Connecting…"; hfDownloadProgress = 0f }
                 val client = okhttp3.OkHttpClient.Builder()
                     .connectTimeout(30, TimeUnit.SECONDS)
                     .readTimeout(5, TimeUnit.MINUTES)
@@ -168,7 +168,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
                 val req  = okhttp3.Request.Builder().url(url).header("User-Agent", "OllamaDevhive/1.0").build()
                 val resp = client.newCall(req).execute()
                 if (!resp.isSuccessful) {
-                    withContext(Dispatchers.Main) { ggufDownloadStatus = "❌ HTTP ${resp.code}"; ggufDownloadProgress = -1f }
+                    withContext(Dispatchers.Main) { hfDownloadStatus = "❌ HTTP ${resp.code}"; hfDownloadProgress = -1f }
                     return@launch
                 }
                 val total  = resp.body?.contentLength() ?: -1L
@@ -182,29 +182,29 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
                         out.write(buf, 0, read)
                         downloaded += read
                         if (total > 0) {
-                            val prog = downloaded.toFloat() / total.toFloat()
-                            val dlGB = "%.2f".format(downloaded / 1e9)
-                            val totGB = "%.2f".format(total / 1e9)
-                            withContext(Dispatchers.Main) { ggufDownloadProgress = prog; ggufDownloadStatus = "⬇️ $dlGB / $totGB GB" }
+                            val pct = (downloaded.toFloat() / total.toFloat())
+                            val dlGB  = "%.2f".format(downloaded / 1_000_000_000.0)
+                            val totGB = "%.2f".format(total    / 1_000_000_000.0)
+                            withContext(Dispatchers.Main) { hfDownloadProgress = pct; hfDownloadStatus = "⬇️ $dlGB / $totGB GB" }
                         }
                     }
                 }
                 withContext(Dispatchers.Main) {
-                    ggufDownloadProgress = -1f
-                    ggufDownloadStatus   = "✅ Downloaded: $file"
+                    hfDownloadProgress = -1f
+                    hfDownloadStatus   = "✅ Downloaded: $file"
                     scanGGUFs()
                 }
             } catch (e: Exception) {
-                withContext(Dispatchers.Main) { ggufDownloadProgress = -1f; ggufDownloadStatus = "❌ ${e.message}" }
+                withContext(Dispatchers.Main) { hfDownloadProgress = -1f; hfDownloadStatus = "❌ ${e.message}" }
             }
         }
     }
 
-    fun cancelGGUFDownload() {
-        ggufDownloadJob?.cancel()
-        ggufDownloadJob = null
-        ggufDownloadProgress = -1f
-        ggufDownloadStatus   = ""
+    fun cancelHFDownload() {
+        hfDownloadJob?.cancel()
+        hfDownloadJob = null
+        hfDownloadProgress = -1f
+        hfDownloadStatus   = ""
     }
 
     // Vulkan GPU support
@@ -1715,7 +1715,7 @@ fun ModelsScreen(vm: MainViewModel, context: Context) {
             val focusManager2 = LocalFocusManager.current
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 OllamaTextField(
-                    vm.ggufHFRepo, { vm.ggufHFRepo = it },
+                    vm.hfRepo, { vm.hfRepo = it },
                     "owner/repo (e.g. bartowski/Llama-3.2-1B-Instruct-GGUF)",
                     Modifier.weight(1f), tag = "hf_repo_input",
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next)
@@ -1724,24 +1724,25 @@ fun ModelsScreen(vm: MainViewModel, context: Context) {
             Spacer(Modifier.height(4.dp))
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 OllamaTextField(
-                    vm.ggufHFFile, { vm.ggufHFFile = it },
+                    vm.hfFile, { vm.hfFile = it },
                     "filename.gguf",
                     Modifier.weight(1f), tag = "hf_file_input",
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = { focusManager2.clearFocus(); vm.downloadGGUFFromHF(context) })
+                    keyboardActions = KeyboardActions(onDone = { focusManager2.clearFocus(); vm.downloadFromHF(context) })
                 )
+                val hfProgress = vm.hfDownloadProgress
                 Button(
                     onClick = {
                         focusManager2.clearFocus()
-                        if (vm.ggufDownloadProgress >= 0) vm.cancelGGUFDownload()
-                        else vm.downloadGGUFFromHF(context)
+                        if (hfProgress >= 0f) vm.cancelHFDownload()
+                        else vm.downloadFromHF(context)
                     },
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (vm.ggufDownloadProgress >= 0) OllamaRed else OllamaGreen,
+                        containerColor = if (hfProgress >= 0f) OllamaRed else OllamaGreen,
                         contentColor = OllamaBg
                     ),
                     modifier = Modifier.height(56.dp)
-                ) { Text(if (vm.ggufDownloadProgress >= 0) "Cancel" else "Download", fontWeight = FontWeight.Bold) }
+                ) { Text(if (hfProgress >= 0f) "Cancel" else "Download", fontWeight = FontWeight.Bold) }
             }
             // Quick-picks for common repos
             Text("POPULAR REPOS", color = OllamaTextDim, fontSize = 9.sp, letterSpacing = 1.sp)
@@ -1750,21 +1751,23 @@ fun ModelsScreen(vm: MainViewModel, context: Context) {
                     Box(
                         Modifier.weight(1f).clip(RoundedCornerShape(4.dp))
                             .background(OllamaCardAlt).border(1.dp, OllamaBorder, RoundedCornerShape(4.dp))
-                            .clickable { vm.ggufHFRepo = "$org/" }.padding(horizontal = 4.dp, vertical = 6.dp),
+                            .clickable { vm.hfRepo = "$org/" }.padding(horizontal = 4.dp, vertical = 6.dp),
                         contentAlignment = Alignment.Center
                     ) { Text(org, fontSize = 9.sp, color = OllamaTextDim, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 }
             }
             // Progress / status
-            if (vm.ggufDownloadProgress >= 0) {
-                LinearProgressIndicator({ vm.ggufDownloadProgress }, Modifier.fillMaxWidth(), color = OllamaGreen, trackColor = OllamaBorder)
+            val hfProg = vm.hfDownloadProgress
+            if (hfProg >= 0f) {
+                LinearProgressIndicator({ hfProg }, Modifier.fillMaxWidth(), color = OllamaGreen, trackColor = OllamaBorder)
             }
-            if (vm.ggufDownloadStatus.isNotBlank()) {
+            val hfStatus = vm.hfDownloadStatus
+            if (hfStatus.isNotBlank()) {
                 Text(
-                    vm.ggufDownloadStatus,
+                    hfStatus,
                     color = when {
-                        vm.ggufDownloadStatus.startsWith("✅") -> OllamaGreen
-                        vm.ggufDownloadStatus.startsWith("❌") -> OllamaRed
+                        hfStatus.startsWith("✅") -> OllamaGreen
+                        hfStatus.startsWith("❌") -> OllamaRed
                         else -> OllamaTextDim
                     },
                     fontSize = 11.sp, fontWeight = FontWeight.Bold
