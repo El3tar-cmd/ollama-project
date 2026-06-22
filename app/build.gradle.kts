@@ -1,6 +1,7 @@
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.zip.GZIPInputStream
 
 plugins {
     alias(libs.plugins.android.application)
@@ -253,7 +254,7 @@ val downloadLlamaServer by tasks.registering {
 
             // Extract tar.gz manually
             println("[Devhive] Extracting llama-server and shared libraries...")
-            val gzip = java.util.zip.GZIPInputStream(tarGz.inputStream().buffered(65536))
+            val gzip = GZIPInputStream(tarGz.inputStream().buffered(65536))
             val headerBuf = ByteArray(512)
             while (true) {
                 var read = 0
