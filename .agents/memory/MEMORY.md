@@ -1,0 +1,1 @@
+- [DevHive refactor approach](devhive-refactor.md) — all new files use package com.example (flat) to avoid cross-file import issues in Kotlin Android project.
