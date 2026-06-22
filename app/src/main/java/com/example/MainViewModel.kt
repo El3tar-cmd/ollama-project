@@ -175,6 +175,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     )
     val shellHistory  = mutableListOf<String>()
     var shellHistIdx  by mutableStateOf(-1)
+    var shellInput    by mutableStateOf("")
 
     // Cloud auth
     var authLoginUrl      by mutableStateOf<String?>(null)
@@ -730,6 +731,63 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
                 backend     = activeBackend
             ) { step -> withContext(Dispatchers.Main) { agentSteps.add(AgentStep(step.type, "  [sub] ${step.content}", step.isError)) } }
             withContext(Dispatchers.Main) { isAgentRunning = false; refreshFileTree() }
+        }
+    }
+
+    fun shellHistoryUp() {
+        if (shellHistory.isEmpty()) return
+        shellHistIdx = minOf(shellHistIdx + 1, shellHistory.size - 1)
+        shellInput = shellHistory[shellHistIdx]
+    }
+
+    fun shellHistoryDown() {
+        if (shellHistIdx <= 0) { shellHistIdx = -1; shellInput = ""; return }
+        shellHistIdx--
+        shellInput = shellHistory[shellHistIdx]
+    }
+
+    fun runShellCommand() {
+        val cmd = shellInput.trim()
+        shellInput = ""
+        if (cmd.isEmpty()) return
+        shellHistory.remove(cmd); shellHistory.add(0, cmd); shellHistIdx = -1
+        shellLines.add(ShellLine("❯ $cmd", ShellLineType.COMMAND))
+        if (cmd == "clear" || cmd == "cls") { shellLines.clear(); return }
+        if (cmd.startsWith("cd")) {
+            val arg = cmd.removePrefix("cd").trim()
+            val target = when {
+                arg.isEmpty() || arg == "~" -> System.getenv("HOME") ?: shellCwd
+                arg.startsWith("/")         -> arg
+                else                        -> "$shellCwd/$arg"
+            }
+            val dir = java.io.File(target)
+            if (dir.exists() && dir.isDirectory) {
+                shellCwd = dir.canonicalPath
+                shellLines.add(ShellLine("📁 $shellCwd", ShellLineType.INFO))
+            } else {
+                shellLines.add(ShellLine("cd: no such directory: $arg", ShellLineType.ERROR))
+            }
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val process = ProcessBuilder("sh", "-c", cmd)
+                    .directory(java.io.File(shellCwd))
+                    .redirectErrorStream(true)
+                    .start()
+                val reader = process.inputStream.bufferedReader()
+                var ln: String?
+                while (reader.readLine().also { ln = it } != null) {
+                    val l = ln!!
+                    withContext(Dispatchers.Main) { shellLines.add(ShellLine(l, ShellLineType.OUTPUT)) }
+                }
+                val exit = process.waitFor()
+                if (exit != 0) withContext(Dispatchers.Main) {
+                    shellLines.add(ShellLine("❌ Exit: $exit", ShellLineType.ERROR))
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { shellLines.add(ShellLine("❌ ${e.message}", ShellLineType.ERROR)) }
+            }
         }
     }
 
