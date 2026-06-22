@@ -588,7 +588,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         val apiMessages = listOf(ChatMessage("system", sysPrompt)) + trimmedHistory
 
         fun cleanDisplay(raw: String): String = raw
-            .replace(Regex("<think>[\\s\\S]*?</think>"), "")
+            
             .replace(Regex("^\\s*null\\s*", setOf(RegexOption.MULTILINE)), "")
             .trimStart()
 
