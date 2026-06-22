@@ -2795,9 +2795,9 @@ val SyntaxAttr    = Color(0xFF50FA7B)    // Green
 @Composable
 fun highlightSyntax(code: String, language: String): AnnotatedString {
     return buildAnnotatedString {
-        val lines = code.split('\n')
-        for ((lineIndex, line) in lines.withIndex()) {
-            if (lineIndex > 0) append('\n')
+        append(code)
+    }
+}
             
             var remaining = line
             val tokens = mutableListOf<Pair<String, Color>>()
