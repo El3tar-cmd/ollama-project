@@ -25,6 +25,7 @@ data class ShellLine(val text: String, val type: ShellLineType = ShellLineType.O
 sealed class ChatSegment {
     data class PlainText(val text: String) : ChatSegment()
     data class CodeBlock(val language: String, val code: String) : ChatSegment()
+    data class ThinkBlock(val content: String) : ChatSegment()
 }
 
 sealed class MdSegment {
