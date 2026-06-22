@@ -255,7 +255,7 @@ Platform: Android arm64 | Shell: /system/bin/sh
             val existing = if (memFile.exists()) memFile.readText() else ""
             // Replace existing entry with same key or append
             val marker = "## $key"
-            val newEntry = "$marker\n_Updated: $ts_\n$value\n"
+            val newEntry = "$marker\n_Updated: $ts\n$value\n"
             val updated = if (existing.contains(marker)) {
                 val start = existing.indexOf(marker)
                 val nextH2 = existing.indexOf("\n## ", start + 1).let { if (it == -1) existing.length else it }
