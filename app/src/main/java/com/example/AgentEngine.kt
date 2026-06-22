@@ -66,6 +66,14 @@ Format (one tool per block):
 - calculate:   {"name":"calculate","expr":"2 ** 10 + sqrt(144)"}
 - fetch_url:   {"name":"fetch_url","url":"https://example.com","method":"GET","body":""}
 
+═══ MEMORY TOOLS ═══
+- memory_save:   {"name":"memory_save","key":"topic","value":"info to remember across sessions"}
+- memory_recall: {"name":"memory_recall"}  (read full memory file)
+- memory_clear:  {"name":"memory_clear","key":"topic"}  (remove one entry)
+
+═══ INTERACTION TOOLS ═══
+- ask_user: {"name":"ask_user","question":"clear question for the human — they will type the answer"}
+
 ═══ CONTROL TOOLS ═══
 - complete:    {"name":"complete","summary":"concise description of what was accomplished"}
 
@@ -79,12 +87,24 @@ RULES:
 7. If a tool fails, reflect on the error and retry with a fix.
 8. NEVER write placeholder/fake content — always real content.
 9. ALWAYS output a ```tool block — never just describe what to do.
-10. For large files, prefer read_lines with a range (e.g., start:1 end:50) over read_file to avoid huge output.
+10. For large files, prefer read_lines with a range (e.g., start:1 end:50) over read_file.
+11. Use ask_user when you genuinely need human input to proceed — state the question clearly.
+12. Use memory_save to store facts, preferences, and decisions useful for future tasks.
 
 Platform: Android arm64 | Shell: /system/bin/sh
 """.trimIndent()
 
-    private fun systemPrompt() = SYSTEM_PROMPT.replace("WORKING_DIR", workingDir)
+    // Callback set before each runAgentLoop call — used by ask_user tool
+    private var askUserFn: (suspend (String) -> String)? = null
+
+    private fun systemPrompt(): String {
+        val base = SYSTEM_PROMPT.replace("WORKING_DIR", workingDir)
+        val memFile = File(workingDir, "agent_memory.md")
+        return if (memFile.exists()) {
+            val mem = memFile.readText().trim().take(2000)
+            base + "\n\n=== YOUR MEMORY (loaded from agent_memory.md) ===\n$mem\n=== END MEMORY ==="
+        } else base
+    }
 
     // ─── Tool call parser — handles multiple formats from different models ────
     fun parseToolCalls(text: String): List<JSONObject> {
@@ -186,9 +206,109 @@ Platform: Android arm64 | Shell: /system/bin/sh
             "calculate"   -> toolCalculate(tool.optString("expr", ""))
             "run_command" -> toolRunOllamaCommand(tool.optString("args", ""))
             "fetch_url"   -> toolFetchUrl(tool.optString("url", ""), tool.optString("method", "GET"), tool.optString("body", ""))
+            // ── Memory tools ──
+            "memory_save" -> {
+                val key   = tool.optString("key", "note").trim().replace("[^a-zA-Z0-9_\\- ]".toRegex(), "")
+                val value = tool.optString("value", "")
+                if (key.isBlank() || value.isBlank())
+                    AgentStep("tool_result", "❌ memory_save: key and value required", isError = true)
+                else toolMemorySave(key, value)
+            }
+            "memory_recall" -> toolMemoryRecall()
+            "memory_clear"  -> {
+                val key = tool.optString("key", "").trim()
+                toolMemoryClear(key)
+            }
+            // ── Interaction tools ──
+            "ask_user" -> {
+                val question = tool.optString("question", "What should I do next?")
+                val fn = askUserFn
+                if (fn != null) {
+                    val answer = fn(question)
+                    AgentStep("tool_result", "💬 User answered: $answer")
+                } else {
+                    AgentStep("tool_result", "ℹ️ ask_user: no UI available. Proceeding without user input.")
+                }
+            }
             // ── Control ──
-            "complete"    -> AgentStep("complete", "✅ ${tool.optString("summary", "Task completed.")}")
-            else          -> AgentStep("tool_result", "❌ Unknown tool: $name", isError = true)
+            "complete" -> {
+                val summary = tool.optString("summary", "Task completed.")
+                // Save to short-term memory ring file
+                try {
+                    val stFile = File(context.filesDir, "agent_short_memory.txt")
+                    val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date())
+                    stFile.appendText("\n[$ts] $summary")
+                    val txt = stFile.readText()
+                    if (txt.length > 6000) stFile.writeText(txt.takeLast(6000))
+                } catch (_: Exception) {}
+                AgentStep("complete", "✅ $summary")
+            }
+            else -> AgentStep("tool_result", "❌ Unknown tool: $name", isError = true)
+        }
+    }
+
+    // ─── Memory tool implementations ─────────────────────────────────────────
+    private fun toolMemorySave(key: String, value: String): AgentStep {
+        return try {
+            val memFile = File(workingDir, "agent_memory.md")
+            val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date())
+            val existing = if (memFile.exists()) memFile.readText() else ""
+            // Replace existing entry with same key or append
+            val marker = "## $key"
+            val newEntry = "$marker\n_Updated: $ts_\n$value\n"
+            val updated = if (existing.contains(marker)) {
+                val start = existing.indexOf(marker)
+                val nextH2 = existing.indexOf("\n## ", start + 1).let { if (it == -1) existing.length else it }
+                existing.substring(0, start) + newEntry + existing.substring(nextH2)
+            } else {
+                if (existing.isBlank()) "# Agent Memory\n\n$newEntry"
+                else existing.trimEnd() + "\n\n$newEntry"
+            }
+            memFile.parentFile?.mkdirs()
+            memFile.writeText(updated)
+            AgentStep("tool_result", "🧠 Memory saved: [$key] → $value")
+        } catch (e: Exception) {
+            AgentStep("tool_result", "❌ memory_save error: ${e.message}", isError = true)
+        }
+    }
+
+    private fun toolMemoryRecall(): AgentStep {
+        return try {
+            val memFile = File(workingDir, "agent_memory.md")
+            val stFile  = File(context.filesDir, "agent_short_memory.txt")
+            val sb = StringBuilder()
+            if (memFile.exists()) {
+                sb.appendLine("=== LONG-TERM MEMORY (agent_memory.md) ===")
+                sb.appendLine(memFile.readText().take(3000))
+            }
+            if (stFile.exists()) {
+                sb.appendLine("\n=== RECENT TASK HISTORY ===")
+                sb.appendLine(stFile.readText().takeLast(2000))
+            }
+            if (sb.isBlank()) AgentStep("tool_result", "🧠 No memory saved yet.")
+            else AgentStep("tool_result", sb.toString().trimEnd())
+        } catch (e: Exception) {
+            AgentStep("tool_result", "❌ memory_recall error: ${e.message}", isError = true)
+        }
+    }
+
+    private fun toolMemoryClear(key: String): AgentStep {
+        return try {
+            val memFile = File(workingDir, "agent_memory.md")
+            if (!memFile.exists()) return AgentStep("tool_result", "ℹ️ No memory file found.")
+            if (key.isBlank()) {
+                memFile.delete()
+                return AgentStep("tool_result", "🗑️ All memory cleared.")
+            }
+            val existing = memFile.readText()
+            val marker = "## $key"
+            if (!existing.contains(marker)) return AgentStep("tool_result", "ℹ️ Key not found: $key")
+            val start   = existing.indexOf(marker)
+            val nextH2  = existing.indexOf("\n## ", start + 1).let { if (it == -1) existing.length else it }
+            memFile.writeText(existing.substring(0, start).trimEnd() + "\n" + existing.substring(nextH2).trimStart())
+            AgentStep("tool_result", "🗑️ Memory cleared: $key")
+        } catch (e: Exception) {
+            AgentStep("tool_result", "❌ memory_clear error: ${e.message}", isError = true)
         }
     }
 
@@ -596,10 +716,20 @@ Platform: Android arm64 | Shell: /system/bin/sh
         cloudApiKey: String = "",
         backend: String = "ollama",
         llamaCppBaseUrl: String = "http://127.0.0.1:8080",
+        onAskUser: (suspend (String) -> String)? = null,
         onStep: suspend (AgentStep) -> Unit
     ) {
+        askUserFn = onAskUser
+
+        // Load short-term task history
+        val stFile = File(context.filesDir, "agent_short_memory.txt")
+        val shortHistory = if (stFile.exists()) {
+            val txt = stFile.readText().trim().takeLast(3000)
+            if (txt.isNotBlank()) "\n\n=== RECENT TASK HISTORY ===\n$txt\n=== END HISTORY ===" else ""
+        } else ""
+
         val messages = mutableListOf<ChatMessage>()
-        messages.add(ChatMessage("system", systemPrompt()))
+        messages.add(ChatMessage("system", systemPrompt() + shortHistory))
         messages.add(ChatMessage("user", userTask))
 
         val ollamaApi   = OllamaApi()
@@ -707,6 +837,16 @@ Platform: Android arm64 | Shell: /system/bin/sh
             messages.add(ChatMessage("assistant", fullResponse))
             if (taskComplete) break
             messages.add(ChatMessage("user", "Tool results:\n$toolResults\nContinue with the next step. Use a ```tool block."))
+
+            // Context trimming — keep system + original task + last 14 messages
+            if (messages.size > 32) {
+                val sys  = messages[0]
+                val task = messages[1]
+                val tail = messages.takeLast(14)
+                messages.clear(); messages.add(sys); messages.add(task)
+                messages.add(ChatMessage("system", "[Earlier steps trimmed — context window management]"))
+                messages.addAll(tail)
+            }
         }
 
         if (steps >= maxSteps) {
