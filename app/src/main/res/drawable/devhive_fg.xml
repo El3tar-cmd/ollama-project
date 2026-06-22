@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<bitmap xmlns:android="http://schemas.android.com/apk/res/android"
-    android:src="@drawable/devhive_logo"
-    android:gravity="center"
-    android:tileMode="disabled"/>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:top="10dp"
+        android:bottom="10dp"
+        android:left="10dp"
+        android:right="10dp"
+        android:drawable="@drawable/devhive_logo"/>
+</layer-list>
