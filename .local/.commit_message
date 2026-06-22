@@ -1,0 +1,28 @@
+refactor: split monolithic flat files into multi-file package structure
+
+Comprehensive architecture refactor of DevHive IDE Android app.
+
+## What changed
+- Deleted 15 old flat-file Kotlin sources from com.example root
+- Created proper sub-package hierarchy with 31 new files
+
+## New package layout
+- data/model/AppModels.kt      — OllamaModel, ChatMessage, AgentStep, ShellLine/Type, ChatSegment, MdSegment, AppTab
+- data/api/OllamaApi.kt        — Ollama HTTP client (moved, same content)
+- data/api/LlamaCppApi.kt      — llama.cpp HTTP client (moved, same content)
+- agent/AgentEngine.kt         — ReAct loop (slim version)
+- agent/tools/                 — FileTools, BashTool, WebTool, SearchTools, MemoryTool, ToolExecutor
+- ui/components/CommonComponents.kt
+- ui/editor/CodeEditor.kt      — EnhancedCodeEditor + getFileIcon/getLanguageFromExtension
+- ui/home/HomeScreen.kt        — MainAppScreen + bottom nav
+- ui/server/ServerScreen.kt
+- ui/models/ModelsScreen.kt
+- ui/chat/ChatScreen.kt + MarkdownViewer.kt
+- ui/agent/AgentScreen.kt, AgentChatPane.kt, AgentFilesPane.kt, AgentStepsPane.kt
+- ui/terminal/TerminalScreen.kt  — includes formatFileSize()
+
+## Files kept in root com.example
+MainActivity.kt (≤20 lines), MainViewModel.kt (+8 sub-package imports),
+OllamaExecutor, OllamaService, OllamaAuth, LlamaCppServer, LlamaService, Ed25519
+
+## README.md updated with architecture diagram
