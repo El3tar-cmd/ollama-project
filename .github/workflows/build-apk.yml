@@ -31,29 +31,19 @@ jobs:
         with:
           ndk-version: r27c
 
-      - name: Install Vulkan shader compiler and curl
-        run: sudo apt-get update && sudo apt-get install -y glslang-tools curl
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y glslang-tools curl zipalign apksigner
 
       - name: Download prebuilt llama-server
         run: |
-          # Use the same download logic as Gradle build
           JNIDIR=app/src/main/jniLibs/arm64-v8a
           mkdir -p $JNIDIR
-
           curl -L -o /tmp/llama-android.tar.gz "https://github.com/ggml-org/llama.cpp/releases/download/b9754/llama-b9754-bin-android-arm64.tar.gz"
           tar -xzf /tmp/llama-android.tar.gz -C /tmp
-
-          # Find and copy llama-server binary
           find /tmp -name 'llama-server' -type f -executable | head -1 | xargs -I {} cp {} $JNIDIR/libllama_server.so
-
-          # Find and copy all .so files
           find /tmp -name '*.so' -type f | xargs -I {} cp {} $JNIDIR/
-
-          # Make llama-server executable
           chmod +x $JNIDIR/libllama_server.so
-
-          echo "Bundled files:"
-          ls -lh $JNIDIR/
+          echo "Bundled files:"; ls -lh $JNIDIR/
 
       - name: Setup NDK for Gradle
         env:
@@ -65,14 +55,73 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x gradlew
 
+      - name: Generate release keystore
+        run: |
+          keytool -genkey -v \
+            -keystore /tmp/devhive-release.jks \
+            -alias devhive \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -storepass DevHive2024! \
+            -keypass DevHive2024! \
+            -dname "CN=DevHive IDE, OU=DevHive, O=DevHive, L=Cairo, ST=Cairo, C=EG"
+          echo "✅ Keystore generated"
+
       - name: Clean project
         run: ./gradlew clean
 
-      - name: Build APK
-        run: ./gradlew assembleDebug --stacktrace
+      - name: Build Release APK
+        run: ./gradlew assembleRelease --stacktrace
+        env:
+          KEYSTORE_PATH: /tmp/devhive-release.jks
+          KEYSTORE_PASSWORD: DevHive2024!
+          KEY_ALIAS: devhive
+          KEY_PASSWORD: DevHive2024!
 
-      - name: Upload APK
+      - name: Sign APK with apksigner
+        run: |
+          UNSIGNED=app/build/outputs/apk/release/app-release-unsigned.apk
+          SIGNED=app/build/outputs/apk/release/DevHive-IDE-signed.apk
+
+          # Fallback: if release unsigned doesn't exist, try debug
+          if [ ! -f "$UNSIGNED" ]; then
+            UNSIGNED=app/build/outputs/apk/debug/app-debug.apk
+            SIGNED=app/build/outputs/apk/release/DevHive-IDE-signed.apk
+            mkdir -p app/build/outputs/apk/release
+            cp "$UNSIGNED" /tmp/apk-to-sign.apk
+          else
+            cp "$UNSIGNED" /tmp/apk-to-sign.apk
+          fi
+
+          # Align
+          zipalign -v -p 4 /tmp/apk-to-sign.apk /tmp/apk-aligned.apk
+
+          # Sign
+          apksigner sign \
+            --ks /tmp/devhive-release.jks \
+            --ks-pass pass:DevHive2024! \
+            --key-pass pass:DevHive2024! \
+            --ks-key-alias devhive \
+            --out "$SIGNED" \
+            /tmp/apk-aligned.apk
+
+          # Verify
+          apksigner verify --verbose "$SIGNED"
+          echo "✅ APK signed successfully"
+          ls -lh "$SIGNED"
+
+      - name: Upload Signed APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug
+          name: DevHive-IDE-signed
+          path: app/build/outputs/apk/release/DevHive-IDE-signed.apk
+          retention-days: 90
+
+      - name: Upload Debug APK (fallback)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DevHive-IDE-debug
           path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 90
