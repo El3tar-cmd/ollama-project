@@ -26,641 +26,362 @@ class AgentEngine(private val context: Context) {
     var workingDir: String = context.filesDir.absolutePath
 
     // ─── System prompt ────────────────────────────────────────────────────────
+    // Concise enough for 1B models, powerful enough for 70B.
+    // Uses two formats: TOOL>> for JSON params, WRITE_FILE>> for raw file content.
     private val SYSTEM_PROMPT = """
-You are Devhive Agent — an expert AI coding assistant running on Android via Ollama.
-Working directory: WORKING_DIR
+You are DevHive Agent — a precise AI coding assistant on Android.
+Working directory: {{WD}}
 
-IMPORTANT — HOW TO CALL TOOLS:
-You MUST call tools by outputting a JSON object, wrapped in a ```tool block.
-You can ONLY interact with the system via tool calls. Never describe what you would do — DO IT.
+You act ONLY through tool calls. Never describe an action — call the tool.
 
-Format (one tool per block):
-```tool
-{"name": "TOOL_NAME", "key": "value"}
-```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FORMAT A — Any tool call:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TOOL>>
+{"name":"bash","cmd":"ls -la","cwd":"{{WD}}"}
+<<TOOL
 
-═══ THINKING TOOLS ═══
-- think:               {"name":"think","content":"step-by-step reasoning before acting"}
-- sequential_thinking: {"name":"sequential_thinking","thought":"current reasoning step","step":1,"total_steps":3,"is_final_thought":false,"next_action":"what to do next"}
-- plan:                {"name":"plan","steps":["step 1","step 2","step 3"]}
-- reflect:             {"name":"reflect","observation":"what happened","adjustment":"what to do differently"}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FORMAT B — Write a file (ALWAYS use this for file content, never JSON write_file):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WRITE_FILE>>{{WD}}/hello.py
+print("hello world")
+# any characters allowed here: _ * ` # [ ] { } \
+# no JSON escaping needed
+<<WRITE_FILE
 
-═══ FILE TOOLS ═══
-- list_dir:    {"name":"list_dir","path":"WORKING_DIR"}   (alias: list)
-- read_file:   {"name":"read_file","path":"WORKING_DIR/file.txt"}
-- read_lines:  {"name":"read_lines","path":"WORKING_DIR/file.txt","start":1,"end":50}
-- write_file:  {"name":"write_file","path":"WORKING_DIR/file.txt","content":"full content here"}
-- append_file: {"name":"append_file","path":"WORKING_DIR/file.txt","content":"text to append"}
-- edit_file:   {"name":"edit_file","path":"WORKING_DIR/file.txt","old":"exact old text","new":"new text"}
-- delete_file: {"name":"delete_file","path":"WORKING_DIR/path"}
-- move_file:   {"name":"move_file","src":"WORKING_DIR/old","dst":"WORKING_DIR/new"}
-- create_dir:  {"name":"create_dir","path":"WORKING_DIR/newdir"}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TOOLS — use in FORMAT A:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{"name":"list_dir","path":"{{WD}}"}
+{"name":"read_file","path":"{{WD}}/file.txt"}
+{"name":"read_lines","path":"{{WD}}/file.txt","start":1,"end":50}
+{"name":"append_file","path":"{{WD}}/file.txt","content":"short text only"}
+{"name":"edit_file","path":"{{WD}}/file.txt","old":"exact old text","new":"replacement text"}
+{"name":"delete_file","path":"{{WD}}/file.txt"}
+{"name":"move_file","src":"{{WD}}/a.txt","dst":"{{WD}}/b.txt"}
+{"name":"create_dir","path":"{{WD}}/newdir"}
+{"name":"bash","cmd":"echo hello","cwd":"{{WD}}"}
+{"name":"fetch_url","url":"https://example.com","method":"GET"}
+{"name":"search_files","dir":"{{WD}}","query":"keyword"}
+{"name":"grep","dir":"{{WD}}","pattern":"regex","glob":"*.py"}
+{"name":"think","content":"my step-by-step reasoning"}
+{"name":"ask_user","question":"what I need the user to clarify"}
+{"name":"memory_save","key":"topic","value":"info to remember"}
+{"name":"memory_recall"}
+{"name":"complete","summary":"brief description of what was accomplished"}
 
-═══ SEARCH TOOLS ═══
-- search_files:{"name":"search_files","dir":"WORKING_DIR","query":"keyword"}  (alias: search)
-- grep:        {"name":"grep","dir":"WORKING_DIR","pattern":"regex","glob":"*.py"}
-
-═══ EXECUTION TOOLS ═══
-- bash:        {"name":"bash","cmd":"ls -la","cwd":"WORKING_DIR"}
-- git:         {"name":"git","args":"status"}
-- calculate:   {"name":"calculate","expr":"2 ** 10 + sqrt(144)"}
-- fetch_url:   {"name":"fetch_url","url":"https://example.com","method":"GET","body":""}
-
-═══ MEMORY TOOLS ═══
-- memory_save:   {"name":"memory_save","key":"topic","value":"info to remember across sessions"}
-- memory_recall: {"name":"memory_recall"}  (read full memory file)
-- memory_clear:  {"name":"memory_clear","key":"topic"}  (remove one entry)
-
-═══ INTERACTION TOOLS ═══
-- ask_user: {"name":"ask_user","question":"clear question for the human — they will type the answer"}
-
-═══ CONTROL TOOLS ═══
-- complete:    {"name":"complete","summary":"concise description of what was accomplished"}
-
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
 RULES:
-1. ALWAYS start complex tasks with plan — lay out all steps first.
-2. Use think or sequential_thinking before making non-trivial decisions.
-3. Use reflect after unexpected results to adjust strategy.
-4. ALL file paths must start with WORKING_DIR — never relative paths.
-5. Read a file before editing it.
-6. Call complete only when ALL tasks are fully done.
-7. If a tool fails, reflect on the error and retry with a fix.
-8. NEVER write placeholder/fake content — always real content.
-9. ALWAYS output a ```tool block — never just describe what to do.
-10. For large files, prefer read_lines with a range (e.g., start:1 end:50) over read_file.
-11. Use ask_user when you genuinely need human input to proceed — state the question clearly.
-12. Use memory_save to store facts, preferences, and decisions useful for future tasks.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. Every response MUST end with a TOOL>> block OR a WRITE_FILE>> block.
+2. NEVER write file content in plain text — always use WRITE_FILE>> format.
+3. WRITE_FILE>> replaces write_file JSON tool — never use write_file in TOOL>>.
+4. append_file is only for SHORT additions (< 3 lines). Longer? Use WRITE_FILE>>.
+5. Read a file before editing or appending it.
+6. Use absolute paths starting with {{WD}}.
+7. One tool call per response. Do the most impactful step first.
+8. Call complete when all tasks are fully done.
+9. If a tool fails, use think to diagnose, then retry differently.
 
-Platform: Android arm64 | Shell: /system/bin/sh
+Platform: Android arm64 · Shell: /system/bin/sh
 """.trimIndent()
 
-    // Callback set before each runAgentLoop call — used by ask_user tool
-    private var askUserFn: (suspend (String) -> String)? = null
-
     private fun systemPrompt(): String {
-        val base = SYSTEM_PROMPT.replace("WORKING_DIR", workingDir)
-        val memFile = File(workingDir, "agent_memory.md")
-        return if (memFile.exists()) {
-            val mem = memFile.readText().trim().take(2000)
-            base + "\n\n=== YOUR MEMORY (loaded from agent_memory.md) ===\n$mem\n=== END MEMORY ==="
+        val base = SYSTEM_PROMPT.replace("{{WD}}", workingDir)
+        val mem  = File(workingDir, "agent_memory.md")
+        return if (mem.exists()) {
+            val txt = mem.readText().trim().take(1500)
+            "$base\n\n=== YOUR MEMORY ===\n$txt\n=== END MEMORY ==="
         } else base
     }
 
-    // ─── Tool call parser — handles multiple formats from different models ────
+    // ─── Parser ───────────────────────────────────────────────────────────────
+    /**
+     * Extracts tool calls from model output.
+     *
+     * Priority order:
+     *   1. WRITE_FILE>>path\ncontent\n<<WRITE_FILE  — verbatim file content
+     *   2. TOOL>>\n{json}\n<<TOOL                   — primary JSON format
+     *   3. ```tool\n{json}\n```                      — legacy fallback
+     *   4. ```json\n{"name":...}\n```               — legacy fallback
+     *   5. Bare balanced JSON objects with "name"   — last-resort fallback
+     */
     fun parseToolCalls(text: String): List<JSONObject> {
-        val result = mutableListOf<JSONObject>()
-        val seen   = mutableSetOf<String>()
+        val results = mutableListOf<JSONObject>()
+        val seen    = mutableSetOf<String>()
 
-        fun tryAdd(raw: String) {
-            val trimmed = raw.trim()
-            if (trimmed.isBlank() || trimmed in seen) return
-            seen.add(trimmed)
-            try {
-                val obj = JSONObject(trimmed)
-                if (obj.has("name")) result.add(obj)
-            } catch (_: Exception) {}
+        fun add(obj: JSONObject) {
+            val key = obj.optString("name") + "|" + obj.toString()
+            if (key !in seen) { seen.add(key); results.add(obj) }
         }
 
-        // Format 1: ```tool\n{...}\n``` (primary)
-        Regex("```tool\\s*\\n([\\s\\S]*?)\\n?```").findAll(text).forEach { tryAdd(it.groupValues[1]) }
-
-        // Format 2: ```json\n{...}\n``` with a "name" key (some models use this)
-        Regex("```json\\s*\\n([\\s\\S]*?)\\n?```").findAll(text).forEach { m ->
-            val raw = m.groupValues[1].trim()
-            if (raw.contains("\"name\"")) tryAdd(raw)
-        }
-
-        // Format 3: bare fenced block ``` {... } ``` with a "name" key
-        Regex("```\\s*\\n(\\{[\\s\\S]*?\\})\\s*\\n?```").findAll(text).forEach { m ->
-            val raw = m.groupValues[1].trim()
-            if (raw.contains("\"name\"")) tryAdd(raw)
-        }
-
-        // Format 4: standalone JSON object on its own line(s) — {"name":"..."}
-        // Scan the text line by line accumulating potential JSON blocks
-        val lines = text.lines()
-        val jsonBuf = StringBuilder()
-        var depth = 0
-        for (line in lines) {
-            for (ch in line) {
-                if (ch == '{') depth++
-                if (ch == '}') depth--
-            }
-            if (depth > 0 || jsonBuf.isNotEmpty()) jsonBuf.append(line).append('\n')
-            if (depth == 0 && jsonBuf.isNotBlank()) {
-                val candidate = jsonBuf.toString().trim()
-                if (candidate.contains("\"name\"")) tryAdd(candidate)
-                jsonBuf.clear()
-            }
-        }
-
-        if (result.isEmpty()) {
-            Log.d(TAG, "parseToolCalls: no tool calls found in response (${text.length} chars)")
-        }
-        return result
-    }
-
-    // ─── Tool dispatcher ─────────────────────────────────────────────────────
-    suspend fun executeTool(tool: JSONObject): AgentStep = withContext(Dispatchers.IO) {
-        when (val name = tool.optString("name", "")) {
-            // ── Thinking tools ──
-            "think"       -> AgentStep("think",
-                "💭 ${tool.optString("content", "")}")
-            "sequential_thinking" -> {
-                val step       = tool.optInt("step", 0)
-                val total      = tool.optInt("total_steps", 0)
-                val thought    = tool.optString("thought", "")
-                val isFinal    = tool.optBoolean("is_final_thought", false)
-                val nextAction = tool.optString("next_action", "")
-                val header     = if (total > 0) "🧠 Step $step/$total" else "🧠 Thinking"
-                val body       = if (!isFinal && nextAction.isNotBlank()) "$thought\n→ Next: $nextAction"
-                                 else if (isFinal) "$thought\n✅ Final thought"
-                                 else thought
-                AgentStep("think", "$header\n$body")
-            }
-            "plan"        -> toolPlan(tool.optJSONArray("steps"))
-            "reflect"     -> AgentStep("think",
-                "🔍 Observation: ${tool.optString("observation","")}\n" +
-                "🔄 Adjustment: ${tool.optString("adjustment","")}")
-            // ── File tools (with aliases) ──
-            "list_dir", "list"
-                          -> toolListDir(tool.optString("path", tool.optString("dir", workingDir)))
-            "read_file"   -> toolReadFile(tool.optString("path", ""))
-            "read_lines"  -> toolReadLines(tool.optString("path", ""), tool.optInt("start", 1), tool.optInt("end", 50))
-            "write_file"  -> toolWriteFile(tool.optString("path", ""), tool.optString("content", ""))
-            "append_file" -> toolAppendFile(tool.optString("path", ""), tool.optString("content", ""))
-            "edit_file"   -> toolEditFile(tool.optString("path", ""), tool.optString("old", ""), tool.optString("new", ""))
-            "delete_file" -> toolDeleteFile(tool.optString("path", ""))
-            "move_file"   -> toolMoveFile(tool.optString("src", ""), tool.optString("dst", ""))
-            "create_dir"  -> toolCreateDir(tool.optString("path", ""))
-            // ── Search tools (with aliases) ──
-            "search_files", "search"
-                          -> toolSearchFiles(tool.optString("dir", tool.optString("path", workingDir)), tool.optString("query", ""))
-            "grep"        -> toolGrep(
-                tool.optString("dir", workingDir),
-                tool.optString("pattern", ""),
-                tool.optString("glob", ""))
-            // ── Execution tools ──
-            "bash"        -> toolBash(tool.optString("cmd", ""), tool.optString("cwd", workingDir))
-            "git"         -> toolBash("git ${tool.optString("args","status")}", workingDir)
-            "calculate"   -> toolCalculate(tool.optString("expr", ""))
-            "run_command" -> toolRunOllamaCommand(tool.optString("args", ""))
-            "fetch_url"   -> toolFetchUrl(tool.optString("url", ""), tool.optString("method", "GET"), tool.optString("body", ""))
-            // ── Memory tools ──
-            "memory_save" -> {
-                val key   = tool.optString("key", "note").trim().replace("[^a-zA-Z0-9_\\- ]".toRegex(), "")
-                val value = tool.optString("value", "")
-                if (key.isBlank() || value.isBlank())
-                    AgentStep("tool_result", "❌ memory_save: key and value required", isError = true)
-                else toolMemorySave(key, value)
-            }
-            "memory_recall" -> toolMemoryRecall()
-            "memory_clear"  -> {
-                val key = tool.optString("key", "").trim()
-                toolMemoryClear(key)
-            }
-            // ── Interaction tools ──
-            "ask_user" -> {
-                val question = tool.optString("question", "What should I do next?")
-                val fn = askUserFn
-                if (fn != null) {
-                    val answer = fn(question)
-                    AgentStep("tool_result", "💬 User answered: $answer")
-                } else {
-                    AgentStep("tool_result", "ℹ️ ask_user: no UI available. Proceeding without user input.")
+        // 1. WRITE_FILE>> path \n content \n <<WRITE_FILE
+        Regex("""WRITE_FILE>>([^\n]+)\n([\s\S]*?)<<WRITE_FILE""")
+            .findAll(text).forEach { m ->
+                val path    = m.groupValues[1].trim()
+                var content = m.groupValues[2]
+                // strip one trailing newline that the model adds before <<WRITE_FILE
+                if (content.endsWith("\n")) content = content.dropLast(1)
+                if (path.isNotBlank()) {
+                    add(JSONObject().apply {
+                        put("name",    "write_file")
+                        put("path",    path)
+                        put("content", content)
+                    })
                 }
             }
-            // ── Control ──
+
+        // 2. TOOL>> \n {json} \n <<TOOL
+        Regex("""TOOL>>\s*\n([\s\S]*?)\n?<<TOOL""")
+            .findAll(text).forEach { m ->
+                val raw = m.groupValues[1].trim()
+                if (raw.contains("\"name\""))
+                    try { add(JSONObject(raw)) } catch (_: Exception) {}
+            }
+
+        // 3. ```tool \n {json} \n ```
+        Regex("""```tool\s*\n([\s\S]*?)\n?```""")
+            .findAll(text).forEach { m ->
+                val raw = m.groupValues[1].trim()
+                if (raw.contains("\"name\""))
+                    try { add(JSONObject(raw)) } catch (_: Exception) {}
+            }
+
+        // 4. ```json \n {"name":...} \n ```
+        Regex("""```json\s*\n([\s\S]*?)\n?```""")
+            .findAll(text).forEach { m ->
+                val raw = m.groupValues[1].trim()
+                if (raw.contains("\"name\""))
+                    try { add(JSONObject(raw)) } catch (_: Exception) {}
+            }
+
+        // 5. Bare balanced JSON objects — only when nothing else found
+        if (results.isEmpty()) {
+            val buf   = StringBuilder()
+            var depth = 0
+            for (ch in text) {
+                when (ch) {
+                    '{' -> { depth++; buf.append(ch) }
+                    '}' -> {
+                        buf.append(ch)
+                        if (--depth == 0 && buf.isNotBlank()) {
+                            val s = buf.toString().trim()
+                            if (s.contains("\"name\""))
+                                try { add(JSONObject(s)) } catch (_: Exception) {}
+                            buf.clear()
+                        }
+                    }
+                    else -> if (depth > 0) buf.append(ch)
+                }
+            }
+        }
+
+        if (results.isEmpty())
+            Log.d(TAG, "parseToolCalls: no tool calls found (${text.length} chars preview: ${text.take(120)})")
+        return results
+    }
+
+    // ─── Tool dispatcher ──────────────────────────────────────────────────────
+    suspend fun executeTool(tool: JSONObject): AgentStep = withContext(Dispatchers.IO) {
+        when (val name = tool.optString("name", "")) {
+
+            // Thinking
+            "think"  -> AgentStep("think", "💭 ${tool.optString("content")}")
+            "plan"   -> {
+                val arr = tool.optJSONArray("steps")
+                val sb  = StringBuilder("📋 Plan\n")
+                if (arr != null) for (i in 0 until arr.length()) sb.appendLine("  ${i+1}. ${arr.optString(i)}")
+                AgentStep("think", sb.trimEnd().toString())
+            }
+
+            // File tools
+            "list_dir", "list"
+                     -> toolListDir(tool.optString("path", workingDir))
+            "read_file"
+                     -> toolReadFile(tool.optString("path", ""))
+            "read_lines"
+                     -> toolReadLines(tool.optString("path",""), tool.optInt("start",1), tool.optInt("end",50))
+            "write_file"
+                     -> toolWriteFile(tool.optString("path",""), tool.optString("content",""))
+            "append_file"
+                     -> toolAppendFile(tool.optString("path",""), tool.optString("content",""))
+            "edit_file"
+                     -> toolEditFile(tool.optString("path",""), tool.optString("old",""), tool.optString("new",""))
+            "delete_file"
+                     -> toolDeleteFile(tool.optString("path",""))
+            "move_file"
+                     -> toolMoveFile(tool.optString("src",""), tool.optString("dst",""))
+            "create_dir"
+                     -> toolCreateDir(tool.optString("path",""))
+
+            // Execution
+            "bash"          -> toolBash(tool.optString("cmd",""), tool.optString("cwd", workingDir))
+            "git"           -> toolBash("git ${tool.optString("args","status")}", workingDir)
+            "fetch_url"     -> toolFetchUrl(tool.optString("url",""), tool.optString("method","GET"), tool.optString("body",""))
+            "calculate"     -> toolCalculate(tool.optString("expr",""))
+
+            // Search
+            "search_files", "search"
+                            -> toolSearchFiles(
+                                tool.optString("dir", tool.optString("path", workingDir)),
+                                tool.optString("query","")
+                            )
+            "grep"          -> toolGrep(
+                                tool.optString("dir", workingDir),
+                                tool.optString("pattern",""),
+                                tool.optString("glob","")
+                            )
+
+            // Memory
+            "memory_save"   -> toolMemorySave(
+                                tool.optString("key","note").trim()
+                                    .replace(Regex("[^a-zA-Z0-9_\\- ]"), ""),
+                                tool.optString("value","")
+                            )
+            "memory_recall" -> toolMemoryRecall()
+            "memory_clear"  -> toolMemoryClear(tool.optString("key",""))
+
+            // Interaction
+            "ask_user" -> {
+                val q  = tool.optString("question", "What should I do next?")
+                val fn = askUserFn
+                if (fn != null) AgentStep("tool_result", "💬 User replied: ${fn(q)}")
+                else AgentStep("tool_result", "ℹ️ No user available — continuing.")
+            }
+
+            // Control
             "complete" -> {
-                val summary = tool.optString("summary", "Task completed.")
-                // Save to short-term memory ring file
-                try {
-                    val stFile = File(context.filesDir, "agent_short_memory.txt")
-                    val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date())
-                    stFile.appendText("\n[$ts] $summary")
-                    val txt = stFile.readText()
-                    if (txt.length > 6000) stFile.writeText(txt.takeLast(6000))
-                } catch (_: Exception) {}
+                val summary = tool.optString("summary", "Task complete.")
+                recordTaskDone(summary)
                 AgentStep("complete", "✅ $summary")
             }
-            else -> AgentStep("tool_result", "❌ Unknown tool: $name", isError = true)
+
+            else -> AgentStep("tool_result", "❌ Unknown tool: \"$name\"", isError = true)
         }
     }
 
-    // ─── Memory tool implementations ─────────────────────────────────────────
-    private fun toolMemorySave(key: String, value: String): AgentStep {
-        return try {
-            val memFile = File(workingDir, "agent_memory.md")
-            val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date())
-            val existing = if (memFile.exists()) memFile.readText() else ""
-            // Replace existing entry with same key or append
-            val marker = "## $key"
-            val newEntry = "$marker\n_Updated: $ts\n$value\n"
-            val updated = if (existing.contains(marker)) {
-                val start = existing.indexOf(marker)
-                val nextH2 = existing.indexOf("\n## ", start + 1).let { if (it == -1) existing.length else it }
-                existing.substring(0, start) + newEntry + existing.substring(nextH2)
-            } else {
-                if (existing.isBlank()) "# Agent Memory\n\n$newEntry"
-                else existing.trimEnd() + "\n\n$newEntry"
-            }
-            memFile.parentFile?.mkdirs()
-            memFile.writeText(updated)
-            AgentStep("tool_result", "🧠 Memory saved: [$key] → $value")
-        } catch (e: Exception) {
-            AgentStep("tool_result", "❌ memory_save error: ${e.message}", isError = true)
-        }
-    }
-
-    private fun toolMemoryRecall(): AgentStep {
-        return try {
-            val memFile = File(workingDir, "agent_memory.md")
-            val stFile  = File(context.filesDir, "agent_short_memory.txt")
-            val sb = StringBuilder()
-            if (memFile.exists()) {
-                sb.appendLine("=== LONG-TERM MEMORY (agent_memory.md) ===")
-                sb.appendLine(memFile.readText().take(3000))
-            }
-            if (stFile.exists()) {
-                sb.appendLine("\n=== RECENT TASK HISTORY ===")
-                sb.appendLine(stFile.readText().takeLast(2000))
-            }
-            if (sb.isBlank()) AgentStep("tool_result", "🧠 No memory saved yet.")
-            else AgentStep("tool_result", sb.toString().trimEnd())
-        } catch (e: Exception) {
-            AgentStep("tool_result", "❌ memory_recall error: ${e.message}", isError = true)
-        }
-    }
-
-    private fun toolMemoryClear(key: String): AgentStep {
-        return try {
-            val memFile = File(workingDir, "agent_memory.md")
-            if (!memFile.exists()) return AgentStep("tool_result", "ℹ️ No memory file found.")
-            if (key.isBlank()) {
-                memFile.delete()
-                return AgentStep("tool_result", "🗑️ All memory cleared.")
-            }
-            val existing = memFile.readText()
-            val marker = "## $key"
-            if (!existing.contains(marker)) return AgentStep("tool_result", "ℹ️ Key not found: $key")
-            val start   = existing.indexOf(marker)
-            val nextH2  = existing.indexOf("\n## ", start + 1).let { if (it == -1) existing.length else it }
-            memFile.writeText(existing.substring(0, start).trimEnd() + "\n" + existing.substring(nextH2).trimStart())
-            AgentStep("tool_result", "🗑️ Memory cleared: $key")
-        } catch (e: Exception) {
-            AgentStep("tool_result", "❌ memory_clear error: ${e.message}", isError = true)
-        }
-    }
-
-    // ─── Tool implementations ─────────────────────────────────────────────────
+    // ─── File tools ───────────────────────────────────────────────────────────
 
     private fun toolListDir(path: String): AgentStep {
-        return try {
-            val dir = File(path)
-            if (!dir.exists()) return AgentStep("tool_result", "❌ Not found: $path", isError = true)
-            val entries = dir.listFiles()?.sortedWith(compareBy({ !it.isDirectory }, { it.name })) ?: emptyList()
-            val sb = StringBuilder("📁 $path (${entries.size} entries)\n")
-            entries.forEach { f ->
-                val prefix = if (f.isDirectory) "📂" else "📄"
-                val extra  = if (f.isFile) "  ${formatSize(f.length())}" else "/"
-                sb.appendLine("  $prefix ${f.name}$extra")
-            }
-            AgentStep("tool_result", sb.toString().trimEnd())
-        } catch (e: Exception) {
-            AgentStep("tool_result", "❌ list_dir error: ${e.message}", isError = true)
+        val dir = File(path.ifBlank { workingDir })
+        if (!dir.exists()) return err("Not found: $path")
+        val entries = dir.listFiles()
+            ?.sortedWith(compareBy({ !it.isDirectory }, { it.name }))
+            ?: emptyList()
+        val sb = StringBuilder("📁 $path (${entries.size} items)\n")
+        entries.forEach { f ->
+            val tag   = if (f.isDirectory) "📂" else "📄"
+            val extra = if (f.isFile) "  ${sz(f.length())}" else "/"
+            sb.appendLine("  $tag ${f.name}$extra")
         }
+        return ok(sb.trimEnd().toString())
     }
 
     private fun toolReadFile(path: String): AgentStep {
-        return try {
-            val file = File(path)
-            if (!file.exists()) return AgentStep("tool_result", "❌ Not found: $path", isError = true)
-            val limit = 500_000L
-            if (file.length() > limit) return AgentStep("tool_result", "❌ File too large (${formatSize(file.length())}). Max: ${formatSize(limit)}", isError = true)
-            val content = file.readText()
-            val lines   = content.lines().size
-            AgentStep("tool_result", "📄 $path ($lines lines, ${formatSize(file.length())})\n```\n$content\n```")
-        } catch (e: Exception) {
-            AgentStep("tool_result", "❌ read_file error: ${e.message}", isError = true)
-        }
+        if (path.isBlank()) return err("read_file: path required")
+        val f = File(path)
+        if (!f.exists()) return err("Not found: $path")
+        if (f.length() > 400_000L) return err("File too large (${sz(f.length())}). Use read_lines.")
+        val text = f.readText()
+        return ok("📄 $path (${text.lines().size} lines)\n$text")
     }
 
     private fun toolReadLines(path: String, start: Int, end: Int): AgentStep {
-        return try {
-            val file = File(path)
-            if (!file.exists()) return AgentStep("tool_result", "❌ Not found: $path", isError = true)
-            val lines = file.readLines()
-            val total = lines.size
-            val s = (start - 1).coerceIn(0, total)
-            val e = end.coerceIn(s, total)
-            val slice = lines.subList(s, e)
-            val out = slice.mapIndexed { i, l -> "${s + i + 1}: $l" }.joinToString("\n")
-            AgentStep("tool_result", "📄 $path (lines $start–${s + slice.size} of $total)\n$out")
-        } catch (ex: Exception) {
-            AgentStep("tool_result", "❌ read_lines error: ${ex.message}", isError = true)
-        }
+        if (path.isBlank()) return err("read_lines: path required")
+        val f = File(path)
+        if (!f.exists()) return err("Not found: $path")
+        val lines = f.readLines()
+        val total = lines.size
+        val s     = (start - 1).coerceIn(0, total)
+        val e     = end.coerceIn(s, total)
+        val slice = lines.subList(s, e)
+        val out   = slice.mapIndexed { i, l -> "${s + i + 1}: $l" }.joinToString("\n")
+        return ok("📄 $path lines $start–${s + slice.size}/$total\n$out")
     }
 
     private fun toolWriteFile(path: String, content: String): AgentStep {
+        if (path.isBlank()) return err("write_file: path required")
         return try {
-            val file = File(path)
-            file.parentFile?.mkdirs()
-            file.writeText(content)
-            AgentStep("tool_result", "✅ Wrote ${formatSize(file.length())} to $path (${content.lines().size} lines)")
-        } catch (e: Exception) {
-            AgentStep("tool_result", "❌ write_file error: ${e.message}", isError = true)
-        }
+            val f = File(path)
+            f.parentFile?.mkdirs()
+            f.writeText(content)
+            ok("✅ Wrote ${sz(f.length())} → $path (${content.lines().size} lines)")
+        } catch (e: Exception) { err("write_file: ${e.message}") }
     }
 
     private fun toolAppendFile(path: String, content: String): AgentStep {
+        if (path.isBlank()) return err("append_file: path required")
         return try {
-            val file = File(path)
-            file.parentFile?.mkdirs()
-            file.appendText(content)
-            AgentStep("tool_result", "✅ Appended ${content.length} chars to $path")
-        } catch (e: Exception) {
-            AgentStep("tool_result", "❌ append_file error: ${e.message}", isError = true)
-        }
+            val f = File(path)
+            f.parentFile?.mkdirs()
+            f.appendText(content)
+            ok("✅ Appended ${content.length} chars → $path")
+        } catch (e: Exception) { err("append_file: ${e.message}") }
     }
 
     private fun toolEditFile(path: String, old: String, new: String): AgentStep {
+        if (path.isBlank() || old.isBlank()) return err("edit_file: path and old required")
         return try {
-            val file = File(path)
-            if (!file.exists()) return AgentStep("tool_result", "❌ Not found: $path", isError = true)
-            val content = file.readText()
-            val count = content.split(old).size - 1
-            if (count == 0) return AgentStep("tool_result", "❌ Target text not found in file. Use read_file first.", isError = true)
-            file.writeText(content.replace(old, new))
-            AgentStep("tool_result", "✅ Replaced $count occurrence(s) in $path")
-        } catch (e: Exception) {
-            AgentStep("tool_result", "❌ edit_file error: ${e.message}", isError = true)
-        }
+            val f = File(path)
+            if (!f.exists()) return err("Not found: $path")
+            val text  = f.readText()
+            val count = text.split(old).size - 1
+            if (count == 0) return err("edit_file: text not found — use read_file to verify exact content")
+            f.writeText(text.replace(old, new))
+            ok("✅ Replaced $count occurrence(s) in $path")
+        } catch (e: Exception) { err("edit_file: ${e.message}") }
     }
 
     private fun toolDeleteFile(path: String): AgentStep {
-        return try {
-            val f = File(path)
-            if (!f.exists()) return AgentStep("tool_result", "❌ Not found: $path", isError = true)
-            val deleted = if (f.isDirectory) f.deleteRecursively() else f.delete()
-            if (deleted) AgentStep("tool_result", "🗑️ Deleted: $path")
-            else AgentStep("tool_result", "❌ Could not delete: $path", isError = true)
-        } catch (e: Exception) {
-            AgentStep("tool_result", "❌ delete_file error: ${e.message}", isError = true)
-        }
+        if (path.isBlank()) return err("delete_file: path required")
+        val f = File(path)
+        if (!f.exists()) return err("Not found: $path")
+        val deleted = if (f.isDirectory) f.deleteRecursively() else f.delete()
+        return if (deleted) ok("🗑️ Deleted: $path")
+        else err("Could not delete: $path")
     }
 
     private fun toolMoveFile(src: String, dst: String): AgentStep {
+        if (src.isBlank() || dst.isBlank()) return err("move_file: src and dst required")
+        val s = File(src); val d = File(dst)
+        if (!s.exists()) return err("Source not found: $src")
+        d.parentFile?.mkdirs()
         return try {
-            val s = File(src)
-            val d = File(dst)
-            if (!s.exists()) return AgentStep("tool_result", "❌ Source not found: $src", isError = true)
-            d.parentFile?.mkdirs()
-            if (s.renameTo(d)) AgentStep("tool_result", "✅ Moved: $src → $dst")
-            else {
-                s.copyRecursively(d, overwrite = true)
-                s.deleteRecursively()
-                AgentStep("tool_result", "✅ Moved (copy+delete): $src → $dst")
-            }
-        } catch (e: Exception) {
-            AgentStep("tool_result", "❌ move_file error: ${e.message}", isError = true)
-        }
+            if (s.renameTo(d)) ok("✅ Moved: $src → $dst")
+            else { s.copyRecursively(d, overwrite = true); s.deleteRecursively(); ok("✅ Moved: $src → $dst") }
+        } catch (e: Exception) { err("move_file: ${e.message}") }
     }
 
     private fun toolCreateDir(path: String): AgentStep {
-        return try {
-            val dir = File(path)
-            if (dir.exists()) return AgentStep("tool_result", "ℹ️ Already exists: $path")
-            if (dir.mkdirs()) AgentStep("tool_result", "✅ Created directory: $path")
-            else AgentStep("tool_result", "❌ Could not create directory: $path", isError = true)
-        } catch (e: Exception) {
-            AgentStep("tool_result", "❌ create_dir error: ${e.message}", isError = true)
-        }
+        if (path.isBlank()) return err("create_dir: path required")
+        val d = File(path)
+        if (d.exists()) return ok("ℹ️ Already exists: $path")
+        return if (d.mkdirs()) ok("✅ Created: $path")
+        else err("Could not create: $path")
     }
 
-    private fun toolSearchFiles(dir: String, query: String): AgentStep {
-        return try {
-            val root = File(dir)
-            if (!root.exists()) return AgentStep("tool_result", "❌ Dir not found: $dir", isError = true)
-            val results = mutableListOf<String>()
-            root.walkTopDown()
-                .filter { it.isFile }
-                .take(1000)
-                .forEach { file ->
-                    when {
-                        file.name.contains(query, ignoreCase = true) ->
-                            results.add("📄 ${file.absolutePath}")
-                        file.length() < 1_000_000 -> {
-                            try {
-                                if (file.readText().contains(query, ignoreCase = true))
-                                    results.add("📝 ${file.absolutePath} (content)")
-                            } catch (_: Exception) {}
-                        }
-                    }
-                }
-            if (results.isEmpty()) AgentStep("tool_result", "🔍 No matches for \"$query\" in $dir")
-            else AgentStep("tool_result", "🔍 Found ${results.size} match(es):\n${results.take(50).joinToString("\n")}")
-        } catch (e: Exception) {
-            AgentStep("tool_result", "❌ search_files error: ${e.message}", isError = true)
-        }
-    }
-
-    // ─── New tool implementations ─────────────────────────────────────────────
-
-    private fun toolPlan(stepsArr: org.json.JSONArray?): AgentStep {
-        if (stepsArr == null || stepsArr.length() == 0)
-            return AgentStep("think", "📋 Plan: (empty)", isError = false)
-        val sb = StringBuilder("📋 Plan (${stepsArr.length()} steps)\n")
-        for (i in 0 until stepsArr.length()) {
-            sb.appendLine("  ${i + 1}. ${stepsArr.optString(i)}")
-        }
-        return AgentStep("think", sb.toString().trimEnd())
-    }
-
-    private fun toolGrep(dir: String, pattern: String, glob: String): AgentStep {
-        return try {
-            if (pattern.isBlank()) return AgentStep("tool_result", "❌ grep: empty pattern", isError = true)
-            val root = File(dir)
-            if (!root.exists()) return AgentStep("tool_result", "❌ Dir not found: $dir", isError = true)
-            val regex = try { Regex(pattern, RegexOption.IGNORE_CASE) }
-                        catch (_: Exception) { Regex(Regex.escape(pattern), RegexOption.IGNORE_CASE) }
-            val results = mutableListOf<String>()
-            val globRegex = if (glob.isNotBlank())
-                Regex("^" + glob.replace(".", "\\.").replace("*", ".*").replace("?", ".") + "$")
-            else null
-
-            root.walkTopDown()
-                .filter { it.isFile && (globRegex == null || globRegex.matches(it.name)) }
-                .take(500)
-                .forEach { file ->
-                    if (file.length() > 2_000_000) return@forEach
-                    try {
-                        file.readLines().forEachIndexed { idx, line ->
-                            if (regex.containsMatchIn(line)) {
-                                results.add("${file.absolutePath}:${idx + 1}: ${line.trim().take(120)}")
-                                if (results.size >= 100) return@forEach
-                            }
-                        }
-                    } catch (_: Exception) {}
-                }
-            if (results.isEmpty())
-                AgentStep("tool_result", "🔍 grep: no matches for /$pattern/ in $dir")
-            else
-                AgentStep("tool_result", "🔍 grep: ${results.size} match(es)\n${results.joinToString("\n")}")
-        } catch (e: Exception) {
-            AgentStep("tool_result", "❌ grep error: ${e.message}", isError = true)
-        }
-    }
-
-    private fun toolCalculate(expr: String): AgentStep {
-        return try {
-            if (expr.isBlank()) return AgentStep("tool_result", "❌ calculate: empty expression", isError = true)
-            // Safe evaluator — supports +,-,*,/,**,sqrt,abs,floor,ceil,round,mod,%
-            val result = evalExpr(expr.trim())
-            AgentStep("tool_result", "🔢 $expr = $result")
-        } catch (e: Exception) {
-            AgentStep("tool_result", "❌ calculate error: ${e.message}\nExpression: $expr", isError = true)
-        }
-    }
-
-    /** Minimal safe math expression evaluator (no eval, no JS engine). */
-    private fun evalExpr(expr: String): String {
-        val e = expr
-            .replace("\\s".toRegex(), "")
-            .replace("sqrt(", "§SQRT§")
-            .replace("abs(", "§ABS§")
-            .replace("floor(", "§FLOOR§")
-            .replace("ceil(", "§CEIL§")
-            .replace("round(", "§ROUND§")
-            .replace("**", "^")
-        val result = evalTokens(e)
-        return if (result == result.toLong().toDouble()) result.toLong().toString()
-               else "%.10g".format(result).trimEnd('0').trimEnd('.')
-    }
-
-    private fun evalTokens(expr: String): Double {
-        var e = expr
-        // Handle functions
-        fun applyFn(tag: String, fn: (Double) -> Double): String {
-            while (e.contains(tag)) {
-                val idx = e.indexOf(tag)
-                var depth = 1; var i = idx + tag.length
-                while (i < e.length && depth > 0) {
-                    if (e[i] == '(') depth++ else if (e[i] == ')') depth--
-                    i++
-                }
-                val inner = e.substring(idx + tag.length, i - 1)
-                val value  = fn(evalTokens(inner))
-                e = e.substring(0, idx) + value + e.substring(i)
-            }
-            return e
-        }
-        e = applyFn("§SQRT§",  { v -> kotlin.math.sqrt(v) })
-        e = applyFn("§ABS§",   { v -> kotlin.math.abs(v) })
-        e = applyFn("§FLOOR§", { v -> kotlin.math.floor(v) })
-        e = applyFn("§CEIL§",  { v -> kotlin.math.ceil(v) })
-        e = applyFn("§ROUND§", { v -> kotlin.math.round(v).toDouble() })
-
-        // Resolve parentheses
-        while (e.contains('(')) {
-            val last = e.lastIndexOf('(')
-            val close = e.indexOf(')', last)
-            if (close == -1) break
-            val inner = e.substring(last + 1, close)
-            e = e.substring(0, last) + evalTokens(inner) + e.substring(close + 1)
-        }
-
-        // Tokenize and compute with operator precedence
-        val tokens = Regex("(?<=[0-9.)])(?=[+\\-*/^%])|(?<=[+\\-*/^%])(?=[0-9.(])")
-            .split(e).filter { it.isNotBlank() }
-
-        // Flatten into numbers and ops
-        val nums = mutableListOf<Double>()
-        val ops  = mutableListOf<Char>()
-        var i = 0
-        while (i < e.length) {
-            val c = e[i]
-            if (c.isDigit() || c == '.' || (c == '-' && (i == 0 || e[i-1] in "+-*/^%"))) {
-                var j = i + 1
-                while (j < e.length && (e[j].isDigit() || e[j] == '.')) j++
-                nums.add(e.substring(i, j).toDouble())
-                i = j
-            } else if (c in "+-*/^%") {
-                ops.add(c); i++
-            } else i++
-        }
-        if (nums.isEmpty()) return e.toDoubleOrNull() ?: throw IllegalArgumentException("Cannot parse: $e")
-
-        // Apply ^ first
-        var idx = ops.indexOf('^')
-        while (idx != -1) {
-            nums[idx] = Math.pow(nums[idx], nums[idx + 1])
-            nums.removeAt(idx + 1); ops.removeAt(idx)
-            idx = ops.indexOf('^')
-        }
-        // Then * / %
-        idx = ops.indexOfFirst { it in "*/%" }
-        while (idx != -1) {
-            nums[idx] = when (ops[idx]) {
-                '*' -> nums[idx] * nums[idx + 1]
-                '/' -> nums[idx] / nums[idx + 1]
-                else -> nums[idx] % nums[idx + 1]
-            }
-            nums.removeAt(idx + 1); ops.removeAt(idx)
-            idx = ops.indexOfFirst { it in "*/%" }
-        }
-        // Then + -
-        var result = nums[0]
-        for (k in ops.indices) {
-            result = if (ops[k] == '+') result + nums[k + 1] else result - nums[k + 1]
-        }
-        return result
-    }
+    // ─── Execution tools ──────────────────────────────────────────────────────
 
     private fun toolBash(cmd: String, cwd: String): AgentStep {
+        if (cmd.isBlank()) return err("bash: cmd required")
         return try {
-            if (cmd.isBlank()) return AgentStep("tool_result", "❌ bash: empty command", isError = true)
-            val pb = ProcessBuilder(listOf("/system/bin/sh", "-c", cmd))
+            val pb = ProcessBuilder("/system/bin/sh", "-c", cmd)
             pb.directory(File(if (File(cwd).exists()) cwd else workingDir))
-            pb.environment()["HOME"]            = context.filesDir.absolutePath
-            pb.environment()["TMPDIR"]          = context.cacheDir.absolutePath
-            pb.environment()["LD_LIBRARY_PATH"] = context.applicationInfo.nativeLibraryDir
-            pb.environment()["OLLAMA_MODELS"]   = File(context.filesDir, "ollama_models").absolutePath
-            pb.redirectErrorStream(true)
-            val proc = pb.start()
-            val output = proc.inputStream.bufferedReader().readText()
-            val timedOut = !proc.waitFor(30, TimeUnit.SECONDS)
-            if (timedOut) {
-                proc.destroy()
-                return AgentStep("tool_result", "⏱️ bash: command timed out after 30s\n${output.take(500)}", isError = true)
+            pb.environment().apply {
+                put("HOME",            context.filesDir.absolutePath)
+                put("TMPDIR",          context.cacheDir.absolutePath)
+                put("LD_LIBRARY_PATH", context.applicationInfo.nativeLibraryDir)
+                put("OLLAMA_MODELS",   File(context.filesDir, "ollama_models").absolutePath)
             }
-            val exitCode = proc.exitValue()
-            val icon = if (exitCode == 0) "✅" else "⚠️"
-            AgentStep("tool_result", "$icon bash exit=$exitCode\n$ $cmd\n${output.take(4000).trimEnd()}")
-        } catch (e: Exception) {
-            AgentStep("tool_result", "❌ bash error: ${e.message}", isError = true)
-        }
-    }
-
-    private fun toolRunOllamaCommand(args: String): AgentStep {
-        return try {
-            val executor = OllamaExecutor(context)
-            val binary = File(context.applicationInfo.nativeLibraryDir, "libollama.so")
-                .takeIf { it.exists() }
-                ?: File(context.filesDir, "bin/ollama")
-            if (!binary.exists()) return AgentStep("tool_result", "❌ Ollama binary not found", isError = true)
-            val cmdArgs = args.trim().split("\\s+".toRegex()).filter { it.isNotBlank() }
-            val pb = ProcessBuilder(listOf(binary.absolutePath) + cmdArgs)
-            pb.environment()["OLLAMA_MODELS"]   = File(context.filesDir, "ollama_models").absolutePath
-            pb.environment()["HOME"]            = context.filesDir.absolutePath
-            pb.environment()["LD_LIBRARY_PATH"] = context.applicationInfo.nativeLibraryDir
             pb.redirectErrorStream(true)
-            val proc = pb.start()
-            val output = proc.inputStream.bufferedReader().readText()
-            proc.waitFor(60, TimeUnit.SECONDS)
-            AgentStep("tool_result", "⚡ ollama $args\n${output.take(2000).trimEnd()}")
-        } catch (e: Exception) {
-            AgentStep("tool_result", "❌ run_command error: ${e.message}", isError = true)
-        }
+            val proc    = pb.start()
+            val output  = proc.inputStream.bufferedReader().readText()
+            val timeout = !proc.waitFor(30, TimeUnit.SECONDS)
+            if (timeout) { proc.destroy(); return err("bash: timed out\n${output.take(300)}") }
+            val icon = if (proc.exitValue() == 0) "✅" else "⚠️"
+            ok("$icon exit=${proc.exitValue()}\n\$ $cmd\n${output.take(3000).trimEnd()}")
+        } catch (e: Exception) { err("bash: ${e.message}") }
     }
 
     private val fetchClient by lazy {
@@ -672,42 +393,212 @@ Platform: Android arm64 | Shell: /system/bin/sh
             .build()
     }
 
-    private fun toolFetchUrl(urlStr: String, method: String, body: String): AgentStep {
+    private fun toolFetchUrl(url: String, method: String, body: String): AgentStep {
+        if (url.isBlank()) return err("fetch_url: url required")
         return try {
-            if (urlStr.isBlank()) return AgentStep("tool_result", "❌ fetch_url: empty URL", isError = true)
-
             val mth = method.uppercase().ifBlank { if (body.isNotBlank()) "POST" else "GET" }
             val reqBody = when {
                 mth == "GET" || mth == "HEAD" -> null
                 body.isNotBlank() -> body.toByteArray().toRequestBody(
                     if (body.trimStart().startsWith("{") || body.trimStart().startsWith("["))
                         "application/json".toMediaType()
-                    else
-                        "text/plain".toMediaType()
+                    else "text/plain".toMediaType()
                 )
                 else -> ByteArray(0).toRequestBody("text/plain".toMediaType())
             }
-
-            val req = Request.Builder()
-                .url(urlStr)
-                .method(mth, reqBody)
-                .header("User-Agent", "Mozilla/5.0 DevHiveIDE/1.0")
-                .header("Accept", "text/html,application/json,application/xhtml+xml,*/*;q=0.8")
-                .header("Accept-Language", "en-US,en;q=0.9")
-                .build()
-
-            fetchClient.newCall(req).execute().use { resp ->
-                val code     = resp.code
-                val ctype    = resp.header("Content-Type", "")
-                val respBody = resp.body?.string()?.take(4000) ?: "(empty body)"
-                AgentStep("tool_result", "🌐 $mth $urlStr\n→ HTTP $code  |  $ctype\n\n$respBody".trimEnd())
+            fetchClient.newCall(
+                Request.Builder().url(url).method(mth, reqBody)
+                    .header("User-Agent", "Mozilla/5.0 DevHiveIDE/1.0")
+                    .header("Accept", "*/*")
+                    .build()
+            ).execute().use { resp ->
+                ok("🌐 HTTP ${resp.code} $mth $url\n${resp.body?.string()?.take(3000) ?: "(empty)"}")
             }
-        } catch (e: Exception) {
-            AgentStep("tool_result", "❌ fetch_url error: ${e.message}", isError = true)
+        } catch (e: Exception) { err("fetch_url: ${e.message}") }
+    }
+
+    private fun toolCalculate(expr: String): AgentStep {
+        if (expr.isBlank()) return err("calculate: expr required")
+        return try { ok("🔢 $expr = ${evalExpr(expr.trim())}") }
+        catch (e: Exception) { err("calculate: ${e.message}") }
+    }
+
+    // ─── Search tools ─────────────────────────────────────────────────────────
+
+    private fun toolSearchFiles(dir: String, query: String): AgentStep {
+        val root = File(dir.ifBlank { workingDir })
+        if (!root.exists()) return err("Dir not found: $dir")
+        val hits = mutableListOf<String>()
+        root.walkTopDown().filter { it.isFile }.take(500).forEach { f ->
+            when {
+                f.name.contains(query, true) -> hits.add("📄 ${f.absolutePath}")
+                f.length() < 500_000L -> try {
+                    if (f.readText().contains(query, true)) hits.add("📝 ${f.absolutePath}")
+                } catch (_: Exception) {}
+            }
         }
+        return if (hits.isEmpty()) ok("🔍 No matches for \"$query\"")
+        else ok("🔍 ${hits.size} match(es):\n${hits.take(40).joinToString("\n")}")
+    }
+
+    private fun toolGrep(dir: String, pattern: String, glob: String): AgentStep {
+        if (pattern.isBlank()) return err("grep: pattern required")
+        val root = File(dir.ifBlank { workingDir })
+        if (!root.exists()) return err("Dir not found: $dir")
+        val regex = try { Regex(pattern, RegexOption.IGNORE_CASE) }
+                    catch (_: Exception) { Regex(Regex.escape(pattern), RegexOption.IGNORE_CASE) }
+        val globR = if (glob.isNotBlank())
+            Regex("^${glob.replace(".", "\\.").replace("*", ".*").replace("?", ".")}$")
+        else null
+        val hits = mutableListOf<String>()
+        root.walkTopDown()
+            .filter { it.isFile && (globR == null || globR.matches(it.name)) && it.length() < 2_000_000L }
+            .take(300).forEach { f ->
+                try {
+                    f.readLines().forEachIndexed { i, l ->
+                        if (regex.containsMatchIn(l)) {
+                            hits.add("${f.absolutePath}:${i+1}: ${l.trim().take(100)}")
+                            if (hits.size >= 80) return@forEach
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+        return if (hits.isEmpty()) ok("🔍 grep: no matches for /$pattern/")
+        else ok("🔍 grep: ${hits.size} match(es)\n${hits.joinToString("\n")}")
+    }
+
+    // ─── Memory tools ─────────────────────────────────────────────────────────
+
+    private fun toolMemorySave(key: String, value: String): AgentStep {
+        if (key.isBlank() || value.isBlank()) return err("memory_save: key and value required")
+        return try {
+            val f  = File(workingDir, "agent_memory.md")
+            val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date())
+            val existing = if (f.exists()) f.readText() else ""
+            val marker   = "## $key"
+            val entry    = "$marker\n_$ts_\n$value\n"
+            val updated  = if (existing.contains(marker)) {
+                val a = existing.indexOf(marker)
+                val b = existing.indexOf("\n## ", a + 1).let { if (it < 0) existing.length else it }
+                existing.substring(0, a) + entry + existing.substring(b).trimStart()
+            } else {
+                if (existing.isBlank()) "# Agent Memory\n\n$entry"
+                else existing.trimEnd() + "\n\n$entry"
+            }
+            f.parentFile?.mkdirs(); f.writeText(updated)
+            ok("🧠 Memory saved: [$key]")
+        } catch (e: Exception) { err("memory_save: ${e.message}") }
+    }
+
+    private fun toolMemoryRecall(): AgentStep {
+        val f = File(workingDir, "agent_memory.md")
+        return if (f.exists()) ok("🧠 Memory:\n${f.readText().take(3000)}")
+        else ok("🧠 No memory saved yet.")
+    }
+
+    private fun toolMemoryClear(key: String): AgentStep {
+        val f = File(workingDir, "agent_memory.md")
+        if (!f.exists()) return ok("ℹ️ No memory file.")
+        return try {
+            if (key.isBlank()) { f.delete(); ok("🗑️ All memory cleared.") }
+            else {
+                val existing = f.readText()
+                val marker   = "## $key"
+                if (!existing.contains(marker)) return ok("ℹ️ Key not found: $key")
+                val a = existing.indexOf(marker)
+                val b = existing.indexOf("\n## ", a + 1).let { if (it < 0) existing.length else it }
+                f.writeText(existing.substring(0, a).trimEnd() + "\n" + existing.substring(b).trimStart())
+                ok("🗑️ Cleared: $key")
+            }
+        } catch (e: Exception) { err("memory_clear: ${e.message}") }
+    }
+
+    private fun recordTaskDone(summary: String) {
+        try {
+            val f  = File(context.filesDir, "agent_task_history.txt")
+            val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date())
+            f.appendText("[$ts] $summary\n")
+            val txt = f.readText()
+            if (txt.length > 5000) f.writeText(txt.takeLast(5000))
+        } catch (_: Exception) {}
+    }
+
+    // ─── Math evaluator (no eval — pure Kotlin) ───────────────────────────────
+
+    private fun evalExpr(e: String): String {
+        val r = evalMath(e.replace("\\s".toRegex(), "").replace("**", "^"))
+        return if (r == kotlin.math.floor(r) && !r.isInfinite()) r.toLong().toString()
+        else "%.10g".format(r).trimEnd('0').trimEnd('.')
+    }
+
+    private fun evalMath(raw: String): Double {
+        var e = raw
+
+        // Functions: sqrt, abs, floor, ceil, round
+        data class Fn(val name: String, val fn: (Double) -> Double)
+        val fns = listOf(
+            Fn("sqrt")  { v -> kotlin.math.sqrt(v) },
+            Fn("abs")   { v -> kotlin.math.abs(v)  },
+            Fn("floor") { v -> kotlin.math.floor(v) },
+            Fn("ceil")  { v -> kotlin.math.ceil(v)  },
+            Fn("round") { v -> kotlin.math.round(v).toDouble() }
+        )
+        for (fn in fns) {
+            val tag = "${fn.name}("
+            while (e.contains(tag)) {
+                val idx = e.indexOf(tag)
+                var d = 1; var j = idx + tag.length
+                while (j < e.length && d > 0) { if (e[j]=='(') d++ else if (e[j]==')') d--; j++ }
+                val inner = e.substring(idx + tag.length, j - 1)
+                e = e.substring(0, idx) + fn.fn(evalMath(inner)) + e.substring(j)
+            }
+        }
+
+        // Parentheses
+        while (e.contains('(')) {
+            val last  = e.lastIndexOf('(')
+            val close = e.indexOf(')', last)
+            if (close < 0) break
+            e = e.substring(0, last) + evalMath(e.substring(last+1, close)) + e.substring(close+1)
+        }
+
+        // Tokenise into numbers + operators
+        val nums = mutableListOf<Double>()
+        val ops  = mutableListOf<Char>()
+        var i = 0
+        while (i < e.length) {
+            val c = e[i]
+            if (c.isDigit() || c == '.' ||
+                (c == '-' && (i == 0 || e[i-1] in "+-*/^%"))) {
+                var j = i + 1
+                while (j < e.length && (e[j].isDigit() || e[j] == '.')) j++
+                nums.add(e.substring(i, j).toDouble()); i = j
+            } else if (c in "+-*/^%") { ops.add(c); i++ }
+            else i++
+        }
+        if (nums.isEmpty()) return e.toDoubleOrNull() ?: throw IllegalArgumentException("Cannot parse: $e")
+
+        // Precedence: ^ first, then * / %, then + -
+        var oi = ops.indexOf('^')
+        while (oi >= 0) {
+            nums[oi] = Math.pow(nums[oi], nums[oi+1])
+            nums.removeAt(oi+1); ops.removeAt(oi); oi = ops.indexOf('^')
+        }
+        oi = ops.indexOfFirst { it in "*/%" }
+        while (oi >= 0) {
+            nums[oi] = when (ops[oi]) { '*' -> nums[oi]*nums[oi+1]; '/' -> nums[oi]/nums[oi+1]; else -> nums[oi]%nums[oi+1] }
+            nums.removeAt(oi+1); ops.removeAt(oi)
+            oi = ops.indexOfFirst { it in "*/%" }
+        }
+        var r = nums[0]
+        ops.forEachIndexed { k, op -> r = if (op == '+') r + nums[k+1] else r - nums[k+1] }
+        return r
     }
 
     // ─── Agent loop ───────────────────────────────────────────────────────────
+
+    private var askUserFn: (suspend (String) -> String)? = null
+
     suspend fun runAgentLoop(
         userTask: String,
         model: String,
@@ -720,140 +611,124 @@ Platform: Android arm64 | Shell: /system/bin/sh
     ) {
         askUserFn = onAskUser
 
-        // Load short-term task history
-        val stFile = File(context.filesDir, "agent_short_memory.txt")
-        val shortHistory = if (stFile.exists()) {
-            val txt = stFile.readText().trim().takeLast(3000)
-            if (txt.isNotBlank()) "\n\n=== RECENT TASK HISTORY ===\n$txt\n=== END HISTORY ===" else ""
-        } else ""
+        // Always start fresh — clearing the chat truly clears context
+        val messages = mutableListOf(
+            ChatMessage("system", systemPrompt()),
+            ChatMessage("user",   userTask)
+        )
 
-        val messages = mutableListOf<ChatMessage>()
-        messages.add(ChatMessage("system", systemPrompt() + shortHistory))
-        messages.add(ChatMessage("user", userTask))
-
-        val ollamaApi   = OllamaApi()
-        val isCloud     = model.endsWith(":cloud")
+        val api   = OllamaApi()
+        val cloud = model.endsWith(":cloud")
         var steps = 0
-        var consecutiveErrors = 0
-        val MAX_CONSECUTIVE_ERRORS = 3
+        var errs  = 0
 
         while (steps < maxSteps) {
             steps++
-            var fullResponse = ""
-            var streamError  = ""
-            var streamOk     = true
+            var response = ""
+            var streamOk = true
+            var streamErr = ""
 
             try {
                 suspendCancellableCoroutine<Unit> { cont ->
-                    val onToken: (String) -> Unit = { token -> fullResponse += token }
-                    val onDone:  (Boolean, String) -> Unit = { success, msg ->
-                        if (!success) { streamOk = false; streamError = msg }
-                        if (!cont.isCompleted) cont.resume(Unit)
-                    }
-                    val call = when {
-                        isCloud && cloudApiKey.isNotBlank() ->
-                            ollamaApi.cloudChatStream(cloudApiKey, model, messages, onToken, onDone)
-                        else ->
-                            ollamaApi.chatStream(baseUrl, model, messages, onToken, onDone)
-                    }
+                    val call = if (cloud && cloudApiKey.isNotBlank())
+                        api.cloudChatStream(cloudApiKey, model, messages,
+                            onToken = { response += it },
+                            onComplete = { s, m -> if (!s) { streamOk = false; streamErr = m }; if (!cont.isCompleted) cont.resume(Unit) }
+                        )
+                    else
+                        api.chatStream(baseUrl, model, messages,
+                            onToken = { response += it },
+                            onComplete = { s, m -> if (!s) { streamOk = false; streamErr = m }; if (!cont.isCompleted) cont.resume(Unit) }
+                        )
                     cont.invokeOnCancellation { call.cancel() }
                 }
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e  // let coroutine cancellation propagate normally
-            } catch (e: Exception) {
-                onStep(AgentStep("error", "❌ LLM connection error: ${e.message}", isError = true))
-                break
+            } catch (ex: kotlinx.coroutines.CancellationException) { throw ex }
+            catch (ex: Exception) {
+                onStep(AgentStep("error", "❌ LLM error: ${ex.message}", true)); break
             }
 
-            // Stream returned an error (e.g. HTTP 500, timeout, connection refused)
             if (!streamOk) {
-                consecutiveErrors++
-                onStep(AgentStep("error", "❌ LLM error: $streamError", isError = true))
-                if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-                    onStep(AgentStep("info", "⚠️ Too many consecutive errors. Is the daemon running?"))
-                    break
-                }
-                // Short wait before retrying
-                kotlinx.coroutines.delay(1000)
-                continue
+                errs++
+                onStep(AgentStep("error", "❌ $streamErr", true))
+                if (errs >= 3) { onStep(AgentStep("info", "⚠️ Too many errors — is Ollama running?")); break }
+                kotlinx.coroutines.delay(1000); continue
             }
-
-            // Empty response — model sent nothing
-            if (fullResponse.isBlank()) {
-                consecutiveErrors++
-                onStep(AgentStep("error", "❌ Model returned an empty response.", isError = true))
-                if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) break
-                kotlinx.coroutines.delay(800)
-                continue
+            if (response.isBlank()) {
+                errs++
+                onStep(AgentStep("error", "❌ Model returned empty response.", true))
+                if (errs >= 3) break
+                kotlinx.coroutines.delay(800); continue
             }
+            errs = 0
 
-            consecutiveErrors = 0  // reset on successful response
+            // Parse
+            val toolCalls = parseToolCalls(response)
 
-            val toolCalls = parseToolCalls(fullResponse)
-
-            // Strip all recognised tool block formats for display
-            val textOnly = fullResponse
-                .replace(Regex("```tool\\s*\\n[\\s\\S]*?\\n?```"), "")
-                .replace(Regex("```json\\s*\\n[\\s\\S]*?\\n?```"), "")
-                .replace(Regex("```\\s*\\n\\{[\\s\\S]*?\\}\\s*\\n?```"), "")
+            // Show non-tool text (strip all known tool block formats)
+            val display = response
+                .replace(Regex("""WRITE_FILE>>[^\n]+\n[\s\S]*?<<WRITE_FILE"""), "")
+                .replace(Regex("""TOOL>>\s*\n[\s\S]*?\n?<<TOOL"""), "")
+                .replace(Regex("""```tool\s*\n[\s\S]*?\n?```"""), "")
+                .replace(Regex("""```json\s*\n[\s\S]*?\n?```"""), "")
                 .trim()
+            if (display.isNotBlank()) onStep(AgentStep("assistant", display))
 
-            if (textOnly.isNotBlank()) {
-                onStep(AgentStep("assistant", textOnly))
-            }
-
-            // Model gave only text — nudge it to call a tool (up to 2 times)
+            // No tool found — nudge model (max 2 nudges before giving up)
             if (toolCalls.isEmpty()) {
-                messages.add(ChatMessage("assistant", fullResponse))
-                val noToolTries = messages.count { it.role == "user" && it.content.startsWith("REMINDER") }
-                if (noToolTries < 2) {
-                    val reminder = "REMINDER: You must call a tool using a ```tool block. " +
-                        "Do not describe actions in plain text — output a tool call JSON block now. " +
-                        "If the task is complete, call: {\"name\":\"complete\",\"summary\":\"what was done\"}"
-                    messages.add(ChatMessage("user", reminder))
+                messages.add(ChatMessage("assistant", response))
+                val nudges = messages.count { it.role == "user" && it.content.startsWith("[NUDGE]") }
+                if (nudges < 2) {
+                    messages.add(ChatMessage("user",
+                        "[NUDGE] You must output a tool call. Examples:\n" +
+                        "TOOL>>\n{\"name\":\"list_dir\",\"path\":\"$workingDir\"}\n<<TOOL\n\n" +
+                        "Or to finish:\nTOOL>>\n{\"name\":\"complete\",\"summary\":\"what was done\"}\n<<TOOL"
+                    ))
                     continue
                 }
-                // Two reminders ignored — model is finished
                 break
             }
 
-            // Execute all tool calls
-            val toolResults = StringBuilder()
-            var taskComplete = false
-            toolCalls.forEach { toolCall ->
-                val toolName = toolCall.optString("name", "?")
+            // Execute tools
+            val resultBuf = StringBuilder()
+            var done = false
+            for (call in toolCalls) {
+                val toolName = call.optString("name", "?")
                 onStep(AgentStep("tool_call", "🔧 $toolName"))
-                val result = executeTool(toolCall)
+                val result = executeTool(call)
                 onStep(result)
-                toolResults.appendLine(result.content)
-                toolResults.appendLine("---")
-                if (result.type == "complete") taskComplete = true
+                resultBuf.appendLine(result.content).appendLine("---")
+                if (result.type == "complete") { done = true; break }
             }
 
-            messages.add(ChatMessage("assistant", fullResponse))
-            if (taskComplete) break
-            messages.add(ChatMessage("user", "Tool results:\n$toolResults\nContinue with the next step. Use a ```tool block."))
+            messages.add(ChatMessage("assistant", response))
+            if (done) break
 
-            // Context trimming — keep system + original task + last 14 messages
-            if (messages.size > 32) {
-                val sys  = messages[0]
-                val task = messages[1]
-                val tail = messages.takeLast(14)
-                messages.clear(); messages.add(sys); messages.add(task)
-                messages.add(ChatMessage("system", "[Earlier steps trimmed — context window management]"))
+            messages.add(ChatMessage("user",
+                "Tool results:\n$resultBuf\nProceed. Output the next TOOL>> or WRITE_FILE>> block."))
+
+            // Trim context window: keep system + original task + last 12 turns
+            if (messages.size > 30) {
+                val head = messages.take(2)
+                val tail = messages.takeLast(12)
+                messages.clear()
+                messages.addAll(head)
+                messages.add(ChatMessage("system", "[Earlier steps trimmed — context management]"))
                 messages.addAll(tail)
             }
         }
 
-        if (steps >= maxSteps) {
-            onStep(AgentStep("info", "⚠️ Reached max steps ($maxSteps). Task may be incomplete."))
-        }
+        if (steps >= maxSteps)
+            onStep(AgentStep("info", "⚠️ Max steps ($maxSteps) reached. Task may be incomplete."))
     }
 
     // ─── Helpers ──────────────────────────────────────────────────────────────
-    private fun formatSize(bytes: Long): String = when {
-        bytes < 1024          -> "${bytes}B"
-        bytes < 1024 * 1024   -> "${bytes / 1024}KB"
-        else                  -> "%.1fMB".format(bytes / 1024.0 / 1024.0)
+
+    private fun ok(msg: String)  = AgentStep("tool_result", msg, isError = false)
+    private fun err(msg: String) = AgentStep("tool_result", "❌ $msg", isError = true)
+
+    private fun sz(b: Long) = when {
+        b < 1024      -> "${b}B"
+        b < 1024*1024 -> "${b/1024}KB"
+        else          -> "%.1fMB".format(b/1024.0/1024.0)
     }
 }
