@@ -67,6 +67,7 @@ TOOLS — use in FORMAT A:
 {"name":"grep","dir":"{{WD}}","pattern":"regex","glob":"*.py"}
 {"name":"think","content":"my step-by-step reasoning"}
 {"name":"ask_user","question":"what I need the user to clarify"}
+{"name":"web_search","query":"how to do X in kotlin"}
 {"name":"memory_save","key":"topic","value":"info to remember"}
 {"name":"memory_recall"}
 {"name":"complete","summary":"brief description of what was accomplished"}
@@ -232,6 +233,7 @@ Platform: Android arm64 · Shell: /system/bin/sh
                                 tool.optString("pattern",""),
                                 tool.optString("glob","")
                             )
+            "web_search"    -> toolWebSearch(tool.optString("query",""))
 
             // Memory
             "memory_save"   -> toolMemorySave(
@@ -441,6 +443,46 @@ Platform: Android arm64 · Shell: /system/bin/sh
         else ok("🔍 ${hits.size} match(es):\n${hits.take(40).joinToString("\n")}")
     }
 
+    private fun toolWebSearch(query: String): AgentStep {
+        if (query.isBlank()) return err("web_search: query required")
+        return try {
+            val encoded = java.net.URLEncoder.encode(query, "UTF-8")
+            val url = "https://api.duckduckgo.com/?q=$encoded&format=json&no_html=1&skip_disambig=1"
+            val step = toolFetchUrl(url, "GET", "")
+            val body = step.content.substringAfter("\n").trim()
+            try {
+                val json = org.json.JSONObject(body)
+                val sb = StringBuilder("🔍 Web search: \"$query\"\n\n")
+                val abstract = json.optString("AbstractText","")
+                val absUrl   = json.optString("AbstractURL","")
+                if (abstract.isNotBlank()) {
+                    sb.appendLine(abstract)
+                    if (absUrl.isNotBlank()) sb.appendLine("Source: $absUrl")
+                    sb.appendLine()
+                }
+                val results = json.optJSONArray("Results")
+                if (results != null && results.length() > 0) {
+                    sb.appendLine("Results:")
+                    for (i in 0 until minOf(results.length(), 5)) {
+                        val r = results.optJSONObject(i) ?: continue
+                        sb.appendLine("• ${r.optString("Text","")}")
+                        sb.appendLine("  ${r.optString("FirstURL","")}")
+                    }
+                    sb.appendLine()
+                }
+                val related = json.optJSONArray("RelatedTopics")
+                if (sb.length < 120 && related != null) {
+                    for (i in 0 until minOf(related.length(), 4)) {
+                        val r = related.optJSONObject(i) ?: continue
+                        val txt = r.optString("Text","")
+                        if (txt.isNotBlank()) sb.appendLine("• $txt")
+                    }
+                }
+                ok(sb.trimEnd().toString().ifBlank { "No results found for: $query" })
+            } catch (_: Exception) { step }
+        } catch (e: Exception) { err("web_search: ${e.message}") }
+    }
+
     private fun toolGrep(dir: String, pattern: String, glob: String): AgentStep {
         if (pattern.isBlank()) return err("grep: pattern required")
         val root = File(dir.ifBlank { workingDir })
@@ -630,16 +672,22 @@ Platform: Android arm64 · Shell: /system/bin/sh
 
             try {
                 suspendCancellableCoroutine<Unit> { cont ->
-                    val call = if (cloud && cloudApiKey.isNotBlank())
-                        api.cloudChatStream(cloudApiKey, model, messages,
-                            onTokenGenerated = { response += it },
-                            onComplete = { s, m -> if (!s) { streamOk = false; streamErr = m }; if (!cont.isCompleted) cont.resume(Unit) }
-                        )
-                    else
-                        api.chatStream(baseUrl, model, messages,
-                            onTokenGenerated = { response += it },
-                            onComplete = { s, m -> if (!s) { streamOk = false; streamErr = m }; if (!cont.isCompleted) cont.resume(Unit) }
-                        )
+                    val onTok: (String) -> Unit = { response += it }
+                    val onDone: (Boolean, String) -> Unit = { s, m ->
+                        if (!s) { streamOk = false; streamErr = m }
+                        if (!cont.isCompleted) cont.resume(Unit)
+                    }
+                    val call = when {
+                        cloud && cloudApiKey.isNotBlank() ->
+                            api.cloudChatStream(cloudApiKey, model, messages,
+                                onTokenGenerated = onTok, onComplete = onDone)
+                        backend == "llamacpp" ->
+                            LlamaCppApi().chatStream(baseUrl, messages,
+                                onToken = onTok, onComplete = onDone)
+                        else ->
+                            api.chatStream(baseUrl, model, messages,
+                                onTokenGenerated = onTok, onComplete = onDone)
+                    }
                     cont.invokeOnCancellation { call.cancel() }
                 }
             } catch (ex: kotlinx.coroutines.CancellationException) { throw ex }

@@ -17,7 +17,6 @@ class LlamaCppApi {
 
     private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
 
-    // ── Health check ─────────────────────────────────────────────────────────
     fun checkHealth(baseUrl: String, callback: (Boolean, String) -> Unit) {
         val url = "$baseUrl/health"
         val req = Request.Builder().url(url).get().build()
@@ -30,7 +29,6 @@ class LlamaCppApi {
         })
     }
 
-    // ── Streaming chat completions (OpenAI /v1/chat/completions) ─────────────
     fun chatStream(
         baseUrl: String,
         messages: List<ChatMessage>,
@@ -84,7 +82,9 @@ class LlamaCppApi {
                                     .getJSONArray("choices")
                                     .getJSONObject(0)
                                     .getJSONObject("delta")
-                                val token = delta.optString("content", "")
+                                // Fix: optString returns "null" string when value is JSON null
+                                val token = if (delta.isNull("content")) ""
+                                            else delta.optString("content", "")
                                 if (token.isNotEmpty()) onToken(token)
                             }
                         }

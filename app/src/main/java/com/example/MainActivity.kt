@@ -766,23 +766,45 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         chatHistory.add(ChatMessage("assistant", ""))
         var response = ""
 
-        // Drop leading assistant messages — LLMs expect conversation to start with user turn
-        val apiMessages = chatHistory.subList(0, idx)
-            .dropWhile { it.role != "user" }
-            .toList()
+        // Build system prompt for chat
+        val sysPrompt = buildString {
+            append("You are DevHive — an expert AI coding assistant running locally on Android. ")
+            append("Be concise, precise, and helpful. Answer in the same language the user uses.")
+            agentSelectedFile?.let { f ->
+                append(" Current file: ${f.name}.")
+                val lang = getLanguageFromExtension(f.name)
+                if (lang.isNotBlank() && lang != "Text") append(" Language: $lang.")
+            }
+        }
+
+        // Build apiMessages: system + trimmed history (max 20 turns to avoid context overflow)
+        val history = chatHistory.subList(0, idx).dropWhile { it.role != "user" }.toList()
+        val trimmedHistory = if (history.size > 20) {
+            listOf(ChatMessage("system", "[${history.size - 10} earlier messages omitted for context efficiency]")) +
+            history.takeLast(10)
+        } else history
+        val apiMessages = listOf(ChatMessage("system", sysPrompt)) + trimmedHistory
+
+        // Strip <think>...</think> blocks from display (Qwen/DeepSeek thinking mode)
+        fun cleanDisplay(raw: String): String = raw
+            .replace(Regex("<think>[\\s\\S]*?</think>"), "")
+            .replace(Regex("^\\s*null\\s*", setOf(RegexOption.MULTILINE)), "")
+            .trimStart()
 
         val onToken: (String) -> Unit = { token ->
             viewModelScope.launch(Dispatchers.Main) {
                 response += token
-                chatHistory[idx] = ChatMessage("assistant", response)
+                val display = cleanDisplay(response)
+                chatHistory[idx] = ChatMessage("assistant", display.ifEmpty { "..." })
             }
         }
         val onDone: (Boolean, String) -> Unit = { ok, msg ->
             viewModelScope.launch(Dispatchers.Main) {
                 isGeneratingResponse = false
                 when {
-                    !ok          -> chatHistory[idx] = ChatMessage("assistant", "⚠️ $msg")
+                    !ok -> chatHistory[idx] = ChatMessage("assistant", "⚠️ $msg")
                     response.isBlank() -> chatHistory[idx] = ChatMessage("assistant", "⚠️ Empty response. Check Logs tab.")
+                    else -> chatHistory[idx] = ChatMessage("assistant", cleanDisplay(response).ifEmpty { response })
                 }
             }
         }
@@ -894,7 +916,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
             agentEngine.runAgentLoop(
                 userTask    = task,
                 model       = agentModel,
-                baseUrl     = "http://$hostUrlState",
+                baseUrl     = if (activeBackend == "llamacpp") "http://127.0.0.1:$llamaPort" else "http://$hostUrlState",
                 cloudApiKey = cloudApiKey,
                 backend     = activeBackend,
                 maxSteps    = agentMaxSteps,
@@ -1001,9 +1023,16 @@ fun MainAppScreen() {
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Box(
-                            Modifier.size(28.dp).clip(RoundedCornerShape(6.dp)).background(OllamaGreen),
+                            Modifier.size(32.dp).clip(RoundedCornerShape(8.dp)).background(Color(0xFFF5C518)),
                             contentAlignment = Alignment.Center
-                        ) { Text("{}", color = OllamaBg, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp, fontFamily = FontFamily.Monospace) }
+                        ) {
+                            androidx.compose.foundation.Image(
+                                painter = androidx.compose.ui.res.painterResource(R.drawable.devhive_logo),
+                                contentDescription = "DevHive Logo",
+                                modifier = Modifier.size(30.dp),
+                                contentScale = androidx.compose.ui.layout.ContentScale.Fit
+                            )
+                        }
                         Text("DevHive", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = OllamaText)
                         Text("IDE", fontWeight = FontWeight.Light, fontSize = 18.sp, color = OllamaGreen)
                     }
@@ -2908,51 +2937,129 @@ fun EnhancedCodeEditor(
 fun AgentFilesPane(vm: MainViewModel, context: Context) {
     // Tab bar for multiple open files
     if (vm.openFiles.isNotEmpty()) {
+        var showFileSidebar by remember { mutableStateOf(false) }
+
         Column(Modifier.fillMaxSize()) {
-            // Tab bar
+            // Tab bar with sidebar toggle
             Row(
-                Modifier.fillMaxWidth().background(OllamaSurface).padding(horizontal = 4.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(2.dp)
+                Modifier.fillMaxWidth().background(OllamaSurface),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                vm.openFiles.forEachIndexed { index, file ->
-                    val isActive = index == vm.activeTabIndex
-                    val language = getLanguageFromExtension(file.name)
-                    
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(if (isActive) OllamaCard else Color.Transparent)
-                            .clickable { vm.switchToTab(index) }
-                            .padding(horizontal = 8.dp, vertical = 4.dp)
-                    ) {
-                        Text(getFileIcon(file), fontSize = 12.sp)
-                        Text(
-                            file.name,
-                            color = if (isActive) OllamaGreen else OllamaTextDim,
-                            fontSize = 11.sp,
-                            maxLines = 1,
-                            modifier = Modifier.widthIn(max = 120.dp),
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        IconButton(
-                            onClick = { vm.closeTab(index) },
-                            modifier = Modifier.size(16.dp)
+                // Sidebar toggle button
+                IconButton(
+                    onClick = { showFileSidebar = !showFileSidebar },
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Menu, "Toggle file tree",
+                        tint = if (showFileSidebar) OllamaGreen else OllamaTextDim,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                // Tabs (horizontally scrollable)
+                androidx.compose.foundation.lazy.LazyRow(
+                    modifier = Modifier.weight(1f).padding(vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    androidx.compose.foundation.lazy.itemsIndexed(vm.openFiles) { index, file ->
+                        val isActive = index == vm.activeTabIndex
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(if (isActive) OllamaCard else Color.Transparent)
+                                .border(
+                                    width = if (isActive) 1.dp else 0.dp,
+                                    color = if (isActive) OllamaGreen.copy(alpha = 0.4f) else Color.Transparent,
+                                    shape = RoundedCornerShape(4.dp)
+                                )
+                                .clickable { vm.switchToTab(index) }
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
                         ) {
-                            Icon(
-                                Icons.Default.Close, "Close tab",
-                                tint = OllamaTextDim, modifier = Modifier.size(12.dp)
+                            Text(getFileIcon(file), fontSize = 12.sp)
+                            Text(
+                                file.name,
+                                color = if (isActive) OllamaGreen else OllamaTextDim,
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                modifier = Modifier.widthIn(max = 100.dp),
+                                overflow = TextOverflow.Ellipsis
                             )
+                            IconButton(
+                                onClick = { vm.closeTab(index) },
+                                modifier = Modifier.size(16.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Close, "Close tab",
+                                    tint = OllamaTextDim, modifier = Modifier.size(11.dp)
+                                )
+                            }
                         }
                     }
                 }
             }
-            
+
             HorizontalDivider(color = OllamaBorder, thickness = 1.dp)
-            
-            // Editor content
-            if (vm.agentSelectedFile != null) {
+
+            // Main content: optional sidebar + editor
+            Row(Modifier.fillMaxSize()) {
+                // ── File tree sidebar ─────────────────────────────────────
+                if (showFileSidebar) {
+                    Column(
+                        Modifier
+                            .width(160.dp)
+                            .fillMaxHeight()
+                            .background(Color(0xFF0F0F0F))
+                    ) {
+                        // Sidebar header
+                        Row(
+                            Modifier.fillMaxWidth().background(OllamaSurface).padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text("📁", fontSize = 11.sp)
+                            Text(
+                                File(vm.agentWorkingDir).name,
+                                color = OllamaTextDim, fontSize = 10.sp,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        HorizontalDivider(color = OllamaBorder, thickness = 0.5.dp)
+                        // File list
+                        androidx.compose.foundation.lazy.LazyColumn(Modifier.fillMaxSize().padding(4.dp)) {
+                            androidx.compose.foundation.lazy.items(vm.agentFileTree) { f ->
+                                val isOpenInTab = vm.openFiles.contains(f)
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .background(if (isOpenInTab) OllamaGreen.copy(alpha = 0.1f) else Color.Transparent)
+                                        .clickable { vm.openInNewTab(f) }
+                                        .padding(horizontal = 6.dp, vertical = 5.dp)
+                                ) {
+                                    Text(getFileIcon(f), fontSize = 11.sp)
+                                    Text(
+                                        f.name,
+                                        color = if (isOpenInTab) OllamaGreen else OllamaTextDim,
+                                        fontSize = 10.sp,
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    VerticalDivider(color = OllamaBorder, thickness = 1.dp)
+                }
+
+                // ── Editor area ───────────────────────────────────────────
+                Column(Modifier.weight(1f).fillMaxHeight()) {
+                    if (vm.agentSelectedFile != null) {
                 val file = vm.agentSelectedFile!!
                 val language = getLanguageFromExtension(file.name)
                 val isMarkdown = file.name.endsWith(".md", ignoreCase = true) ||
@@ -3017,8 +3124,9 @@ fun AgentFilesPane(vm: MainViewModel, context: Context) {
                         }
                     }
                 }
-            }
-        }
+            }           // end Column(weight=1f)
+        }               // end Row(fillMaxSize)
+    }                   // end outer Column(fillMaxSize)
     } else if (vm.agentSelectedFile != null) {
         val isMarkdown = vm.agentSelectedFile!!.name.endsWith(".md", ignoreCase = true) ||
                          vm.agentSelectedFile!!.name.endsWith(".markdown", ignoreCase = true)
