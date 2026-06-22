@@ -17,6 +17,8 @@ class AgentEngine(private val context: Context) {
 
     private val toolExecutor by lazy { ToolExecutor(context) { workingDir } }
 
+    private val thinkRegex = Regex("<think>([\\s\\S]*?)</think>", RegexOption.IGNORE_CASE)
+
     suspend fun runAgentLoop(
         userTask: String,
         model: String,
@@ -35,7 +37,6 @@ class AgentEngine(private val context: Context) {
         )
 
         val api   = OllamaApi()
-        val cloud = model.endsWith(":cloud")
         var steps = 0
         var errs  = 0
 
@@ -53,7 +54,7 @@ class AgentEngine(private val context: Context) {
                         if (!cont.isCompleted) cont.resume(Unit)
                     }
                     val call = when {
-                        cloud && cloudApiKey.isNotBlank() ->
+                        cloudApiKey.isNotBlank() && model.endsWith(":cloud") ->
                             api.cloudChatStream(cloudApiKey, model, messages,
                                 onTokenGenerated = onTok, onComplete = onDone)
                         backend == "llamacpp" ->
@@ -73,22 +74,28 @@ class AgentEngine(private val context: Context) {
             if (!streamOk) {
                 errs++
                 onStep(AgentStep("error", "❌ $streamErr", true))
-                if (errs >= 3) { onStep(AgentStep("info", "⚠️ Too many errors — is Ollama running?")); break }
+                if (errs >= 3) { onStep(AgentStep("info", "⚠️ Too many errors — is the server running?")); break }
                 delay(1000); continue
             }
             if (response.isBlank()) {
                 errs++
-                onStep(AgentStep("error", "❌ Model returned empty response.", true))
+                onStep(AgentStep("error", "❌ Empty response from model.", true))
                 if (errs >= 3) break
                 delay(800); continue
             }
             errs = 0
 
+            // ── Extract <think> blocks → show as collapsible think steps ──
+            thinkRegex.findAll(response).forEach { m ->
+                val thinkContent = m.groupValues[1].trim()
+                if (thinkContent.isNotBlank()) onStep(AgentStep("think", thinkContent))
+            }
+
             val toolCalls = parseToolCalls(response)
 
-            // Strip <think>...</think> blocks and tool call markers from display text
+            // ── Strip think blocks + tool markers from display text ──
             val display = response
-                .replace(Regex("<think>[\\s\\S]*?</think>", RegexOption.IGNORE_CASE), "")
+                .replace(thinkRegex, "")
                 .replace(Regex("""WRITE_FILE>>[^\n]+\n[\s\S]*?<<WRITE_FILE"""), "")
                 .replace(Regex("""TOOL>>\s*\n[\s\S]*?\n?<<TOOL"""), "")
                 .replace(Regex("""```tool\s*\n[\s\S]*?\n?```"""), "")
@@ -98,15 +105,17 @@ class AgentEngine(private val context: Context) {
 
             if (toolCalls.isEmpty()) {
                 messages.add(ChatMessage("assistant", response))
-                val nudges = messages.count { it.role == "user" && it.content.startsWith("[NUDGE]") }
-                if (nudges < 2) {
+                val nudgeCount = messages.count { it.role == "user" && it.content.startsWith("[NUDGE]") }
+                if (nudgeCount < 2) {
                     messages.add(ChatMessage("user",
-                        "[NUDGE] You must output a tool call. Examples:\n" +
+                        "[NUDGE] You MUST output a tool call to continue. Examples:\n" +
                         "TOOL>>\n{\"name\":\"list_dir\",\"path\":\"$workingDir\"}\n<<TOOL\n\n" +
-                        "Or to finish:\nTOOL>>\n{\"name\":\"complete\",\"summary\":\"what was done\"}\n<<TOOL"
+                        "Or to finish:\nTOOL>>\n{\"name\":\"complete\",\"summary\":\"done\"}\n<<TOOL"
                     ))
                     continue
                 }
+                // Max nudges reached — finish gracefully
+                onStep(AgentStep("info", "ℹ️ Task complete (model gave no tool call after nudges)."))
                 break
             }
 
@@ -132,7 +141,7 @@ class AgentEngine(private val context: Context) {
                 val tail = messages.takeLast(12)
                 messages.clear()
                 messages.addAll(head)
-                messages.add(ChatMessage("system", "[Earlier steps trimmed — context management]"))
+                messages.add(ChatMessage("system", "[Earlier steps trimmed — context limit management]"))
                 messages.addAll(tail)
             }
         }
