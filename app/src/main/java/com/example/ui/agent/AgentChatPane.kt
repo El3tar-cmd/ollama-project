@@ -33,8 +33,86 @@ import com.example.data.model.AgentStep
 import com.example.ui.components.OllamaTextField
 import com.example.ui.theme.*
 
+// ─── Plan step card ──────────────────────────────────────────────────────────
+@Composable
+private fun PlanStepCard(content: String) {
+    val lines = content.trim().lines()
+    // Parse numbered steps: "1. ...", "2. ...", etc.
+    val steps = lines.filter { it.matches(Regex("^\\d+\\..*")) }
+    val otherText = lines.filter { !it.matches(Regex("^\\d+\\..*")) }
+        .joinToString("\n").trim()
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0xFF0A1A12))
+            .border(BorderStroke(1.dp, OllamaGreen.copy(alpha = 0.35f)), RoundedCornerShape(12.dp))
+    ) {
+        // Header
+        Row(
+            Modifier.fillMaxWidth().background(Color(0xFF0D2018))
+                .padding(horizontal = 14.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("📋", fontSize = 14.sp)
+            Text("TASK PLAN", color = OllamaGreen, fontSize = 10.sp,
+                fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+            Spacer(Modifier.weight(1f))
+            Text("${steps.size} steps", color = OllamaGreen.copy(alpha = 0.5f),
+                fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+        }
+        HorizontalDivider(color = OllamaGreen.copy(alpha = 0.2f), thickness = 0.5.dp)
+
+        // Intro text if any
+        if (otherText.isNotBlank()) {
+            Text(otherText, color = OllamaTextDim, fontSize = 11.sp,
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                lineHeight = 16.sp)
+        }
+
+        // Plan steps
+        if (steps.isNotEmpty()) {
+            Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                steps.forEach { step ->
+                    val num = step.substringBefore(".").trim()
+                    val text = step.substringAfter(".").trim()
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        Box(
+                            Modifier.size(22.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(OllamaGreen.copy(alpha = 0.15f))
+                                .border(1.dp, OllamaGreen.copy(alpha = 0.4f), RoundedCornerShape(6.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(num, color = OllamaGreen, fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                        }
+                        Text(text, color = Color(0xFFCCE8D5), fontSize = 12.sp,
+                            lineHeight = 17.sp, modifier = Modifier.weight(1f))
+                    }
+                }
+            }
+        } else {
+            // Fallback: show as plain text
+            Text(content.trim(), color = Color(0xFFCCE8D5), fontSize = 12.sp,
+                lineHeight = 17.sp,
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp))
+        }
+    }
+}
+
+// ─── Single step bubble ──────────────────────────────────────────────────────
 @Composable
 fun AgentStepBubble(step: AgentStep) {
+    // Plan step → special card
+    if (step.type == "plan") { PlanStepCard(step.content); return }
+
     val rawContent = if (step.type == "assistant") {
         step.content
             .replace(Regex("```tool[\\s\\S]*?```"), "")
@@ -56,8 +134,8 @@ fun AgentStepBubble(step: AgentStep) {
         val cleaned = rawContent.lines().joinToString("\n") { line ->
             line.trimStart().removePrefix(">").trimStart()
         }
-        val lines      = cleaned.lines()
-        val lineCount  = lines.size
+        val lines       = cleaned.lines()
+        val lineCount   = lines.size
         val canCollapse = lineCount > 4
         val shown = if (!expanded && canCollapse)
             lines.take(3).joinToString("\n") + "\n…"
@@ -77,9 +155,11 @@ fun AgentStepBubble(step: AgentStep) {
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                     Box(Modifier.width(3.dp).height(13.dp).background(OllamaPurple, RoundedCornerShape(2.dp)))
-                    Text("THINKING", color = OllamaPurple, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+                    Text("THINKING", color = OllamaPurple, fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
                 }
-                Text("$lineCount lines", color = OllamaPurple.copy(alpha = 0.4f), fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                Text("$lineCount lines", color = OllamaPurple.copy(alpha = 0.4f),
+                    fontSize = 9.sp, fontFamily = FontFamily.Monospace)
             }
             HorizontalDivider(color = OllamaPurple.copy(alpha = 0.18f), thickness = 0.5.dp)
             Text(
@@ -96,7 +176,8 @@ fun AgentStepBubble(step: AgentStep) {
                 ) {
                     Text(
                         if (expanded) "▲ collapse" else "▼ show all  ($lineCount lines)",
-                        color = OllamaPurple.copy(alpha = 0.55f), fontSize = 9.sp, fontFamily = FontFamily.Monospace
+                        color = OllamaPurple.copy(alpha = 0.55f), fontSize = 9.sp,
+                        fontFamily = FontFamily.Monospace
                     )
                 }
             }
@@ -140,15 +221,18 @@ fun AgentStepBubble(step: AgentStep) {
                 ) {
                     Text(
                         if (expanded) "▲ collapse" else "▼ show all  ($lineCount lines)",
-                        color = textColor.copy(alpha = 0.65f), fontSize = 9.sp, fontFamily = FontFamily.Monospace
+                        color = textColor.copy(alpha = 0.65f), fontSize = 9.sp,
+                        fontFamily = FontFamily.Monospace
                     )
-                    if (!expanded) Text("${rawContent.length} chars", color = textColor.copy(alpha = 0.45f), fontSize = 9.sp)
+                    if (!expanded) Text("${rawContent.length} chars",
+                        color = textColor.copy(alpha = 0.45f), fontSize = 9.sp)
                 }
             }
         }
     }
 }
 
+// ─── Agent chat pane ─────────────────────────────────────────────────────────
 @Composable
 fun AgentChatPane(
     vm: MainViewModel,
@@ -166,7 +250,10 @@ fun AgentChatPane(
             if (vm.agentSteps.isEmpty()) {
                 item {
                     Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
                             Text("🤖", fontSize = 36.sp)
                             Text(
                                 "Describe a task for the agent.\nIt can read, write, edit files and run commands.",
@@ -181,14 +268,16 @@ fun AgentChatPane(
 
         Row(
             Modifier.fillMaxWidth().background(OllamaSurface).padding(8.dp),
-            verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             OllamaTextField(
                 vm.agentInput, { vm.agentInput = it }, "Give the agent a task...",
-                Modifier.weight(1f),
-                maxLines = 3,
+                Modifier.weight(1f), maxLines = 3,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                keyboardActions = KeyboardActions(onSend = { focusManager.clearFocus(); vm.runAgent(context) })
+                keyboardActions = KeyboardActions(onSend = {
+                    focusManager.clearFocus(); vm.runAgent(context)
+                })
             )
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 FloatingActionButton(
@@ -203,12 +292,17 @@ fun AgentChatPane(
                     if (vm.isAgentRunning)
                         Box(Modifier.size(18.dp).background(Color.White, RoundedCornerShape(3.dp)))
                     else
-                        Icon(Icons.Default.Send, contentDescription = "Send", modifier = Modifier.size(20.dp))
+                        Icon(Icons.Default.Send, contentDescription = "Send",
+                            modifier = Modifier.size(20.dp))
                 }
                 IconButton(
                     onClick = { vm.agentSteps.clear() },
-                    modifier = Modifier.size(36.dp).clip(RoundedCornerShape(8.dp)).background(OllamaCard)
-                ) { Icon(Icons.Default.Delete, null, tint = OllamaTextDim, modifier = Modifier.size(16.dp)) }
+                    modifier = Modifier.size(36.dp).clip(RoundedCornerShape(8.dp))
+                        .background(OllamaCard)
+                ) {
+                    Icon(Icons.Default.Delete, null, tint = OllamaTextDim,
+                        modifier = Modifier.size(16.dp))
+                }
             }
         }
     }
