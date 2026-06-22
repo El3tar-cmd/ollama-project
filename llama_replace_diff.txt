@@ -1,0 +1,669 @@
+commit 5e181c574c577f0799275ce5424d0157fa8dda3f
+Author: El3tar-cmd <abdalrhamn.mahmoud@gmail.com>
+Date:   Mon Jun 22 06:47:16 2026 +0300
+
+    Replace llama.cpp with MLC LLM — Settings/Models/Agent UI complete
+
+diff --git a/app/src/main/java/com/example/MainActivity.kt b/app/src/main/java/com/example/MainActivity.kt
+index 3cebb43..74f070b 100644
+--- a/app/src/main/java/com/example/MainActivity.kt
++++ b/app/src/main/java/com/example/MainActivity.kt
+@@ -192,7 +192,6 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
+                 withContext(Dispatchers.Main) {
+                     hfDownloadProgress = -1f
+                     hfDownloadStatus   = "✅ Downloaded: $file"
+-                    scanGGUFs()
+                 }
+             } catch (e: Exception) {
+                 withContext(Dispatchers.Main) { hfDownloadProgress = -1f; hfDownloadStatus = "❌ ${e.message}" }
+@@ -237,27 +236,20 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
+     var isValidatingKey  by mutableStateOf(false)
+     var cloudAuthStatus  by mutableStateOf("")   // feedback message for the UI
+ 
+-    // ── llama.cpp dual-backend ─────────────────────────────────────────────
+-    var activeBackend          by mutableStateOf("ollama")  // "ollama" | "llamacpp"
+-    val llamaServer            = LlamaCppServer(ctx)
+-    var llamaBinaryInstalled   by mutableStateOf(false)
+-    var llamaServiceActive     by mutableStateOf(false)
+-    var llamaApiOnline         by mutableStateOf(false)
+-    var llamaSelectedModel     by mutableStateOf<File?>(null)
+-    var llamaAvailableGGUFs    by mutableStateOf<List<File>>(emptyList())
+-    var llamaGpuLayers         by mutableStateOf(99)
+-    var llamaContextSize       by mutableStateOf(4096)
+-    var llamaThreads           by mutableStateOf(4)
+-    var llamaBatchSize         by mutableStateOf(512)
+-    var llamaPort              by mutableStateOf("8080")
+-    var llamaTemperature       by mutableStateOf(0.7f)
+-    var isInstallingLlama      by mutableStateOf(false)
+-    var llamaInstallProgress   by mutableStateOf(0)
+-    var llamaInstallStatus     by mutableStateOf("")
+-    var isDownloadingGGUF      by mutableStateOf(false)
+-    var ggufDownloadProgress   by mutableStateOf(0)
+-    var ggufDownloadStatus     by mutableStateOf("")
+-    var llamaHealthStatus      by mutableStateOf("")
++    // ── MLC LLM backend ───────────────────────────────────────────────────────
++    var activeBackend        by mutableStateOf("ollama")   // "ollama" | "mlc"
++    val mlcEngine            = MlcEngine(ctx)
++    var mlcEngineRunning     by mutableStateOf(false)
++    var mlcSelectedModel     by mutableStateOf<File?>(null)
++    var mlcAvailableModels   by mutableStateOf<List<File>>(emptyList())
++    var mlcContextSize       by mutableStateOf(2048)
++    var mlcTemperature       by mutableStateOf(0.7f)
++    var mlcMaxTokens         by mutableStateOf(2048)
++    var isLoadingMlc         by mutableStateOf(false)
++    var mlcLoadStatus        by mutableStateOf("")
++    var isDownloadingMlc     by mutableStateOf(false)
++    var mlcDownloadProgress  by mutableStateOf(0)
++    var mlcDownloadStatus    by mutableStateOf("")
+ 
+     private val prefs = ctx.getSharedPreferences("ollama_prefs", Context.MODE_PRIVATE)
+ 
+@@ -268,7 +260,6 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
+ 
+         // Native lib (libollama.so) is always preferred — check it first
+         checkBinaryInstalled()
+-        llamaBinaryInstalled = llamaServer.isBinaryInstalled
+ 
+         // Init agent working dir — prefer external app-specific storage so files
+         // are visible in any file manager under Android/data/<pkg>/files/OllamaAgent/
+@@ -281,6 +272,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
+         agentWorkingDir = workDir.absolutePath
+         agentEngine.workingDir = agentWorkingDir
+         refreshFileTree()
++        scanMlcModels()
+ 
+         refreshServiceStatus()
+         syncLogs()
+@@ -295,26 +287,6 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
+                 if (liveLogs.size > 1000) liveLogs.removeAt(0)
+             }
+         }
+-        // Poll llama.cpp logs and merge into liveLogs
+-        viewModelScope.launch(Dispatchers.IO) {
+-            var lastSize = 0
+-            while (true) {
+-                val lines = synchronized(LlamaService.logBuffer) {
+-                    if (LlamaService.logBuffer.size > lastSize)
+-                        LlamaService.logBuffer.drop(lastSize).also { lastSize = LlamaService.logBuffer.size }
+-                    else emptyList()
+-                }
+-                if (lines.isNotEmpty()) {
+-                    viewModelScope.launch(Dispatchers.Main) {
+-                        lines.forEach { line ->
+-                            liveLogs.add("[llama.cpp] $line")
+-                            if (liveLogs.size > 1000) liveLogs.removeAt(0)
+-                        }
+-                    }
+-                }
+-                kotlinx.coroutines.delay(1000)
+-            }
+-        }
+     }
+ 
+     private fun startApiWatcher() {
+@@ -337,17 +309,6 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
+                         }
+                     }
+                 }
+-                // ── llama.cpp health (only while service is active) ──────────────────
+-                if (llamaServiceActive || LlamaService.isRunning) {
+-                    LlamaCppApi().checkHealth("http://127.0.0.1:$llamaPort") { ok, _ ->
+-                        llamaApiOnline = ok
+-                        if (!ok && LlamaService.isRunning == false) {
+-                            llamaServiceActive = false
+-                        }
+-                    }
+-                } else {
+-                    llamaApiOnline = false
+-                }
+                 delay(3000)
+             }
+         }
+@@ -400,107 +361,55 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
+         }
+     }
+ 
+-    // ── llama.cpp backend functions ───────────────────────────────────────────
++    // ── MLC LLM backend functions ─────────────────────────────────────────────
+ 
+-    fun installLlamaBinary(context: Context) {
+-        if (isInstallingLlama) return
+-        isInstallingLlama = true; llamaInstallProgress = 0; llamaInstallStatus = "Starting…"
+-        llamaServer.downloadBinary(
+-            onProgress = { pct, msg -> viewModelScope.launch(Dispatchers.Main) { llamaInstallProgress = pct; llamaInstallStatus = msg } },
+-            onDone = { ok, msg -> viewModelScope.launch(Dispatchers.Main) {
+-                isInstallingLlama = false; llamaInstallStatus = msg
+-                llamaBinaryInstalled = llamaServer.isBinaryInstalled
+-                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+-            }}
+-        )
+-    }
+-
+-    fun toggleLlamaService(context: Context) {
+-        if (LlamaService.isRunning) {
+-            context.stopService(Intent(context, LlamaService::class.java))
+-            llamaServiceActive = false
+-            llamaApiOnline = false
+-            llamaHealthStatus = ""
+-        } else {
+-            val model = llamaSelectedModel ?: run {
+-                Toast.makeText(context, "Select a GGUF model first", Toast.LENGTH_SHORT).show()
+-                return
+-            }
+-            context.startForegroundService(Intent(context, LlamaService::class.java).apply {
+-                putExtra("model_path", model.absolutePath)
+-                putExtra("host", "127.0.0.1")
+-                putExtra("port", llamaPort)
+-                putExtra("gpu_layers", llamaGpuLayers)
+-                putExtra("ctx_size", llamaContextSize)
+-                putExtra("threads", llamaThreads)
+-                putExtra("batch_size", llamaBatchSize)
+-            })
+-            llamaServiceActive = true
+-            llamaHealthStatus = "⏳ Starting server…"
+-            // Poll until the HTTP server is up (up to 30s)
+-            viewModelScope.launch(Dispatchers.IO) {
+-                repeat(30) { attempt ->
+-                    delay(1000)
+-                    if (!LlamaService.isRunning) {
+-                        viewModelScope.launch(Dispatchers.Main) {
+-                            llamaServiceActive = false
+-                            llamaApiOnline = false
+-                            llamaHealthStatus = "❌ Server process exited — check Logs for details"
+-                        }
+-                        return@launch
+-                    }
+-                    LlamaCppApi().checkHealth("http://127.0.0.1:$llamaPort") { ok, msg ->
+-                        viewModelScope.launch(Dispatchers.Main) {
+-                            if (ok) {
+-                                llamaApiOnline = true
+-                                llamaHealthStatus = "✅ Server running on port $llamaPort"
+-                            } else if (attempt == 29) {
+-                                llamaHealthStatus = "❌ Timeout — $msg"
+-                            }
+-                        }
+-                    }
+-                    if (llamaApiOnline) return@launch
++    fun loadMlcModel(context: Context) {
++        val dir = mlcSelectedModel ?: run {
++            Toast.makeText(context, "Select an MLC model first", Toast.LENGTH_SHORT).show()
++            return
++        }
++        isLoadingMlc = true; mlcLoadStatus = "Loading…"; mlcEngineRunning = false
++        mlcEngine.loadModel(dir) { msg ->
++            viewModelScope.launch(Dispatchers.Main) {
++                mlcLoadStatus = msg
++                liveLogs.add("[MLC] $msg")
++                when {
++                    msg.startsWith("✅") -> { mlcEngineRunning = true;  isLoadingMlc = false }
++                    msg.startsWith("❌") -> { mlcEngineRunning = false; isLoadingMlc = false }
+                 }
+             }
+         }
+     }
+ 
+-    fun checkLlamaHealth(context: Context? = null) {
+-        llamaHealthStatus = "⏳ Checking…"
+-        LlamaCppApi().checkHealth("http://127.0.0.1:$llamaPort") { ok, msg ->
+-            viewModelScope.launch(Dispatchers.Main) {
+-                llamaApiOnline = ok
+-                llamaHealthStatus = if (ok) "✅ Server healthy on port $llamaPort"
+-                                    else "❌ Not reachable: $msg"
+-                context?.let { Toast.makeText(it, llamaHealthStatus, Toast.LENGTH_SHORT).show() }
+-            }
+-        }
++    fun unloadMlcModel() {
++        mlcEngine.unloadModel()
++        mlcEngineRunning = false; mlcLoadStatus = "Unloaded"
++        liveLogs.add("[MLC] Model unloaded")
+     }
+ 
+-    fun cancelGGUFDownload() {
+-        llamaServer.cancelDownload = true
+-        isDownloadingGGUF = false
+-        ggufDownloadStatus = "Cancelled"
++    fun cancelMlcDownload() {
++        mlcEngine.cancelDownload = true
++        isDownloadingMlc = false; mlcDownloadStatus = "Cancelled"
+     }
+ 
+-    fun scanGGUFs() {
++    fun scanMlcModels() {
+         viewModelScope.launch(Dispatchers.IO) {
+-            val files = llamaServer.scanLocalGGUFs()
++            val dirs = mlcEngine.scanLocalModels()
+             withContext(Dispatchers.Main) {
+-                llamaAvailableGGUFs = files
+-                if (llamaSelectedModel == null && files.isNotEmpty()) llamaSelectedModel = files.first()
++                mlcAvailableModels = dirs
++                if (mlcSelectedModel == null && dirs.isNotEmpty()) mlcSelectedModel = dirs.first()
+             }
+         }
+     }
+ 
+-    fun downloadGGUF(context: Context, model: GGUFModel) {
+-        if (isDownloadingGGUF) return
+-        isDownloadingGGUF = true; ggufDownloadProgress = 0; ggufDownloadStatus = "Starting…"
+-        llamaServer.downloadGGUF(model,
+-            onProgress = { pct, msg -> viewModelScope.launch(Dispatchers.Main) { ggufDownloadProgress = pct; ggufDownloadStatus = msg } },
++    fun downloadMlcModel(context: Context, model: MlcModel) {
++        if (isDownloadingMlc) return
++        isDownloadingMlc = true; mlcDownloadProgress = 0; mlcDownloadStatus = "Starting…"
++        mlcEngine.downloadModel(model,
++            onProgress = { pct, msg -> viewModelScope.launch(Dispatchers.Main) { mlcDownloadProgress = pct; mlcDownloadStatus = msg } },
+             onDone = { ok, msg, file -> viewModelScope.launch(Dispatchers.Main) {
+-                isDownloadingGGUF = false; ggufDownloadStatus = msg
+-                if (ok && file != null) { scanGGUFs(); llamaSelectedModel = file }
++                isDownloadingMlc = false; mlcDownloadStatus = msg
++                if (ok && file != null) { scanMlcModels(); mlcSelectedModel = file }
+                 Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+             }}
+         )
+@@ -765,14 +674,11 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
+         when {
+             isCloud ->
+                 api.cloudChatStream(cloudApiKey, selectedModelChat, apiMessages, onToken, onDone)
+-            activeBackend == "llamacpp" ->
+-                LlamaCppApi().chatStream(
+-                    "http://127.0.0.1:$llamaPort", apiMessages,
+-                    temperature = llamaTemperature,
+-                    maxTokens   = 2048,
+-                    onToken     = onToken,
+-                    onComplete  = onDone
+-                )
++            activeBackend == "mlc" -> {
++                viewModelScope.launch(Dispatchers.IO) {
++                    mlcEngine.chatBlocking(apiMessages, mlcTemperature, mlcMaxTokens, onToken, onDone)
++                }
++            }
+             else ->
+                 api.chatStream("http://$hostUrlState", selectedModelChat, apiMessages, onToken, onDone)
+         }
+@@ -850,27 +756,26 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
+         val task = agentInput.trim()
+         if (task.isEmpty() || agentModel.isEmpty()) return
+         val isCloudModel = agentModel.endsWith(":cloud")
+-        val needsServer  = !isCloudModel && activeBackend == "ollama"
++        val needsServer = !isCloudModel && activeBackend == "ollama"
+         if (needsServer && !apiOnline) {
+             Toast.makeText(context, "Ollama server must be running for local agent", Toast.LENGTH_SHORT).show()
+             return
+         }
+-        val needsLlama = !isCloudModel && activeBackend == "llamacpp"
+-        if (needsLlama && !llamaApiOnline) {
+-            Toast.makeText(context, "llama.cpp server must be running for local agent", Toast.LENGTH_SHORT).show()
++        val needsMlc = !isCloudModel && activeBackend == "mlc"
++        if (needsMlc && !mlcEngineRunning) {
++            Toast.makeText(context, "Load an MLC model first (Settings → MLC LLM)", Toast.LENGTH_SHORT).show()
+             return
+         }
+         agentInput = ""; isAgentRunning = true
+         agentSteps.add(AgentStep("user", task))
+         agentJob = viewModelScope.launch(Dispatchers.IO) {
+             agentEngine.runAgentLoop(
+-                userTask        = task,
+-                model           = agentModel,
+-                baseUrl         = "http://$hostUrlState",
+-                cloudApiKey     = cloudApiKey,
+-                backend         = activeBackend,
+-                llamaCppBaseUrl = "http://127.0.0.1:$llamaPort",
+-                maxSteps        = agentMaxSteps,
++                userTask    = task,
++                model       = agentModel,
++                baseUrl     = "http://$hostUrlState",
++                cloudApiKey = cloudApiKey,
++                backend     = if (activeBackend == "mlc") "ollama" else activeBackend,
++                maxSteps    = agentMaxSteps,
+                 onAskUser       = { question ->
+                     withContext(Dispatchers.Main) { agentPendingQuestion = question }
+                     agentAnswerChannel.receive()
+@@ -898,8 +803,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
+                 model           = agentModel,
+                 baseUrl         = "http://$hostUrlState",
+                 cloudApiKey     = cloudApiKey,
+-                backend         = activeBackend,
+-                llamaCppBaseUrl = "http://127.0.0.1:$llamaPort"
++                backend         = if (activeBackend == "mlc") "ollama" else activeBackend
+             ) { step ->
+                 withContext(Dispatchers.Main) { agentSteps.add(AgentStep(step.type, "  [sub] ${step.content}", step.isError)) }
+             }
+@@ -984,8 +888,8 @@ fun MainAppScreen() {
+                 },
+                 actions = {
+                     StatusPill(
+-                        online = if (vm.activeBackend == "llamacpp") vm.llamaApiOnline else vm.apiOnline,
+-                        label  = if (vm.activeBackend == "llamacpp") "llama.cpp" else null
++                        online = if (vm.activeBackend == "mlc") vm.mlcEngineRunning else vm.apiOnline,
++                        label  = if (vm.activeBackend == "mlc") "MLC" else null
+                     )
+                     Spacer(Modifier.width(12.dp))
+                 }
+@@ -1380,8 +1284,8 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
+             )
+         }
+ 
+-        // ── llama.cpp backend section ────────────────────────────────────────
+-        SectionCard("llama.cpp BACKEND", "Vulkan GPU accelerated • GGUF models") {
++        // ── MLC LLM backend section ───────────────────────────────────────────────
++        SectionCard("MLC LLM BACKEND", "In-process GPU inference • Vulkan + CPU • No Knox issue") {
+ 
+             // Backend switcher
+             Row(
+@@ -1389,7 +1293,7 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
+                     .background(OllamaCardAlt).padding(4.dp),
+                 horizontalArrangement = Arrangement.spacedBy(4.dp)
+             ) {
+-                listOf("ollama" to "Ollama", "llamacpp" to "llama.cpp").forEach { (key, label) ->
++                listOf("ollama" to "Ollama", "mlc" to "MLC LLM").forEach { (key, label) ->
+                     val selected = vm.activeBackend == key
+                     Box(
+                         Modifier.weight(1f).clip(RoundedCornerShape(6.dp))
+@@ -1404,125 +1308,82 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
+                 }
+             }
+ 
+-            // llama-server binary
+-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+-                Column {
+-                    Text("llama-server binary", color = OllamaText, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+-                    Text(
+-                        if (vm.llamaBinaryInstalled) "✓ Installed (${LlamaCppServer.BINARY_RELEASE})"
+-                        else "✗ Not installed",
+-                        color = if (vm.llamaBinaryInstalled) OllamaGreen else OllamaRed, fontSize = 12.sp
+-                    )
+-                    if (vm.isInstallingLlama) Text(vm.llamaInstallStatus, color = OllamaTextDim, fontSize = 11.sp)
+-                }
+-                Button(
+-                    onClick = { vm.installLlamaBinary(context) },
+-                    enabled = !vm.isInstallingLlama,
+-                    colors = ButtonDefaults.buttonColors(containerColor = OllamaGreen, contentColor = OllamaBg)
+-                ) {
+-                    if (vm.isInstallingLlama) CircularProgressIndicator(Modifier.size(14.dp), color = OllamaBg, strokeWidth = 2.dp)
+-                    else Text(if (vm.llamaBinaryInstalled) "Reinstall" else "Install", fontWeight = FontWeight.Bold)
+-                }
+-            }
+-            if (vm.isInstallingLlama && vm.llamaInstallProgress >= 0) {
+-                LinearProgressIndicator({ vm.llamaInstallProgress / 100f }, Modifier.fillMaxWidth(), color = OllamaGreen, trackColor = OllamaBorder)
+-            }
+-
+-            // Server status + toggle
++            // Engine status + load/unload switch
+             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                 Column(Modifier.weight(1f)) {
+                     Text(
+-                        if (vm.llamaApiOnline) "● Running · Port ${vm.llamaPort}"
+-                        else if (vm.llamaServiceActive) "● Starting…"
+-                        else "○ Stopped",
+-                        color = if (vm.llamaApiOnline) OllamaGreen else OllamaTextDim, fontWeight = FontWeight.Bold, fontSize = 14.sp
++                        when {
++                            vm.mlcEngineRunning -> "● Running — ${vm.mlcEngine.loadedModelName ?: ""}"
++                            vm.isLoadingMlc     -> "● Loading…"
++                            else                -> "○ No model loaded"
++                        },
++                        color = if (vm.mlcEngineRunning) OllamaGreen else OllamaTextDim,
++                        fontWeight = FontWeight.Bold, fontSize = 14.sp
+                     )
+-                    if (vm.llamaSelectedModel != null) {
+-                        Text("Model: ${vm.llamaSelectedModel!!.name}", color = OllamaTextDim, fontSize = 10.sp)
+-                    } else if (vm.llamaBinaryInstalled) {
+-                        Text(
+-                            "⚠ Go to Models tab → download a GGUF model → select it",
+-                            color = Color(0xFFFFAA33), fontSize = 11.sp
+-                        )
+-                    }
+-                    if (vm.llamaHealthStatus.isNotBlank() && !vm.llamaApiOnline) {
+-                        Text(vm.llamaHealthStatus, color = OllamaTextDim, fontSize = 11.sp)
+-                    }
++                    if (vm.mlcLoadStatus.isNotBlank()) Text(vm.mlcLoadStatus, color = OllamaTextDim, fontSize = 10.sp)
++                    if (vm.mlcSelectedModel == null)
++                        Text("⚠ Go to Models tab → download an MLC model → select it", color = Color(0xFFFFAA33), fontSize = 11.sp)
+                 }
+                 Switch(
+-                    checked = vm.llamaServiceActive || vm.llamaApiOnline,
+-                    onCheckedChange = { vm.toggleLlamaService(context) },
+-                    enabled = vm.llamaBinaryInstalled && vm.llamaSelectedModel != null,
++                    checked = vm.mlcEngineRunning,
++                    onCheckedChange = { on -> if (on) vm.loadMlcModel(context) else vm.unloadMlcModel() },
++                    enabled = vm.mlcSelectedModel != null && !vm.isLoadingMlc,
+                     colors = SwitchDefaults.colors(checkedThumbColor = OllamaBg, checkedTrackColor = OllamaGreen)
+                 )
+             }
++            if (vm.isLoadingMlc) LinearProgressIndicator(Modifier.fillMaxWidth(), color = OllamaGreen, trackColor = OllamaBorder)
+ 
+-            // Port config
+-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+-                OllamaTextField(vm.llamaPort, { vm.llamaPort = it }, "Port", Modifier.width(100.dp),
+-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next))
+-                OllamaTextField(vm.llamaGpuLayers.toString(), { vm.llamaGpuLayers = it.toIntOrNull() ?: 99 }, "GPU Layers", Modifier.width(110.dp),
+-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next))
+-                OllamaTextField(vm.llamaContextSize.toString(), { vm.llamaContextSize = it.toIntOrNull() ?: 4096 }, "Context", Modifier.weight(1f),
+-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done))
++            // Selected model display
++            if (vm.mlcSelectedModel != null) {
++                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
++                    Column(Modifier.weight(1f)) {
++                        Text("Selected model", color = OllamaTextDim, fontSize = 10.sp)
++                        Text(vm.mlcSelectedModel!!.name, color = OllamaText, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
++                    }
++                    OutlinedButton(
++                        onClick = { vm.scanMlcModels() },
++                        border = BorderStroke(1.dp, OllamaBorder),
++                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
++                    ) { Text("Rescan", color = OllamaTextDim, fontSize = 12.sp) }
++                }
+             }
++
++            // Context + max tokens
+             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+-                OllamaTextField(vm.llamaThreads.toString(), { vm.llamaThreads = it.toIntOrNull() ?: 4 }, "Threads", Modifier.weight(1f),
++                OllamaTextField(vm.mlcContextSize.toString(), { vm.mlcContextSize = it.toIntOrNull() ?: 2048 }, "Context", Modifier.weight(1f),
+                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next))
+-                OllamaTextField(vm.llamaBatchSize.toString(), { vm.llamaBatchSize = it.toIntOrNull() ?: 512 }, "Batch", Modifier.weight(1f),
++                OllamaTextField(vm.mlcMaxTokens.toString(), { vm.mlcMaxTokens = it.toIntOrNull() ?: 2048 }, "Max Tokens", Modifier.weight(1f),
+                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done))
+             }
+ 
+             // Temperature
+             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                 Text("Temperature", color = OllamaText, fontSize = 13.sp)
+-                Text(String.format("%.2f", vm.llamaTemperature), color = OllamaGreen, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
++                Text(String.format("%.2f", vm.mlcTemperature), color = OllamaGreen, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+             }
+             Slider(
+-                value = vm.llamaTemperature, onValueChange = { vm.llamaTemperature = it },
++                value = vm.mlcTemperature, onValueChange = { vm.mlcTemperature = it },
+                 valueRange = 0f..2f, steps = 39,
+                 colors = SliderDefaults.colors(thumbColor = OllamaGreen, activeTrackColor = OllamaGreen, inactiveTrackColor = OllamaBorder)
+             )
+ 
+-            // Vulkan GPU toggle
++            // Vulkan info (auto-detected — no toggle needed, MLC handles it internally)
+             LaunchedEffect(Unit) { vm.checkVulkanSupport(context) }
+             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+-                Column {
+-                    Text("GPU Acceleration (Vulkan)", color = OllamaText, fontSize = 13.sp)
++                Column(Modifier.weight(1f)) {
++                    Text("Vulkan GPU", color = OllamaText, fontSize = 13.sp)
+                     Text(
+-                        if (!vm.deviceHasVulkan) "Device does not support Vulkan"
+-                        else if (vm.useVulkan) "Enabled — requires Vulkan binary"
+-                        else "Disabled (CPU only)",
+-                        color = if (!vm.deviceHasVulkan) OllamaRed else if (vm.useVulkan) OllamaGreen else OllamaTextDim,
+-                        fontSize = 10.sp
++                        if (vm.deviceHasVulkan) "✅ Supported — GPU inference active"
++                        else "⚠ Not detected — CPU inference only",
++                        color = if (vm.deviceHasVulkan) OllamaGreen else Color(0xFFFFAA33), fontSize = 10.sp
+                     )
+                 }
+-                Switch(
+-                    checked = vm.useVulkan && vm.deviceHasVulkan,
+-                    onCheckedChange = { if (vm.deviceHasVulkan) vm.useVulkan = it },
+-                    enabled = vm.deviceHasVulkan,
+-                    colors = SwitchDefaults.colors(checkedThumbColor = OllamaBg, checkedTrackColor = OllamaGreen, uncheckedTrackColor = OllamaBorder)
+-                )
+-            }
+-
+-            // Check health button
+-            OutlinedButton(
+-                onClick = { vm.checkLlamaHealth(context) },
+-                modifier = Modifier.fillMaxWidth(),
+-                border = BorderStroke(1.dp, OllamaGreen)
+-            ) { Text("Check llama-server Health", color = OllamaGreen, fontSize = 12.sp) }
+-            if (vm.llamaHealthStatus.isNotBlank()) {
+-                Text(
+-                    vm.llamaHealthStatus,
+-                    color = when {
+-                        vm.llamaHealthStatus.startsWith("✅") -> OllamaGreen
+-                        vm.llamaHealthStatus.startsWith("❌") -> OllamaRed
+-                        else -> OllamaTextDim
+-                    },
+-                    fontSize = 12.sp, fontWeight = FontWeight.Bold,
+-                    modifier = Modifier.fillMaxWidth()
+-                )
++                Box(Modifier.size(10.dp).clip(CircleShape).background(if (vm.deviceHasVulkan) OllamaGreen else OllamaRed))
+             }
++            Text(
++                "MLC LLM runs in-process via JNI — no external binary, no Knox/SELinux restriction.",
++                color = OllamaTextDim, fontSize = 10.sp
++            )
+         }
+ 
+         Spacer(Modifier.height(8.dp))
+@@ -1624,38 +1485,39 @@ fun ModelsScreen(vm: MainViewModel, context: Context) {
+             }
+         }
+ 
+-        // ── llama.cpp GGUF Models ──────────────────────────────────────────
+-        SectionCard("llama.cpp GGUF MODELS", "Select a .gguf file to run with llama-server") {
++        // ── MLC LLM Models ─────────────────────────────────────────────────────
++        SectionCard("MLC LLM MODELS", "Pre-compiled models for Android GPU/CPU inference") {
+ 
+-            // Scan button
++            // Scan + count row
+             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                 Column {
+-                    Text("Local GGUF files", color = OllamaText, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+-                    Text("${vm.llamaAvailableGGUFs.size} found", color = OllamaTextDim, fontSize = 11.sp)
++                    Text("Local MLC models", color = OllamaText, fontWeight = FontWeight.Bold, fontSize = 13.sp)
++                    Text("${vm.mlcAvailableModels.size} found in ${vm.mlcEngine.modelsDir.absolutePath.substringAfter("/Android")}", color = OllamaTextDim, fontSize = 10.sp)
+                 }
+                 Button(
+-                    onClick = { vm.scanGGUFs() },
++                    onClick = { vm.scanMlcModels() },
+                     colors = ButtonDefaults.buttonColors(containerColor = OllamaGreen, contentColor = OllamaBg)
+                 ) { Text("Scan", fontWeight = FontWeight.Bold) }
+             }
+ 
+-            // Found GGUF files
+-            if (vm.llamaAvailableGGUFs.isNotEmpty()) {
+-                vm.llamaAvailableGGUFs.forEach { file ->
+-                    val selected = vm.llamaSelectedModel?.absolutePath == file.absolutePath
++            // Installed models
++            if (vm.mlcAvailableModels.isNotEmpty()) {
++                vm.mlcAvailableModels.forEach { dir ->
++                    val selected = vm.mlcSelectedModel?.absolutePath == dir.absolutePath
+                     Row(
+                         Modifier.fillMaxWidth()
+                             .clip(RoundedCornerShape(8.dp))
+                             .background(if (selected) Color(0xFF1A3A2A) else OllamaCardAlt)
+                             .border(1.dp, if (selected) OllamaGreen else OllamaBorder, RoundedCornerShape(8.dp))
+-                            .clickable { vm.llamaSelectedModel = file }
++                            .clickable { vm.mlcSelectedModel = dir }
+                             .padding(10.dp),
+                         horizontalArrangement = Arrangement.SpaceBetween,
+                         verticalAlignment = Alignment.CenterVertically
+                     ) {
+                         Column(Modifier.weight(1f)) {
+-                            Text(file.name, color = if (selected) OllamaGreen else OllamaText, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+-                            Text(String.format("%.2f GB", file.length() / 1e9), color = OllamaTextDim, fontSize = 10.sp)
++                            Text(dir.name, color = if (selected) OllamaGreen else OllamaText, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
++                            val sizeMb = (dir.walkTopDown().sumOf { if (it.isFile) it.length() else 0L }) / 1_000_000
++                            Text("${sizeMb} MB", color = OllamaTextDim, fontSize = 10.sp)
+                         }
+                         if (selected) Icon(Icons.Default.CheckCircle, null, tint = OllamaGreen, modifier = Modifier.size(18.dp))
+                     }
+@@ -1670,20 +1532,20 @@ fun ModelsScreen(vm: MainViewModel, context: Context) {
+             }
+ 
+             // Download progress + cancel
+-            if (vm.isDownloadingGGUF) {
++            if (vm.isDownloadingMlc) {
+                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+-                    Text(vm.ggufDownloadStatus, color = OllamaGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
++                    Text(vm.mlcDownloadStatus, color = OllamaGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                     TextButton(
+-                        onClick = { vm.cancelGGUFDownload() },
++                        onClick = { vm.cancelMlcDownload() },
+                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                     ) { Text("✕ Cancel", color = OllamaRed, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                 }
+-                LinearProgressIndicator({ vm.ggufDownloadProgress / 100f }, Modifier.fillMaxWidth(), color = OllamaGreen, trackColor = OllamaBorder)
++                LinearProgressIndicator({ vm.mlcDownloadProgress / 100f }, Modifier.fillMaxWidth(), color = OllamaGreen, trackColor = OllamaBorder)
+             }
+ 
+-            // Curated models list
+-            LlamaCppServer.CURATED_GGUF_MODELS.forEach { model ->
+-                val alreadyDownloaded = vm.llamaAvailableGGUFs.any { it.name == model.fileName }
++            // Curated MLC models
++            MlcEngine.CURATED_MODELS.forEach { model ->
++                val alreadyDownloaded = vm.mlcAvailableModels.any { it.name == model.localName }
+                 Row(
+                     Modifier.fillMaxWidth()
+                         .clip(RoundedCornerShape(8.dp))
+@@ -1695,12 +1557,15 @@ fun ModelsScreen(vm: MainViewModel, context: Context) {
+                 ) {
+                     Column(Modifier.weight(1f)) {
+                         Text(model.displayName, color = OllamaText, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+-                        Text(model.size, color = OllamaTextDim, fontSize = 10.sp)
+-                        if (alreadyDownloaded) Text("✓ Already downloaded", color = OllamaGreen, fontSize = 10.sp)
++                        Text(model.hfRepo, color = OllamaTextDim, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
++                        if (alreadyDownloaded) Text("✓ Downloaded", color = OllamaGreen, fontSize = 10.sp)
+                     }
+                     OutlinedButton(
+-                        onClick = { if (!alreadyDownloaded) vm.downloadGGUF(context, model) else vm.llamaSelectedModel = vm.llamaAvailableGGUFs.first { it.name == model.fileName } },
+-                        enabled = !vm.isDownloadingGGUF,
++                        onClick = {
++                            if (alreadyDownloaded) vm.mlcSelectedModel = vm.mlcAvailableModels.first { it.name == model.localName }
++                            else vm.downloadMlcModel(context, model)
++                        },
++                        enabled = !vm.isDownloadingMlc,
+                         border = BorderStroke(1.dp, if (alreadyDownloaded) OllamaGreen else OllamaBorder),
+                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                     ) {
+@@ -1928,19 +1793,7 @@ fun AgentScreen(vm: MainViewModel, context: Context) {
+         Column(Modifier.fillMaxWidth().background(OllamaSurface).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                 // Model selector — Ollama dropdown OR llama.cpp label
+-                if (vm.activeBackend == "llamacpp") {
+-                    // Auto-set agentModel for llama.cpp when empty or an Ollama model name
+-                    LaunchedEffect(vm.activeBackend) {
+-                        if (!vm.agentModel.startsWith("llama-server")) vm.agentModel = "llama-server"
+-                    }
+-                    Column(Modifier.weight(1f)) {
+-                        Text("DEVHIVE AGENT", color = OllamaGreen, fontSize = 10.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold)
+-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+-                            Text("llama-server (local)", color = OllamaText, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+-                            Box(Modifier.size(6.dp).clip(CircleShape).background(if (vm.llamaApiOnline) OllamaGreen else OllamaRed))
+-                        }
+-                    }
+-                } else {
++                if (false) { } else {
+                     ExposedDropdownMenuBox(
+                         expanded = modelDropdownExpanded && vm.modelList.isNotEmpty(),
+                         onExpandedChange = { if (vm.modelList.isNotEmpty()) modelDropdownExpanded = it },
+@@ -1980,13 +1833,13 @@ fun AgentScreen(vm: MainViewModel, context: Context) {
+                         }
+                     }
+                 }
+-                val serverReady = if (vm.activeBackend == "llamacpp") vm.llamaApiOnline else vm.apiOnline
++                val serverReady = if (vm.activeBackend == "mlc") vm.mlcEngineRunning else vm.apiOnline
+                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                     Box(Modifier.size(7.dp).clip(CircleShape).background(if (serverReady) OllamaGreen else OllamaRed))
+                     Text(
+                         if (vm.isAgentRunning) "Running…"
+                         else if (serverReady) "Ready"
+-                        else if (vm.activeBackend == "llamacpp") "llama.cpp offline"
++                        else if (vm.activeBackend == "mlc") "MLC engine not loaded"
+                         else "Server offline",
+                         color = if (vm.isAgentRunning) OllamaGreen else OllamaTextDim, fontSize = 11.sp
+                     )

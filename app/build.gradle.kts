@@ -225,6 +225,89 @@ val downloadOllamaBinary by tasks.registering {
     }
 }
 
+val downloadLlamaServer by tasks.registering {
+    val jniDir     = layout.projectDirectory.dir("src/main/jniLibs/arm64-v8a")
+    val serverFile = jniDir.file("libllama_server.so").asFile
+    outputs.file(serverFile)
+
+    doFirst {
+        jniDir.asFile.mkdirs()
+
+        if (!serverFile.exists()) {
+            println("[Devhive] Downloading llama-server ARM64 binary (~73 MB)...")
+            val tarGz = File(temporaryDir, "llama-android.tar.gz")
+            val conn = URL(
+                "https://github.com/ggml-org/llama.cpp/releases/download/b9754/llama-b9754-bin-android-arm64.tar.gz"
+            ).openConnection() as HttpURLConnection
+            conn.instanceFollowRedirects = true
+            conn.connectTimeout = 30_000
+            conn.readTimeout    = 300_000
+            conn.connect()
+            conn.inputStream.use { input ->
+                tarGz.outputStream().use { output -> input.copyTo(output) }
+            }
+            conn.disconnect()
+
+            // Extract tar.gz manually
+            println("[Devhive] Extracting llama-server and shared libraries...")
+            val gzip = java.util.zip.GZIPInputStream(tarGz.inputStream().buffered(65536))
+            val headerBuf = ByteArray(512)
+            while (true) {
+                var read = 0
+                while (read < 512) {
+                    val n = gzip.read(headerBuf, read, 512 - read)
+                    if (n == -1) break
+                    read += n
+                }
+                if (read < 512) break
+                if (headerBuf.all { it == 0.toByte() }) break
+
+                val name     = String(headerBuf, 0, 100).trimEnd('\u0000').trim()
+                val sizeStr  = String(headerBuf, 124, 12).trimEnd('\u0000').trim()
+                val fileSize = if (sizeStr.isEmpty()) 0L else sizeStr.toLong(8)
+                val typeflag = headerBuf[156].toInt().toChar()
+                val baseName = name.substringAfterLast('/')
+
+                val isServer    = baseName == "llama-server" && typeflag != '5'
+                val isSharedLib = baseName.endsWith(".so") && typeflag != '5' && baseName.startsWith("lib")
+
+                if (isServer || isSharedLib) {
+                    val dest = if (isServer) serverFile else File(jniDir.asFile, baseName)
+                    println("[Devhive] Extracting: $baseName -> ${dest.name}")
+                    var written = 0L
+                    val buf = ByteArray(65536)
+                    dest.outputStream().use { out ->
+                        while (written < fileSize) {
+                            val toRead = minOf(buf.size.toLong(), fileSize - written).toInt()
+                            val n = gzip.read(buf, 0, toRead)
+                            if (n == -1) break
+                            out.write(buf, 0, n)
+                            written += n
+                        }
+                    }
+                    dest.setExecutable(true, false)
+                    val pad = ((fileSize + 511) / 512 * 512 - fileSize).toInt()
+                    if (pad > 0) gzip.skip(pad.toLong())
+                } else {
+                    val toSkip = (fileSize + 511) / 512 * 512
+                    var skipped = 0L
+                    while (skipped < toSkip) {
+                        val s = gzip.skip(toSkip - skipped)
+                        if (s <= 0) break
+                        skipped += s
+                    }
+                }
+            }
+            gzip.close()
+            tarGz.delete()
+
+            println("[Devhive] llama-server installed: ${serverFile.length() / 1024 / 1024} MB")
+        } else {
+            println("[Devhive] libllama_server.so already present (${serverFile.length() / 1024 / 1024} MB), skipping.")
+        }
+    }
+}
+
 afterEvaluate {
-    tasks.named("preBuild") { dependsOn(downloadOllamaBinary) }
+    tasks.named("preBuild") { dependsOn(downloadOllamaBinary, downloadLlamaServer) }
 }
