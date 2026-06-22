@@ -1735,26 +1735,78 @@ fun ChatScreen(vm: MainViewModel, context: Context) {
     }
     LaunchedEffect(vm.selectedModelChat) { if (vm.selectedModelChat.isNotEmpty() && vm.chatHistory.isEmpty()) vm.startChatSession() }
 
+    var modelDropdownExpanded by remember { mutableStateOf(false) }
+    val isLlamaBackend = vm.activeBackend == "llamacpp"
+    val isOnline = if (isLlamaBackend) vm.llamaApiOnline else vm.apiOnline
+    val hasModel = if (isLlamaBackend) vm.llamaSelectedModel != null else vm.selectedModelChat.isNotEmpty()
+    val modelName = if (isLlamaBackend) {
+        vm.llamaSelectedModel?.name ?: "No model selected"
+    } else {
+        vm.selectedModelChat.ifEmpty { "No model selected" }
+    }
+
     Column(Modifier.fillMaxSize().imePadding()) {
-        // Determine which backend is active
-        val isLlamaBackend = vm.activeBackend == "llamacpp"
-        val isOnline = if (isLlamaBackend) vm.llamaApiOnline else vm.apiOnline
-        val hasModel = if (isLlamaBackend) vm.llamaSelectedModel != null else vm.selectedModelChat.isNotEmpty()
-        val modelName = if (isLlamaBackend) {
-            vm.llamaSelectedModel?.name ?: "No model selected"
-        } else {
-            vm.selectedModelChat.ifEmpty { "No model selected" }
-        }
-        
         // Header bar
         Row(
             Modifier.fillMaxWidth().background(OllamaSurface).padding(horizontal = 16.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Box(Modifier.size(8.dp).clip(CircleShape).background(if (isOnline) OllamaGreen else OllamaRed))
-                Text(modelName, color = OllamaText, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            // Model selector dropdown
+            Box {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.clickable {
+                        if (isLlamaBackend && vm.llamaAvailableGGUFs.isNotEmpty()) {
+                            modelDropdownExpanded = true
+                        } else if (!isLlamaBackend && vm.modelList.isNotEmpty()) {
+                            modelDropdownExpanded = true
+                        }
+                    }
+                ) {
+                    Box(Modifier.size(8.dp).clip(CircleShape).background(if (isOnline) OllamaGreen else OllamaRed))
+                    Text(modelName, color = OllamaText, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    if ((isLlamaBackend && vm.llamaAvailableGGUFs.isNotEmpty()) || (!isLlamaBackend && vm.modelList.isNotEmpty())) {
+                        Icon(Icons.Default.KeyboardArrowDown, null, tint = OllamaGreen, modifier = Modifier.size(16.dp))
+                    }
+                }
+                ExposedDropdownMenu(
+                    expanded = modelDropdownExpanded,
+                    onDismissRequest = { modelDropdownExpanded = false },
+                    containerColor = OllamaCard
+                ) {
+                    if (isLlamaBackend) {
+                        vm.llamaAvailableGGUFs.forEach { file ->
+                            DropdownMenuItem(
+                                text = { Text(file.name, color = OllamaText, fontSize = 13.sp) },
+                                onClick = {
+                                    vm.llamaSelectedModel = file
+                                    modelDropdownExpanded = false
+                                },
+                                colors = MenuDefaults.itemColors(textColor = OllamaText),
+                                leadingIcon = if (vm.llamaSelectedModel?.absolutePath == file.absolutePath) ({
+                                    Icon(Icons.Default.Check, null, tint = OllamaGreen, modifier = Modifier.size(14.dp))
+                                }) else null
+                            )
+                        }
+                    } else {
+                        vm.modelList.forEach { model ->
+                            DropdownMenuItem(
+                                text = { Text(model.name, color = OllamaText, fontSize = 13.sp) },
+                                onClick = {
+                                    vm.selectedModelChat = model.name
+                                    vm.agentModel = model.name
+                                    modelDropdownExpanded = false
+                                },
+                                colors = MenuDefaults.itemColors(textColor = OllamaText),
+                                leadingIcon = if (vm.selectedModelChat == model.name) ({
+                                    Icon(Icons.Default.Check, null, tint = OllamaGreen, modifier = Modifier.size(14.dp))
+                                }) else null
+                            )
+                        }
+                    }
+                }
             }
             TextButton(onClick = { vm.startChatSession() }) { Text("New Chat", color = OllamaGreen, fontSize = 12.sp) }
         }
