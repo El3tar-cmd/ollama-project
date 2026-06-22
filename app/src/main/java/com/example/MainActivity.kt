@@ -732,7 +732,10 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
 
     fun sendChatMessage(context: Context) {
         val text = chatMessageInput.trim()
-        if (text.isEmpty() || selectedModelChat.isEmpty()) return
+        val isLlama = activeBackend == "llamacpp"
+        if (text.isEmpty()) return
+        if (!isLlama && selectedModelChat.isEmpty()) return
+        if (isLlama && llamaSelectedModel == null) return
 
         // Detect cloud models by the ':cloud' suffix (e.g. glm-4.7:cloud)
         val isCloud = selectedModelChat.endsWith(":cloud")
@@ -746,7 +749,11 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
                 ).show()
                 return
             }
-            !isCloud && !apiOnline -> {
+            !isCloud && isLlama && !llamaApiOnline -> {
+                Toast.makeText(context, "llama.cpp server offline", Toast.LENGTH_SHORT).show()
+                return
+            }
+            !isCloud && !isLlama && !apiOnline -> {
                 Toast.makeText(context, "Server offline", Toast.LENGTH_SHORT).show()
                 return
             }
@@ -866,6 +873,9 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
 
     fun runAgent(context: Context) {
         val task = agentInput.trim()
+        if (activeBackend == "llamacpp" && agentModel.isEmpty() && llamaSelectedModel != null) {
+            agentModel = llamaSelectedModel!!.name
+        }
         if (task.isEmpty() || agentModel.isEmpty()) return
         val isCloudModel = agentModel.endsWith(":cloud")
         val needsServer = !isCloudModel && activeBackend == "ollama"
@@ -1969,33 +1979,53 @@ fun AgentScreen(vm: MainViewModel, context: Context) {
                 // Model selector — dropdown for active backend
                 val isLlamaBackend = vm.activeBackend == "llamacpp"
                 val hasModels = if (isLlamaBackend) vm.llamaAvailableGGUFs.isNotEmpty() else vm.modelList.isNotEmpty()
-                if (false) { } else {
-                    ExposedDropdownMenuBox(
-                        expanded = modelDropdownExpanded && hasModels,
-                        onExpandedChange = { if (hasModels) modelDropdownExpanded = it },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Column(modifier = Modifier.menuAnchor()) {
-                            Text("DEVHIVE AGENT", color = OllamaGreen, fontSize = 10.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold)
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                modifier = Modifier.clickable { if (vm.modelList.isNotEmpty()) modelDropdownExpanded = true }
-                            ) {
-                                Text(
-                                    vm.agentModel.ifEmpty { "No model selected — tap ▸ below" },
-                                    color = if (vm.agentModel.isEmpty()) OllamaRed else OllamaText,
-                                    fontWeight = FontWeight.Bold, fontSize = 13.sp
-                                )
-                                if (vm.modelList.isNotEmpty())
-                                    Icon(Icons.Default.KeyboardArrowDown, null, tint = OllamaGreen, modifier = Modifier.size(16.dp))
-                            }
-                        }
-                        ExposedDropdownMenu(
-                            expanded = modelDropdownExpanded && vm.modelList.isNotEmpty(),
-                            onDismissRequest = { modelDropdownExpanded = false },
-                            containerColor = OllamaCard
+                val displayedAgentModel = if (isLlamaBackend) {
+                    vm.llamaSelectedModel?.name ?: vm.agentModel
+                } else {
+                    vm.agentModel
+                }
+                ExposedDropdownMenuBox(
+                    expanded = modelDropdownExpanded && hasModels,
+                    onExpandedChange = { if (hasModels) modelDropdownExpanded = it },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Column(modifier = Modifier.menuAnchor()) {
+                        Text("DEVHIVE AGENT", color = OllamaGreen, fontSize = 10.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.clickable { if (hasModels) modelDropdownExpanded = true }
                         ) {
+                            Text(
+                                displayedAgentModel.ifEmpty { if (hasModels) "Select model ▾" else "No model available" },
+                                color = if (displayedAgentModel.isEmpty()) OllamaRed else OllamaText,
+                                fontWeight = FontWeight.Bold, fontSize = 13.sp
+                            )
+                            if (hasModels)
+                                Icon(Icons.Default.KeyboardArrowDown, null, tint = OllamaGreen, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                    ExposedDropdownMenu(
+                        expanded = modelDropdownExpanded && hasModels,
+                        onDismissRequest = { modelDropdownExpanded = false },
+                        containerColor = OllamaCard
+                    ) {
+                        if (isLlamaBackend) {
+                            vm.llamaAvailableGGUFs.forEach { file ->
+                                DropdownMenuItem(
+                                    text = { Text(file.name, color = OllamaText, fontSize = 13.sp) },
+                                    onClick = {
+                                        vm.llamaSelectedModel = file
+                                        vm.agentModel = file.name
+                                        modelDropdownExpanded = false
+                                    },
+                                    colors = MenuDefaults.itemColors(textColor = OllamaText),
+                                    leadingIcon = if (vm.llamaSelectedModel?.absolutePath == file.absolutePath) ({
+                                        Icon(Icons.Default.Check, null, tint = OllamaGreen, modifier = Modifier.size(14.dp))
+                                    }) else null
+                                )
+                            }
+                        } else {
                             vm.modelList.forEach { model ->
                                 DropdownMenuItem(
                                     text = { Text(model.name, color = OllamaText, fontSize = 13.sp) },
@@ -2799,7 +2829,7 @@ fun highlightSyntax(code: String, language: String): AnnotatedString {
     }
 }
             
-// Enhanced code editor with line numbers
+// Enhanced code editor with synchronized line numbers
 @Composable
 fun EnhancedCodeEditor(
     code: String,
@@ -2807,57 +2837,55 @@ fun EnhancedCodeEditor(
     language: String,
     modifier: Modifier = Modifier
 ) {
-    var textFieldValue by remember(code) { mutableStateOf(code) }
-    var lineCount by remember(code) { mutableStateOf(code.lines().size.coerceAtLeast(1)) }
-    
-    LaunchedEffect(code) {
-        if (textFieldValue != code) {
-            textFieldValue = code
-        }
-    }
-    
-    Row(modifier = modifier.background(TerminalBg)) {
-        // Line numbers
-        Column(
-            modifier = Modifier
-                .width(40.dp)
-                .fillMaxHeight()
-                .background(OllamaSurface)
-                .padding(vertical = 8.dp),
-            horizontalAlignment = Alignment.End
-        ) {
-            for (i in 1..lineCount) {
-                Text(
-                    i.toString(),
-                    color = OllamaTextDim,
-                    fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace,
-                    modifier = Modifier.padding(end = 8.dp)
-                )
+    val lineCount = remember(code) { code.lines().size.coerceAtLeast(1) }
+
+    Box(modifier = modifier.background(TerminalBg).verticalScroll(rememberScrollState())) {
+        Row(modifier = Modifier.fillMaxWidth()) {
+            // Line numbers column — scrolls together with code
+            Column(
+                modifier = Modifier
+                    .width(48.dp)
+                    .background(OllamaSurface)
+                    .padding(top = 10.dp, bottom = 10.dp, start = 4.dp, end = 4.dp),
+                horizontalAlignment = Alignment.End
+            ) {
+                repeat(lineCount) { i ->
+                    Text(
+                        (i + 1).toString(),
+                        color = OllamaTextDim,
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace,
+                        lineHeight = 20.sp,
+                        modifier = Modifier.padding(end = 6.dp)
+                    )
+                }
             }
-        }
-        
-        // Code editor
-        Box(modifier = Modifier.weight(1f)) {
+
+            // Vertical divider
+            Box(
+                Modifier
+                    .width(1.dp)
+                    .fillMaxHeight()
+                    .background(OllamaBorder)
+            )
+
+            // Code text field — expands to full content height (no internal scroll)
             BasicTextField(
-                value = textFieldValue,
-                onValueChange = { newValue ->
-                    textFieldValue = newValue
-                    lineCount = newValue.lines().size.coerceAtLeast(1)
-                    onCodeChange(newValue)
-                },
-                modifier = Modifier.fillMaxSize().padding(8.dp),
+                value = code,
+                onValueChange = onCodeChange,
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 10.dp, vertical = 10.dp),
                 textStyle = TextStyle(
                     fontFamily = FontFamily.Monospace,
                     fontSize = 12.sp,
-                    color = OllamaText
+                    color = OllamaText,
+                    lineHeight = 20.sp
                 ),
-                cursorBrush = Brush.verticalGradient(
-                    colors = listOf(OllamaGreen, OllamaGreen)
-                ),
+                cursorBrush = Brush.verticalGradient(listOf(OllamaGreen, OllamaGreen)),
                 decorationBox = { innerTextField ->
                     Box {
-                        if (textFieldValue.isEmpty()) {
+                        if (code.isEmpty()) {
                             Text(
                                 "Start typing...",
                                 color = OllamaTextDim.copy(alpha = 0.5f),
@@ -3110,61 +3138,179 @@ fun AgentFilesPane(vm: MainViewModel, context: Context) {
             )
         }
 
+        var newFileInput    by remember { mutableStateOf("") }
+        var showNewFileDialog  by remember { mutableStateOf(false) }
+        var showNewFolderDialog by remember { mutableStateOf(false) }
+
+        // ── New file dialog ────────────────────────────────────────────────
+        if (showNewFileDialog) {
+            LaunchedEffect(Unit) { newFileInput = "" }
+            AlertDialog(
+                onDismissRequest = { showNewFileDialog = false },
+                containerColor = OllamaCard,
+                title = { Text("New File", color = OllamaText, fontWeight = FontWeight.Bold) },
+                text = {
+                    OutlinedTextField(
+                        value = newFileInput, onValueChange = { newFileInput = it },
+                        label = { Text("Filename (e.g. main.py)", color = OllamaTextDim) },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = OllamaGreen, unfocusedBorderColor = OllamaBorder,
+                            focusedLabelColor = OllamaGreen, cursorColor = OllamaGreen,
+                            focusedTextColor = OllamaText, unfocusedTextColor = OllamaText
+                        )
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            val name = newFileInput.trim()
+                            if (name.isNotBlank()) {
+                                val f = File(vm.agentWorkingDir, name)
+                                try { f.createNewFile(); vm.refreshFileTree(); vm.openInNewTab(f) } catch (_: Exception) {}
+                            }
+                            showNewFileDialog = false
+                        },
+                        enabled = newFileInput.trim().isNotBlank(),
+                        colors = ButtonDefaults.buttonColors(containerColor = OllamaGreen)
+                    ) { Text("Create", color = OllamaBg, fontWeight = FontWeight.Bold) }
+                },
+                dismissButton = { TextButton(onClick = { showNewFileDialog = false }) { Text("Cancel", color = OllamaTextDim) } }
+            )
+        }
+
+        // ── New folder dialog ──────────────────────────────────────────────
+        if (showNewFolderDialog) {
+            LaunchedEffect(Unit) { newFileInput = "" }
+            AlertDialog(
+                onDismissRequest = { showNewFolderDialog = false },
+                containerColor = OllamaCard,
+                title = { Text("New Folder", color = OllamaText, fontWeight = FontWeight.Bold) },
+                text = {
+                    OutlinedTextField(
+                        value = newFileInput, onValueChange = { newFileInput = it },
+                        label = { Text("Folder name", color = OllamaTextDim) },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = OllamaGreen, unfocusedBorderColor = OllamaBorder,
+                            focusedLabelColor = OllamaGreen, cursorColor = OllamaGreen,
+                            focusedTextColor = OllamaText, unfocusedTextColor = OllamaText
+                        )
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            val name = newFileInput.trim()
+                            if (name.isNotBlank()) {
+                                val d = File(vm.agentWorkingDir, name)
+                                try { d.mkdirs(); vm.refreshFileTree() } catch (_: Exception) {}
+                            }
+                            showNewFolderDialog = false
+                        },
+                        enabled = newFileInput.trim().isNotBlank(),
+                        colors = ButtonDefaults.buttonColors(containerColor = OllamaGreen)
+                    ) { Text("Create", color = OllamaBg, fontWeight = FontWeight.Bold) }
+                },
+                dismissButton = { TextButton(onClick = { showNewFolderDialog = false }) { Text("Cancel", color = OllamaTextDim) } }
+            )
+        }
+
         Column(Modifier.fillMaxSize()) {
+            // File tree toolbar
             Row(
-                Modifier.fillMaxWidth().background(OllamaSurface).padding(horizontal = 12.dp, vertical = 8.dp),
+                Modifier.fillMaxWidth().background(OllamaSurface).padding(horizontal = 10.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
             ) {
                 val parent = File(vm.agentWorkingDir).parentFile
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
                     if (parent != null) {
-                        TextButton(onClick = { vm.updateAgentWorkingDir(parent.absolutePath) }, contentPadding = PaddingValues(0.dp)) {
-                            Text("↑ Up", color = OllamaTextDim, fontSize = 12.sp)
+                        IconButton(onClick = { vm.updateAgentWorkingDir(parent.absolutePath) }, modifier = Modifier.size(28.dp)) {
+                            Icon(Icons.Default.ArrowBack, null, tint = OllamaTextDim, modifier = Modifier.size(16.dp))
                         }
                     }
-                    Text(File(vm.agentWorkingDir).name, color = OllamaText, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text(
+                        File(vm.agentWorkingDir).name,
+                        color = OllamaText, fontWeight = FontWeight.Bold, fontSize = 13.sp,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis
+                    )
                 }
-                IconButton(onClick = { vm.refreshFileTree() }, modifier = Modifier.size(28.dp)) {
-                    Icon(Icons.Default.Refresh, null, tint = OllamaTextDim, modifier = Modifier.size(16.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    // New file
+                    IconButton(onClick = { showNewFileDialog = true }, modifier = Modifier.size(30.dp)) {
+                        Icon(Icons.Default.Add, "New File", tint = OllamaGreen, modifier = Modifier.size(18.dp))
+                    }
+                    // New folder
+                    IconButton(onClick = { showNewFolderDialog = true }, modifier = Modifier.size(30.dp)) {
+                        Text("📁+", fontSize = 13.sp)
+                    }
+                    // Refresh
+                    IconButton(onClick = { vm.refreshFileTree() }, modifier = Modifier.size(30.dp)) {
+                        Icon(Icons.Default.Refresh, null, tint = OllamaTextDim, modifier = Modifier.size(16.dp))
+                    }
                 }
             }
+            // Path breadcrumb
+            Text(
+                vm.agentWorkingDir,
+                color = OllamaTextDim, fontSize = 9.sp, fontFamily = FontFamily.Monospace,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth().background(OllamaSurface)
+                    .padding(horizontal = 12.dp, vertical = 2.dp)
+            )
+            HorizontalDivider(color = OllamaBorder, thickness = 0.5.dp)
 
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 4.dp)) {
-                items(vm.agentFileTree) { file ->
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .clickable { vm.openInNewTab(file) }
-                            .padding(start = 12.dp, end = 4.dp, top = 7.dp, bottom = 7.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(getFileIcon(file), fontSize = 15.sp)
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                file.name,
-                                color = if (file.isDirectory) OllamaBlue else OllamaText,
-                                fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis
-                            )
-                            if (file.isFile) Text(formatFileSize(file.length()), color = OllamaTextDim, fontSize = 10.sp)
+            if (vm.agentFileTree.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("📂", fontSize = 36.sp)
+                        Text("Empty folder", color = OllamaTextDim, fontSize = 13.sp)
+                        TextButton(onClick = { showNewFileDialog = true }) {
+                            Text("+ New File", color = OllamaGreen, fontWeight = FontWeight.Bold)
                         }
-                        // ── Rename ──
-                        IconButton(
-                            onClick  = { renameTarget = file },
-                            modifier = Modifier.size(30.dp)
-                        ) {
-                            Icon(Icons.Default.Edit, "Rename", tint = OllamaTextDim, modifier = Modifier.size(15.dp))
-                        }
-                        // ── Delete ──
-                        IconButton(
-                            onClick  = { deleteTarget = file },
-                            modifier = Modifier.size(30.dp)
-                        ) {
-                            Icon(Icons.Default.Delete, "Delete", tint = OllamaRed.copy(alpha = 0.65f), modifier = Modifier.size(15.dp))
-                        }
-                        if (file.isDirectory) Icon(Icons.Default.ArrowForward, null, tint = OllamaTextDim, modifier = Modifier.size(13.dp))
                     }
-                    HorizontalDivider(color = OllamaBorder, thickness = 0.5.dp)
+                }
+            } else {
+                LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 4.dp)) {
+                    items(vm.agentFileTree) { file ->
+                        val isActive = vm.agentSelectedFile?.absolutePath == file.absolutePath
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .background(if (isActive) OllamaGreen.copy(alpha = 0.08f) else Color.Transparent)
+                                .clickable { vm.openInNewTab(file) }
+                                .padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(getFileIcon(file), fontSize = 15.sp)
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    file.name,
+                                    color = when {
+                                        isActive -> OllamaGreen
+                                        file.isDirectory -> OllamaBlue
+                                        else -> OllamaText
+                                    },
+                                    fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+                                    fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis
+                                )
+                                if (file.isFile) Text(formatFileSize(file.length()), color = OllamaTextDim, fontSize = 10.sp)
+                            }
+                            IconButton(onClick = { renameTarget = file }, modifier = Modifier.size(28.dp)) {
+                                Icon(Icons.Default.Edit, "Rename", tint = OllamaTextDim, modifier = Modifier.size(14.dp))
+                            }
+                            IconButton(onClick = { deleteTarget = file }, modifier = Modifier.size(28.dp)) {
+                                Icon(Icons.Default.Delete, "Delete", tint = OllamaRed.copy(alpha = 0.65f), modifier = Modifier.size(14.dp))
+                            }
+                            if (file.isDirectory) Icon(Icons.Default.ArrowForward, null, tint = OllamaTextDim, modifier = Modifier.size(12.dp))
+                        }
+                        HorizontalDivider(color = OllamaBorder, thickness = 0.5.dp)
+                    }
                 }
             }
         }
