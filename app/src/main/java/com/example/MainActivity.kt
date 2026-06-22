@@ -121,16 +121,100 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     var isGeneratingResponse by mutableStateOf(false)
 
     // Agent
-    var agentInput        by mutableStateOf("")
-    var agentModel        by mutableStateOf("")
-    var agentMaxSteps     by mutableStateOf(15)
-    var isAgentRunning    by mutableStateOf(false)
-    val agentSteps        = mutableStateListOf<AgentStep>()
-    var agentWorkingDir   by mutableStateOf("")
-    val agentFileTree     = mutableStateListOf<File>()
-    var agentSelectedFile by mutableStateOf<File?>(null)
-    var agentFileContent  by mutableStateOf("")
-    var showFileTree      by mutableStateOf(true)
+    var agentInput              by mutableStateOf("")
+    var agentModel              by mutableStateOf("")
+    var agentMaxSteps           by mutableStateOf(15)
+    var isAgentRunning          by mutableStateOf(false)
+    val agentSteps              = mutableStateListOf<AgentStep>()
+    var agentWorkingDir         by mutableStateOf("")
+    val agentFileTree           = mutableStateListOf<File>()
+    var agentSelectedFile       by mutableStateOf<File?>(null)
+    var agentFileContent        by mutableStateOf("")
+    var showFileTree            by mutableStateOf(true)
+    // ask_user support
+    var agentPendingQuestion    by mutableStateOf<String?>(null)
+    var agentQuestionInput      by mutableStateOf("")
+    private val agentAnswerChannel = kotlinx.coroutines.channels.Channel<String>(1)
+
+    fun submitAgentAnswer() {
+        val answer = agentQuestionInput.trim().ifEmpty { "Continue" }
+        agentAnswerChannel.trySend(answer)
+        agentPendingQuestion = null
+        agentQuestionInput   = ""
+    }
+
+    // GGUF HuggingFace downloader
+    var ggufHFRepo          by mutableStateOf("")
+    var ggufHFFile          by mutableStateOf("")
+    var ggufDownloadProgress by mutableStateOf(-1f)
+    var ggufDownloadStatus   by mutableStateOf("")
+    private var ggufDownloadJob: kotlinx.coroutines.Job? = null
+
+    fun downloadGGUFFromHF(context: Context) {
+        val repo = ggufHFRepo.trim()
+        val file = ggufHFFile.trim()
+        if (repo.isBlank() || file.isBlank()) return
+        val url  = "https://huggingface.co/$repo/resolve/main/$file"
+        val destDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+        val dest = java.io.File(destDir, file)
+        ggufDownloadJob?.cancel()
+        ggufDownloadJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                withContext(Dispatchers.Main) { ggufDownloadStatus = "⬇️ Connecting…"; ggufDownloadProgress = 0f }
+                val client = okhttp3.OkHttpClient.Builder()
+                    .connectTimeout(30, TimeUnit.SECONDS)
+                    .readTimeout(5, TimeUnit.MINUTES)
+                    .build()
+                val req  = okhttp3.Request.Builder().url(url).header("User-Agent", "OllamaDevhive/1.0").build()
+                val resp = client.newCall(req).execute()
+                if (!resp.isSuccessful) {
+                    withContext(Dispatchers.Main) { ggufDownloadStatus = "❌ HTTP ${resp.code}"; ggufDownloadProgress = -1f }
+                    return@launch
+                }
+                val total  = resp.body?.contentLength() ?: -1L
+                val input  = resp.body!!.byteStream()
+                destDir.mkdirs()
+                dest.outputStream().use { out ->
+                    var downloaded = 0L
+                    val buf = ByteArray(65536)
+                    var read: Int
+                    while (input.read(buf).also { read = it } != -1) {
+                        out.write(buf, 0, read)
+                        downloaded += read
+                        if (total > 0) {
+                            val prog = downloaded.toFloat() / total.toFloat()
+                            val dlGB = "%.2f".format(downloaded / 1e9)
+                            val totGB = "%.2f".format(total / 1e9)
+                            withContext(Dispatchers.Main) { ggufDownloadProgress = prog; ggufDownloadStatus = "⬇️ $dlGB / $totGB GB" }
+                        }
+                    }
+                }
+                withContext(Dispatchers.Main) {
+                    ggufDownloadProgress = -1f
+                    ggufDownloadStatus   = "✅ Downloaded: $file"
+                    scanGGUFs()
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { ggufDownloadProgress = -1f; ggufDownloadStatus = "❌ ${e.message}" }
+            }
+        }
+    }
+
+    fun cancelGGUFDownload() {
+        ggufDownloadJob?.cancel()
+        ggufDownloadJob = null
+        ggufDownloadProgress = -1f
+        ggufDownloadStatus   = ""
+    }
+
+    // Vulkan GPU support
+    var useVulkan            by mutableStateOf(false)
+    var deviceHasVulkan      by mutableStateOf(false)
+
+    fun checkVulkanSupport(context: Context) {
+        deviceHasVulkan = context.packageManager.hasSystemFeature("android.hardware.vulkan.version") ||
+            context.packageManager.hasSystemFeature("android.hardware.vulkan.level.0")
+    }
 
     // Terminal / Daemon logs
     val liveLogs      = mutableStateListOf<String>()
@@ -786,7 +870,11 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
                 cloudApiKey     = cloudApiKey,
                 backend         = activeBackend,
                 llamaCppBaseUrl = "http://127.0.0.1:$llamaPort",
-                maxSteps        = agentMaxSteps
+                maxSteps        = agentMaxSteps,
+                onAskUser       = { question ->
+                    withContext(Dispatchers.Main) { agentPendingQuestion = question }
+                    agentAnswerChannel.receive()
+                }
             ) { step ->
                 withContext(Dispatchers.Main) { agentSteps.add(step) }
             }
@@ -1396,6 +1484,27 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
                 colors = SliderDefaults.colors(thumbColor = OllamaGreen, activeTrackColor = OllamaGreen, inactiveTrackColor = OllamaBorder)
             )
 
+            // Vulkan GPU toggle
+            LaunchedEffect(Unit) { vm.checkVulkanSupport(context) }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column {
+                    Text("GPU Acceleration (Vulkan)", color = OllamaText, fontSize = 13.sp)
+                    Text(
+                        if (!vm.deviceHasVulkan) "Device does not support Vulkan"
+                        else if (vm.useVulkan) "Enabled — requires Vulkan binary"
+                        else "Disabled (CPU only)",
+                        color = if (!vm.deviceHasVulkan) OllamaRed else if (vm.useVulkan) OllamaGreen else OllamaTextDim,
+                        fontSize = 10.sp
+                    )
+                }
+                Switch(
+                    checked = vm.useVulkan && vm.deviceHasVulkan,
+                    onCheckedChange = { if (vm.deviceHasVulkan) vm.useVulkan = it },
+                    enabled = vm.deviceHasVulkan,
+                    colors = SwitchDefaults.colors(checkedThumbColor = OllamaBg, checkedTrackColor = OllamaGreen, uncheckedTrackColor = OllamaBorder)
+                )
+            }
+
             // Check health button
             OutlinedButton(
                 onClick = { vm.checkLlamaHealth(context) },
@@ -1600,6 +1709,69 @@ fun ModelsScreen(vm: MainViewModel, context: Context) {
                 }
             }
         }
+
+        // ── HuggingFace Custom GGUF Downloader ────────────────────────────────
+        SectionCard("DOWNLOAD FROM HUGGINGFACE", "Enter repo and filename to download any GGUF") {
+            val focusManager2 = LocalFocusManager.current
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                OllamaTextField(
+                    vm.ggufHFRepo, { vm.ggufHFRepo = it },
+                    "owner/repo (e.g. bartowski/Llama-3.2-1B-Instruct-GGUF)",
+                    Modifier.weight(1f), tag = "hf_repo_input",
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next)
+                )
+            }
+            Spacer(Modifier.height(4.dp))
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                OllamaTextField(
+                    vm.ggufHFFile, { vm.ggufHFFile = it },
+                    "filename.gguf",
+                    Modifier.weight(1f), tag = "hf_file_input",
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { focusManager2.clearFocus(); vm.downloadGGUFFromHF(context) })
+                )
+                Button(
+                    onClick = {
+                        focusManager2.clearFocus()
+                        if (vm.ggufDownloadProgress >= 0) vm.cancelGGUFDownload()
+                        else vm.downloadGGUFFromHF(context)
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (vm.ggufDownloadProgress >= 0) OllamaRed else OllamaGreen,
+                        contentColor = OllamaBg
+                    ),
+                    modifier = Modifier.height(56.dp)
+                ) { Text(if (vm.ggufDownloadProgress >= 0) "Cancel" else "Download", fontWeight = FontWeight.Bold) }
+            }
+            // Quick-picks for common repos
+            Text("POPULAR REPOS", color = OllamaTextDim, fontSize = 9.sp, letterSpacing = 1.sp)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                listOf("bartowski", "unsloth", "TheBloke", "QuantFactory").forEach { org ->
+                    Box(
+                        Modifier.weight(1f).clip(RoundedCornerShape(4.dp))
+                            .background(OllamaCardAlt).border(1.dp, OllamaBorder, RoundedCornerShape(4.dp))
+                            .clickable { vm.ggufHFRepo = "$org/" }.padding(horizontal = 4.dp, vertical = 6.dp),
+                        contentAlignment = Alignment.Center
+                    ) { Text(org, fontSize = 9.sp, color = OllamaTextDim, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                }
+            }
+            // Progress / status
+            if (vm.ggufDownloadProgress >= 0) {
+                LinearProgressIndicator({ vm.ggufDownloadProgress }, Modifier.fillMaxWidth(), color = OllamaGreen, trackColor = OllamaBorder)
+            }
+            if (vm.ggufDownloadStatus.isNotBlank()) {
+                Text(
+                    vm.ggufDownloadStatus,
+                    color = when {
+                        vm.ggufDownloadStatus.startsWith("✅") -> OllamaGreen
+                        vm.ggufDownloadStatus.startsWith("❌") -> OllamaRed
+                        else -> OllamaTextDim
+                    },
+                    fontSize = 11.sp, fontWeight = FontWeight.Bold
+                )
+            }
+            Text("Downloaded to /Download/ • Tap Scan to find file after download", color = OllamaTextDim, fontSize = 9.sp)
+        }
     }
 }
 
@@ -1710,6 +1882,41 @@ fun AgentScreen(vm: MainViewModel, context: Context) {
                 showFolderPicker = false
             },
             onDismiss = { showFolderPicker = false }
+        )
+    }
+
+    // ── ask_user dialog — shown when agent needs human input ──
+    val pendingQ = vm.agentPendingQuestion
+    if (pendingQ != null) {
+        AlertDialog(
+            onDismissRequest = { },
+            containerColor = OllamaCard,
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("🤖", fontSize = 22.sp)
+                    Text("Agent is asking…", color = OllamaText, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(pendingQ, color = OllamaText, fontSize = 13.sp, lineHeight = 18.sp)
+                    HorizontalDivider(color = OllamaBorder)
+                    OllamaTextField(
+                        vm.agentQuestionInput, { vm.agentQuestionInput = it },
+                        "Your answer…",
+                        Modifier.fillMaxWidth(),
+                        maxLines = 4,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = { vm.submitAgentAnswer() })
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { vm.submitAgentAnswer() },
+                    colors = ButtonDefaults.buttonColors(containerColor = OllamaGreen, contentColor = OllamaBg)
+                ) { Text("Answer", fontWeight = FontWeight.Bold) }
+            }
         )
     }
 
