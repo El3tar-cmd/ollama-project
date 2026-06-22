@@ -26,6 +26,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -40,20 +41,104 @@ import com.example.ui.theme.*
 fun parseChatContent(content: String): List<ChatSegment> {
     if (content.isBlank()) return listOf(ChatSegment.PlainText(content))
     val result = mutableListOf<ChatSegment>()
-    val regex  = Regex("```(\\w*?)\\n([\\s\\S]*?)```|```([\\s\\S]*?)```")
-    var last   = 0
-    regex.findAll(content).forEach { m ->
+
+    // Combined regex: <think> blocks + code blocks, in order of appearance
+    val combined = Regex(
+        "<think>([\\s\\S]*?)</think>|```(\\w*?)\\n([\\s\\S]*?)```|```([\\s\\S]*?)```",
+        RegexOption.IGNORE_CASE
+    )
+    var last = 0
+
+    combined.findAll(content).forEach { m ->
         val before = content.substring(last, m.range.first).trim()
         if (before.isNotBlank()) result.add(ChatSegment.PlainText(before))
-        val lang = m.groupValues[1].trim()
-        val code = m.groupValues[2].ifBlank { m.groupValues[3] }.trimEnd()
-        result.add(ChatSegment.CodeBlock(lang, code))
+
+        when {
+            m.value.startsWith("<think>", ignoreCase = true) -> {
+                val thinkContent = m.groupValues[1].trim()
+                if (thinkContent.isNotBlank()) result.add(ChatSegment.ThinkBlock(thinkContent))
+            }
+            else -> {
+                val lang = m.groupValues[2].trim()
+                val code = m.groupValues[3].ifBlank { m.groupValues[4] }.trimEnd()
+                result.add(ChatSegment.CodeBlock(lang, code))
+            }
+        }
         last = m.range.last + 1
     }
-    val tail = content.substring(last).trim()
-    if (tail.isNotBlank()) result.add(ChatSegment.PlainText(tail))
+
+    val tail = content.substring(last)
+
+    // Handle incomplete <think> block at end (during streaming)
+    val openThink = Regex("<think>([\\s\\S]*)$", RegexOption.IGNORE_CASE).find(tail)
+    if (openThink != null) {
+        val beforeThink = tail.substring(0, openThink.range.first).trim()
+        if (beforeThink.isNotBlank()) result.add(ChatSegment.PlainText(beforeThink))
+        val thinkContent = openThink.groupValues[1].trim()
+        if (thinkContent.isNotBlank()) result.add(ChatSegment.ThinkBlock(thinkContent))
+    } else {
+        val trimmed = tail.trim()
+        if (trimmed.isNotBlank()) result.add(ChatSegment.PlainText(trimmed))
+    }
+
     if (result.isEmpty()) result.add(ChatSegment.PlainText(content))
     return result
+}
+
+@Composable
+fun ThinkBlockBubble(content: String) {
+    var expanded by remember { mutableStateOf(false) }
+    val lines     = content.lines()
+    val lineCount = lines.size
+    val preview   = if (lineCount > 3) lines.take(2).joinToString("\n") + "\n…" else content
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color(0xFF0D0D20))
+            .border(1.dp, Color(0xFF7C3AED).copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded }
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Box(Modifier.width(3.dp).height(12.dp).background(Color(0xFF7C3AED), RoundedCornerShape(2.dp)))
+                Text("THINKING", color = Color(0xFF7C3AED), fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+                Text("$lineCount lines", color = Color(0xFF7C3AED).copy(alpha = 0.45f), fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+            }
+            Text(if (expanded) "▲" else "▼", color = Color(0xFF7C3AED).copy(alpha = 0.55f), fontSize = 9.sp)
+        }
+        if (expanded) {
+            HorizontalDivider(color = Color(0xFF7C3AED).copy(alpha = 0.15f))
+            SelectionContainer {
+                Text(
+                    content,
+                    color = Color(0xFFBFAEE0),
+                    fontSize = 11.sp,
+                    fontStyle = FontStyle.Italic,
+                    lineHeight = 17.sp,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                )
+            }
+        } else if (lineCount > 3) {
+            HorizontalDivider(color = Color(0xFF7C3AED).copy(alpha = 0.1f))
+            Text(
+                preview,
+                color = Color(0xFFBFAEE0).copy(alpha = 0.6f),
+                fontSize = 10.sp,
+                fontStyle = FontStyle.Italic,
+                lineHeight = 15.sp,
+                maxLines = 3,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+            )
+        }
+    }
 }
 
 @Composable
@@ -81,9 +166,15 @@ fun ChatMessageBubble(msg: ChatMessage) {
             bottomEnd   = if (isUser) 0.dp else 16.dp
         )
 
-        Column(Modifier.widthIn(max = 290.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(
+            Modifier.widthIn(max = if (isUser) 290.dp else 320.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
             segments.forEachIndexed { idx, segment ->
                 when (segment) {
+                    is ChatSegment.ThinkBlock -> {
+                        if (!isUser) ThinkBlockBubble(segment.content)
+                    }
                     is ChatSegment.PlainText -> {
                         if (segment.text.isBlank()) return@forEachIndexed
                         val shape = if (segments.size == 1) bubbleShape else RoundedCornerShape(12.dp)
