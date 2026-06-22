@@ -15,6 +15,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.*
@@ -298,7 +299,12 @@ fun ChatScreen(vm: MainViewModel, context: Context) {
                     }
                 }
             }
-            TextButton(onClick = { vm.startChatSession() }) { Text("New Chat", color = OllamaGreen, fontSize = 12.sp) }
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { vm.startChatSession() }) { Text("New Chat", color = OllamaGreen, fontSize = 12.sp) }
+                IconButton(onClick = { vm.chatHistory.clear() }, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Default.Delete, null, tint = OllamaRed, modifier = Modifier.size(16.dp))
+                }
+            }
         }
 
         if (!hasModel || !isOnline) {
