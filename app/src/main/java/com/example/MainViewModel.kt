@@ -661,7 +661,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     }
 
     fun updateAgentWorkingDir(path: String) {
-        agentWorkingDir = path; agentEngine.workingDir = path; refreshFileTree()
+        agentWorkingDir = path; agentEngine.workingDir = path; shellCwd = path; refreshFileTree()
     }
 
     fun refreshFileTree() {
