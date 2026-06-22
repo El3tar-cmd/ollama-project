@@ -86,7 +86,9 @@ class AgentEngine(private val context: Context) {
 
             val toolCalls = parseToolCalls(response)
 
+            // Strip <think>...</think> blocks and tool call markers from display text
             val display = response
+                .replace(Regex("<think>[\\s\\S]*?</think>", RegexOption.IGNORE_CASE), "")
                 .replace(Regex("""WRITE_FILE>>[^\n]+\n[\s\S]*?<<WRITE_FILE"""), "")
                 .replace(Regex("""TOOL>>\s*\n[\s\S]*?\n?<<TOOL"""), "")
                 .replace(Regex("""```tool\s*\n[\s\S]*?\n?```"""), "")
