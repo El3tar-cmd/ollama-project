@@ -1879,10 +1879,12 @@ fun AgentScreen(vm: MainViewModel, context: Context) {
         Column(Modifier.fillMaxWidth().background(OllamaSurface).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 // Model selector — dropdown for active backend
+                val isLlamaBackend = vm.activeBackend == "llamacpp"
+                val hasModels = if (isLlamaBackend) vm.llamaAvailableGGUFs.isNotEmpty() else vm.modelList.isNotEmpty()
                 if (false) { } else {
                     ExposedDropdownMenuBox(
-                        expanded = modelDropdownExpanded && vm.modelList.isNotEmpty(),
-                        onExpandedChange = { if (vm.modelList.isNotEmpty()) modelDropdownExpanded = it },
+                        expanded = modelDropdownExpanded && hasModels,
+                        onExpandedChange = { if (hasModels) modelDropdownExpanded = it },
                         modifier = Modifier.weight(1f)
                     ) {
                         Column(modifier = Modifier.menuAnchor()) {

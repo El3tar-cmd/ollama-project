@@ -1,0 +1,1 @@
+When I run ollama, it appears normally and I can select a model in the agent and on the chat page. There's no model selector, but when I run it through llama.cpp, the model selector doesn't appear, even though it works normally in the terminal.
