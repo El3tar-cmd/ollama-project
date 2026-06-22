@@ -476,7 +476,7 @@ Platform: Android arm64 · Shell: /system/bin/sh
             val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date())
             val existing = if (f.exists()) f.readText() else ""
             val marker   = "## $key"
-            val entry    = "$marker\n_$ts_\n$value\n"
+            val entry    = "$marker\n_${ts}_\n$value\n"
             val updated  = if (existing.contains(marker)) {
                 val a = existing.indexOf(marker)
                 val b = existing.indexOf("\n## ", a + 1).let { if (it < 0) existing.length else it }
@@ -632,12 +632,12 @@ Platform: Android arm64 · Shell: /system/bin/sh
                 suspendCancellableCoroutine<Unit> { cont ->
                     val call = if (cloud && cloudApiKey.isNotBlank())
                         api.cloudChatStream(cloudApiKey, model, messages,
-                            onToken = { response += it },
+                            onTokenGenerated = { response += it },
                             onComplete = { s, m -> if (!s) { streamOk = false; streamErr = m }; if (!cont.isCompleted) cont.resume(Unit) }
                         )
                     else
                         api.chatStream(baseUrl, model, messages,
-                            onToken = { response += it },
+                            onTokenGenerated = { response += it },
                             onComplete = { s, m -> if (!s) { streamOk = false; streamErr = m }; if (!cont.isCompleted) cont.resume(Unit) }
                         )
                     cont.invokeOnCancellation { call.cancel() }
