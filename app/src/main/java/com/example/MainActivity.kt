@@ -39,6 +39,10 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -119,6 +123,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     // Agent
     var agentInput        by mutableStateOf("")
     var agentModel        by mutableStateOf("")
+    var agentMaxSteps     by mutableStateOf(15)
     var isAgentRunning    by mutableStateOf(false)
     val agentSteps        = mutableStateListOf<AgentStep>()
     var agentWorkingDir   by mutableStateOf("")
@@ -775,12 +780,13 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         agentSteps.add(AgentStep("user", task))
         agentJob = viewModelScope.launch(Dispatchers.IO) {
             agentEngine.runAgentLoop(
-                userTask       = task,
-                model          = agentModel,
-                baseUrl        = "http://$hostUrlState",
-                cloudApiKey    = cloudApiKey,
-                backend        = activeBackend,
-                llamaCppBaseUrl = "http://127.0.0.1:$llamaPort"
+                userTask        = task,
+                model           = agentModel,
+                baseUrl         = "http://$hostUrlState",
+                cloudApiKey     = cloudApiKey,
+                backend         = activeBackend,
+                llamaCppBaseUrl = "http://127.0.0.1:$llamaPort",
+                maxSteps        = agentMaxSteps
             ) { step ->
                 withContext(Dispatchers.Main) { agentSteps.add(step) }
             }
@@ -1202,7 +1208,7 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
                     }
                     TextButton(
                         onClick = {
-                            try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://ollama.com/settings/api"))) }
+                            try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://ollama.com/settings/keys"))) }
                             catch (_: Exception) {}
                         },
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
@@ -1420,7 +1426,7 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
 @Composable
 fun ModelsScreen(vm: MainViewModel, context: Context) {
     val focusManager = LocalFocusManager.current
-    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
 
         SectionCard("PULL MODEL", "Download from Ollama registry") {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1466,19 +1472,19 @@ fun ModelsScreen(vm: MainViewModel, context: Context) {
         Text("INSTALLED MODELS", color = OllamaTextDim, fontSize = 10.sp, letterSpacing = 1.sp)
 
         if (!vm.apiOnline) {
-            Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxWidth().padding(vertical = 24.dp), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Icon(Icons.Default.Warning, null, tint = OllamaTextDim, modifier = Modifier.size(36.dp))
                     Text("Server offline\nStart the daemon to see installed models", color = OllamaTextDim, textAlign = TextAlign.Center, fontSize = 13.sp)
                 }
             }
         } else if (vm.modelList.isEmpty()) {
-            Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxWidth().padding(vertical = 24.dp), contentAlignment = Alignment.Center) {
                 Text("No models installed\nPull a model above to get started", color = OllamaTextDim, textAlign = TextAlign.Center, fontSize = 13.sp)
             }
         } else {
-            LazyColumn(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(vm.modelList) { model ->
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            vm.modelList.forEach { model ->
                     Row(
                         Modifier
                             .fillMaxWidth()
@@ -1711,52 +1717,72 @@ fun AgentScreen(vm: MainViewModel, context: Context) {
         // Agent header
         Column(Modifier.fillMaxWidth().background(OllamaSurface).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                // Model selector
-                ExposedDropdownMenuBox(
-                    expanded = modelDropdownExpanded && vm.modelList.isNotEmpty(),
-                    onExpandedChange = { if (vm.modelList.isNotEmpty()) modelDropdownExpanded = it },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Column(modifier = Modifier.menuAnchor()) {
+                // Model selector — Ollama dropdown OR llama.cpp label
+                if (vm.activeBackend == "llamacpp") {
+                    // Auto-set agentModel for llama.cpp when empty or an Ollama model name
+                    LaunchedEffect(vm.activeBackend) {
+                        if (!vm.agentModel.startsWith("llama-server")) vm.agentModel = "llama-server"
+                    }
+                    Column(Modifier.weight(1f)) {
                         Text("DEVHIVE AGENT", color = OllamaGreen, fontSize = 10.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold)
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            modifier = Modifier.clickable { if (vm.modelList.isNotEmpty()) modelDropdownExpanded = true }
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("llama-server (local)", color = OllamaText, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Box(Modifier.size(6.dp).clip(CircleShape).background(if (vm.llamaApiOnline) OllamaGreen else OllamaRed))
+                        }
+                    }
+                } else {
+                    ExposedDropdownMenuBox(
+                        expanded = modelDropdownExpanded && vm.modelList.isNotEmpty(),
+                        onExpandedChange = { if (vm.modelList.isNotEmpty()) modelDropdownExpanded = it },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Column(modifier = Modifier.menuAnchor()) {
+                            Text("DEVHIVE AGENT", color = OllamaGreen, fontSize = 10.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold)
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                modifier = Modifier.clickable { if (vm.modelList.isNotEmpty()) modelDropdownExpanded = true }
+                            ) {
+                                Text(
+                                    vm.agentModel.ifEmpty { "No model selected — tap ▸ below" },
+                                    color = if (vm.agentModel.isEmpty()) OllamaRed else OllamaText,
+                                    fontWeight = FontWeight.Bold, fontSize = 13.sp
+                                )
+                                if (vm.modelList.isNotEmpty())
+                                    Icon(Icons.Default.KeyboardArrowDown, null, tint = OllamaGreen, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                        ExposedDropdownMenu(
+                            expanded = modelDropdownExpanded && vm.modelList.isNotEmpty(),
+                            onDismissRequest = { modelDropdownExpanded = false },
+                            containerColor = OllamaCard
                         ) {
-                            Text(
-                                vm.agentModel.ifEmpty { "No model selected" },
-                                color = if (vm.agentModel.isEmpty()) OllamaRed else OllamaText,
-                                fontWeight = FontWeight.Bold, fontSize = 13.sp
-                            )
-                            if (vm.modelList.isNotEmpty()) {
-                                Icon(Icons.Default.KeyboardArrowDown, null, tint = OllamaGreen, modifier = Modifier.size(16.dp))
+                            vm.modelList.forEach { model ->
+                                DropdownMenuItem(
+                                    text = { Text(model.name, color = OllamaText, fontSize = 13.sp) },
+                                    onClick = { vm.agentModel = model.name; modelDropdownExpanded = false },
+                                    colors = MenuDefaults.itemColors(textColor = OllamaText),
+                                    leadingIcon = if (vm.agentModel == model.name) ({
+                                        Icon(Icons.Default.Check, null, tint = OllamaGreen, modifier = Modifier.size(14.dp))
+                                    }) else null
+                                )
                             }
                         }
                     }
-                    ExposedDropdownMenu(
-                        expanded = modelDropdownExpanded && vm.modelList.isNotEmpty(),
-                        onDismissRequest = { modelDropdownExpanded = false },
-                        containerColor = OllamaCard
-                    ) {
-                        vm.modelList.forEach { model ->
-                            DropdownMenuItem(
-                                text = { Text(model.name, color = OllamaText, fontSize = 13.sp) },
-                                onClick = { vm.agentModel = model.name; modelDropdownExpanded = false },
-                                colors = MenuDefaults.itemColors(textColor = OllamaText),
-                                leadingIcon = if (vm.agentModel == model.name) ({
-                                    Icon(Icons.Default.Check, null, tint = OllamaGreen, modifier = Modifier.size(14.dp))
-                                }) else null
-                            )
-                        }
-                    }
                 }
+                val serverReady = if (vm.activeBackend == "llamacpp") vm.llamaApiOnline else vm.apiOnline
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.size(7.dp).clip(CircleShape).background(if (vm.apiOnline) OllamaGreen else OllamaRed))
-                    Text(if (vm.isAgentRunning) "Running..." else if (vm.apiOnline) "Ready" else "Server offline", color = if (vm.isAgentRunning) OllamaGreen else OllamaTextDim, fontSize = 11.sp)
+                    Box(Modifier.size(7.dp).clip(CircleShape).background(if (serverReady) OllamaGreen else OllamaRed))
+                    Text(
+                        if (vm.isAgentRunning) "Running…"
+                        else if (serverReady) "Ready"
+                        else if (vm.activeBackend == "llamacpp") "llama.cpp offline"
+                        else "Server offline",
+                        color = if (vm.isAgentRunning) OllamaGreen else OllamaTextDim, fontSize = 11.sp
+                    )
                 }
             }
-            // Working dir row with folder picker button
+            // Working dir row with folder picker + max-steps control
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Icon(Icons.Default.Home, null, tint = OllamaTextDim, modifier = Modifier.size(14.dp))
                 Text(
@@ -1766,6 +1792,17 @@ fun AgentScreen(vm: MainViewModel, context: Context) {
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
+                // Max steps stepper
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("max:", color = OllamaTextDim, fontSize = 9.sp)
+                    IconButton(onClick = { if (vm.agentMaxSteps > 3) vm.agentMaxSteps-- }, Modifier.size(20.dp)) {
+                        Text("−", color = OllamaGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Text("${vm.agentMaxSteps}", color = OllamaText, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                    IconButton(onClick = { if (vm.agentMaxSteps < 50) vm.agentMaxSteps++ }, Modifier.size(20.dp)) {
+                        Text("+", color = OllamaGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
                 TextButton(
                     onClick = { showFolderPicker = true },
                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
@@ -2213,7 +2250,9 @@ fun ChatMessageBubble(msg: ChatMessage) {
                                 .border(if (isUser) 0.dp else 1.dp, OllamaBorder, shape)
                                 .padding(horizontal = 12.dp, vertical = 10.dp)
                         ) {
-                            Text(segment.text, color = if (isUser) OllamaBg else OllamaText, fontSize = 14.sp)
+                            SelectionContainer {
+                                Text(segment.text, color = if (isUser) OllamaBg else OllamaText, fontSize = 14.sp)
+                            }
                             if (!isUser && segment.text.length > 10) {
                                 TextButton(
                                     onClick = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(segment.text)) },
@@ -2272,6 +2311,55 @@ sealed class MdSegment {
     object Blank : MdSegment()
 }
 
+// Render inline markdown (bold, italic, code, strikethrough) into AnnotatedString
+fun inlineMd(raw: String): AnnotatedString = buildAnnotatedString {
+    var i = 0
+    while (i < raw.length) {
+        when {
+            // Bold **text** or __text__
+            (raw.startsWith("**", i) || raw.startsWith("__", i)) -> {
+                val marker = raw.substring(i, i + 2)
+                val end = raw.indexOf(marker, i + 2)
+                if (end != -1) {
+                    pushStyle(SpanStyle(fontWeight = FontWeight.Bold))
+                    append(raw.substring(i + 2, end))
+                    pop(); i = end + 2
+                } else { append(raw[i]); i++ }
+            }
+            // Italic *text* or _text_ (but not **)
+            (raw.startsWith("*", i) && !raw.startsWith("**", i)) ||
+            (raw.startsWith("_", i) && !raw.startsWith("__", i)) -> {
+                val marker = raw[i].toString()
+                val end = raw.indexOf(marker, i + 1)
+                if (end != -1 && end > i + 1) {
+                    pushStyle(SpanStyle(fontStyle = FontStyle.Italic))
+                    append(raw.substring(i + 1, end))
+                    pop(); i = end + 1
+                } else { append(raw[i]); i++ }
+            }
+            // Inline code `code`
+            raw.startsWith("`", i) -> {
+                val end = raw.indexOf("`", i + 1)
+                if (end != -1) {
+                    pushStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = Color(0xFF1A1A2E), color = Color(0xFF79C0FF)))
+                    append(raw.substring(i + 1, end))
+                    pop(); i = end + 1
+                } else { append(raw[i]); i++ }
+            }
+            // Strikethrough ~~text~~
+            raw.startsWith("~~", i) -> {
+                val end = raw.indexOf("~~", i + 2)
+                if (end != -1) {
+                    pushStyle(SpanStyle(textDecoration = androidx.compose.ui.text.style.TextDecoration.LineThrough, color = Color(0xFF888888)))
+                    append(raw.substring(i + 2, end))
+                    pop(); i = end + 2
+                } else { append(raw[i]); i++ }
+            }
+            else -> { append(raw[i]); i++ }
+        }
+    }
+}
+
 fun parseMd(md: String): List<MdSegment> {
     val segs  = mutableListOf<MdSegment>()
     val lines = md.lines()
@@ -2279,28 +2367,35 @@ fun parseMd(md: String): List<MdSegment> {
     while (i < lines.size) {
         val line = lines[i].trimEnd()
         when {
-            line.startsWith("```") -> {
+            // Code fences ``` or ~~~
+            line.startsWith("```") || line.startsWith("~~~") -> {
+                val fence = if (line.startsWith("```")) "```" else "~~~"
                 val lang = line.drop(3).trim()
                 val code = StringBuilder()
                 i++
-                while (i < lines.size && !lines[i].trimStart().startsWith("```")) {
+                while (i < lines.size && !lines[i].trimStart().startsWith(fence.take(3))) {
                     code.appendLine(lines[i]); i++
                 }
                 segs.add(MdSegment.MdCodeBlock(lang, code.toString().trimEnd()))
             }
-            line.matches(Regex("^#{1,6} .*")) -> {
+            // Headings: # with or without trailing space
+            line.matches(Regex("^#{1,6}( .*|$)")) -> {
                 val lvl = line.takeWhile { it == '#' }.length
-                segs.add(MdSegment.Heading(lvl, line.drop(lvl + 1)))
+                segs.add(MdSegment.Heading(lvl, line.drop(lvl).trimStart()))
             }
+            // Bullets
             line.matches(Regex("^\\s*[-*+] .*")) -> {
                 val indent = line.length - line.trimStart().length
                 segs.add(MdSegment.BulletItem(indent / 2, line.trimStart().drop(2)))
             }
-            line.matches(Regex("^\\s*\\d+\\. .*")) -> {
+            // Numbered list
+            line.matches(Regex("^\\s*\\d+[.)].? .*")) -> {
                 val num = line.trimStart().takeWhile { it.isDigit() }.toIntOrNull() ?: 1
-                segs.add(MdSegment.NumberedItem(num, line.trimStart().dropWhile { it.isDigit() || it == '.' }.drop(1)))
+                segs.add(MdSegment.NumberedItem(num, line.trimStart().dropWhile { it.isDigit() || it == '.' || it == ')' }.trimStart()))
             }
-            line.startsWith("> ") -> segs.add(MdSegment.Quote(line.drop(2)))
+            // Blockquote > or >text
+            line.startsWith(">") && line.length > 1 -> segs.add(MdSegment.Quote(line.drop(1).trimStart()))
+            // Horizontal rule
             line.matches(Regex("^[-*_]{3,}\\s*$")) -> segs.add(MdSegment.Rule)
             line.isBlank() -> segs.add(MdSegment.Blank)
             else -> segs.add(MdSegment.Paragraph(line))
@@ -2332,21 +2427,21 @@ fun MarkdownViewer(markdown: String, modifier: Modifier = Modifier) {
                     )
                     if (seg.level == 1) HorizontalDivider(color = OllamaBorder.copy(alpha = 0.5f), modifier = Modifier.padding(top = 4.dp, bottom = 4.dp))
                 }
-                is MdSegment.Paragraph -> Text(seg.text, color = OllamaText, fontSize = 13.sp, lineHeight = 20.sp)
+                is MdSegment.Paragraph -> Text(inlineMd(seg.text), color = OllamaText, fontSize = 13.sp, lineHeight = 20.sp)
                 is MdSegment.BulletItem -> Row(
                     Modifier.padding(start = (seg.indent * 14).dp),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.Top
                 ) {
                     Text("•", color = OllamaGreen, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    Text(seg.text, color = OllamaText, fontSize = 13.sp, lineHeight = 20.sp, modifier = Modifier.weight(1f))
+                    Text(inlineMd(seg.text), color = OllamaText, fontSize = 13.sp, lineHeight = 20.sp, modifier = Modifier.weight(1f))
                 }
                 is MdSegment.NumberedItem -> Row(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.Top
                 ) {
                     Text("${seg.num}.", color = OllamaGreen, fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.width(24.dp))
-                    Text(seg.text, color = OllamaText, fontSize = 13.sp, lineHeight = 20.sp, modifier = Modifier.weight(1f))
+                    Text(inlineMd(seg.text), color = OllamaText, fontSize = 13.sp, lineHeight = 20.sp, modifier = Modifier.weight(1f))
                 }
                 is MdSegment.MdCodeBlock -> {
                     val code = seg.code
@@ -2625,9 +2720,11 @@ fun TerminalScreen(vm: MainViewModel, context: Context) {
                     Text("No logs yet.\nStart the daemon to see output.", color = OllamaTextDim, textAlign = TextAlign.Center, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
                 }
             } else {
-                LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(10.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                    items(vm.liveLogs) { line ->
-                        Text(line, color = TerminalGreen, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                SelectionContainer {
+                    LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(10.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                        items(vm.liveLogs) { line ->
+                            Text(line, color = TerminalGreen, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                        }
                     }
                 }
             }
