@@ -1736,6 +1736,16 @@ fun ChatScreen(vm: MainViewModel, context: Context) {
     LaunchedEffect(vm.selectedModelChat) { if (vm.selectedModelChat.isNotEmpty() && vm.chatHistory.isEmpty()) vm.startChatSession() }
 
     Column(Modifier.fillMaxSize().imePadding()) {
+        // Determine which backend is active
+        val isLlamaBackend = vm.activeBackend == "llamacpp"
+        val isOnline = if (isLlamaBackend) vm.llamaApiOnline else vm.apiOnline
+        val hasModel = if (isLlamaBackend) vm.llamaSelectedModel != null else vm.selectedModelChat.isNotEmpty()
+        val modelName = if (isLlamaBackend) {
+            vm.llamaSelectedModel?.name ?: "No model selected"
+        } else {
+            vm.selectedModelChat.ifEmpty { "No model selected" }
+        }
+        
         // Header bar
         Row(
             Modifier.fillMaxWidth().background(OllamaSurface).padding(horizontal = 16.dp, vertical = 10.dp),
@@ -1743,20 +1753,22 @@ fun ChatScreen(vm: MainViewModel, context: Context) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Box(Modifier.size(8.dp).clip(CircleShape).background(if (vm.apiOnline) OllamaGreen else OllamaRed))
-                Text(vm.selectedModelChat.ifEmpty { "No model selected" }, color = OllamaText, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Box(Modifier.size(8.dp).clip(CircleShape).background(if (isOnline) OllamaGreen else OllamaRed))
+                Text(modelName, color = OllamaText, fontWeight = FontWeight.Bold, fontSize = 13.sp)
             }
             TextButton(onClick = { vm.startChatSession() }) { Text("New Chat", color = OllamaGreen, fontSize = 12.sp) }
         }
 
-        if (vm.selectedModelChat.isEmpty() || !vm.apiOnline) {
+        if (!hasModel || !isOnline) {
             Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("🤖", fontSize = 40.sp)
-                    Text(
-                        if (!vm.apiOnline) "Start the Ollama daemon first" else "Select a model from the Models tab",
-                        color = OllamaTextDim, textAlign = TextAlign.Center, fontSize = 13.sp
-                    )
+                    val message = if (!isOnline) {
+                        if (isLlamaBackend) "Start the llama.cpp server first" else "Start the Ollama daemon first"
+                    } else {
+                        "Select a model from the Models tab"
+                    }
+                    Text(message, color = OllamaTextDim, textAlign = TextAlign.Center, fontSize = 13.sp)
                 }
             }
         } else {
