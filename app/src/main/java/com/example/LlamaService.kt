@@ -97,7 +97,7 @@ class LlamaService : Service() {
     private fun buildEnv(): Map<String, String> {
         val binDir = java.io.File(filesDir, "bin").absolutePath
         val ldPath = listOf(
-            binDir,                                      // libllama-server-impl.so lives here
+            binDir,                                      // all extracted .so libs live here
             applicationInfo.nativeLibraryDir,
             "/system/lib64",
             "/apex/com.android.runtime/lib64",
@@ -105,9 +105,11 @@ class LlamaService : Service() {
             "/vendor/lib64"
         ).joinToString(":")
         return mapOf(
-            "LD_LIBRARY_PATH" to ldPath,
-            "TMPDIR"          to cacheDir.absolutePath,
-            "HOME"            to filesDir.absolutePath
+            "LD_LIBRARY_PATH"    to ldPath,
+            // GGML backend plugin discovery path — required for CPU/GPU backends
+            "GGML_BACKEND_PATH"  to binDir,
+            "TMPDIR"             to cacheDir.absolutePath,
+            "HOME"               to filesDir.absolutePath
         )
     }
 
