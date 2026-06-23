@@ -12,80 +12,209 @@ class ToolExecutor(
 ) {
     var askUserFn: (suspend (String) -> String)? = null
 
-    private val fileTools   = FileTools(getWorkingDir)
-    private val bashTool    = BashTool(context, getWorkingDir)
-    private val webTool     = WebTool()
-    private val searchTools = SearchTools(getWorkingDir)
-    private val memoryTool  = MemoryTool(context, getWorkingDir)
+    private val fileTools      = FileTools(getWorkingDir)
+    private val multiFileTools = MultiFileTools(getWorkingDir)
+    private val bashTool       = BashTool(context, getWorkingDir)
+    private val webTool        = WebTool()
+    private val searchTools    = SearchTools(getWorkingDir)
+    private val memoryTool     = MemoryTool(context, getWorkingDir)
+    private val gitTool        = GitTool(context, getWorkingDir)
+    private val linterTool     = LinterTool()
+    private val thinkingTools  = ThinkingTools()
 
     suspend fun executeTool(tool: JSONObject): AgentStep = withContext(Dispatchers.IO) {
         when (val name = tool.optString("name", "")) {
 
-            "think" -> AgentStep("think", "💭 ${tool.optString("content")}")
-            "plan"  -> {
-                val arr = tool.optJSONArray("steps")
-                val sb  = StringBuilder("📋 Plan\n")
-                if (arr != null) for (i in 0 until arr.length()) sb.appendLine("  ${i+1}. ${arr.optString(i)}")
-                AgentStep("think", sb.trimEnd().toString())
+            // ── Thinking & Planning ───────────────────────────────────────────
+            "think", "sequence_thinking" -> {
+                val steps   = tool.optJSONArray("steps")
+                val content = tool.optString("content", tool.optString("thought", ""))
+                thinkingTools.toolSequenceThinking(steps, content)
+            }
+            "planning", "plan" -> {
+                val task  = tool.optString("task", "")
+                val steps = tool.optJSONArray("steps")
+                if (steps != null) thinkingTools.toolPlanning(task, steps)
+                else AgentStep("plan", "📋 Plan: ${tool.optString("content", "(no steps provided)")}")
+            }
+            "context_manager" -> {
+                thinkingTools.toolContextManager(
+                    tool.optString("action", "summarize"),
+                    tool.optString("focus", "")
+                )
             }
 
-            "list_dir", "list"
+            // ── Directory Explorer & File System ──────────────────────────────
+            "directory_explorer", "list_dir", "list"
                 -> fileTools.toolListDir(tool.optString("path", getWorkingDir()))
-            "read_file"
+            "tree"
+                -> fileTools.toolTree(
+                    tool.optString("path", getWorkingDir()),
+                    tool.optInt("depth", 3)
+                )
+            "file_info"
+                -> fileTools.toolFileInfo(tool.optString("path", ""))
+            "file_exists"
+                -> fileTools.toolFileExists(tool.optString("path", ""))
+
+            // ── File Reader ───────────────────────────────────────────────────
+            "file_reader", "read_file"
                 -> fileTools.toolReadFile(tool.optString("path", ""))
-            "read_lines"
-                -> fileTools.toolReadLines(tool.optString("path",""), tool.optInt("start",1), tool.optInt("end",50))
-            "write_file"
-                -> fileTools.toolWriteFile(tool.optString("path",""), tool.optString("content",""))
+            "line_reader", "read_lines"
+                -> fileTools.toolReadLines(
+                    tool.optString("path", ""),
+                    tool.optInt("start", 1),
+                    tool.optInt("end", 50)
+                )
+            "head_file"
+                -> fileTools.toolHeadFile(tool.optString("path", ""), tool.optInt("lines", 20))
+            "tail_file"
+                -> fileTools.toolTailFile(tool.optString("path", ""), tool.optInt("lines", 20))
+            "file_diff"
+                -> fileTools.toolFileDiff(tool.optString("a", tool.optString("path_a", "")),
+                                          tool.optString("b", tool.optString("path_b", "")))
+
+            // ── File Writer ───────────────────────────────────────────────────
+            "file_writer", "write_file"
+                -> fileTools.toolWriteFile(tool.optString("path", ""), tool.optString("content", ""))
             "append_file"
-                -> fileTools.toolAppendFile(tool.optString("path",""), tool.optString("content",""))
-            "edit_file"
-                -> fileTools.toolEditFile(tool.optString("path",""), tool.optString("old",""), tool.optString("new",""))
+                -> fileTools.toolAppendFile(tool.optString("path", ""), tool.optString("content", ""))
+
+            // ── Line Editor ───────────────────────────────────────────────────
+            "line_editor", "edit_file"
+                -> fileTools.toolEditFile(
+                    tool.optString("path", ""),
+                    tool.optString("old", ""),
+                    tool.optString("new", "")
+                )
+            "replace_all"
+                -> fileTools.toolReplaceAll(
+                    tool.optString("path", ""),
+                    tool.optString("old", ""),
+                    tool.optString("new", "")
+                )
+
+            // ── Multi File Writer ─────────────────────────────────────────────
+            "multi_file_writer" -> {
+                val files = tool.optJSONArray("files")
+                    ?: return@withContext AgentStep("tool_result", "❌ multi_file_writer: 'files' array required", isError = true)
+                multiFileTools.toolMultiFileWriter(files)
+            }
+
+            // ── Multi Line Editor ─────────────────────────────────────────────
+            "multi_line_editor" -> {
+                val edits = tool.optJSONArray("edits")
+                    ?: return@withContext AgentStep("tool_result", "❌ multi_line_editor: 'edits' array required", isError = true)
+                multiFileTools.toolMultiLineEditor(tool.optString("path", ""), edits)
+            }
+
+            // ── File management ───────────────────────────────────────────────
             "delete_file"
-                -> fileTools.toolDeleteFile(tool.optString("path",""))
+                -> fileTools.toolDeleteFile(tool.optString("path", ""))
+            "copy_file"
+                -> fileTools.toolCopyFile(tool.optString("src", ""), tool.optString("dst", ""))
             "move_file"
-                -> fileTools.toolMoveFile(tool.optString("src",""), tool.optString("dst",""))
+                -> fileTools.toolMoveFile(tool.optString("src", ""), tool.optString("dst", ""))
             "create_dir"
-                -> fileTools.toolCreateDir(tool.optString("path",""))
+                -> fileTools.toolCreateDir(tool.optString("path", ""))
+            "find_files"
+                -> fileTools.toolFindFiles(
+                    tool.optString("dir", tool.optString("path", getWorkingDir())),
+                    tool.optString("pattern", "*"),
+                    tool.optInt("max", 50)
+                )
 
-            "bash"
-                -> bashTool.toolBash(tool.optString("cmd",""), tool.optString("cwd", getWorkingDir()))
-            "git"
-                -> bashTool.toolBash("git ${tool.optString("args","status")}", getWorkingDir())
-            "fetch_url"
-                -> webTool.toolFetchUrl(tool.optString("url",""), tool.optString("method","GET"), tool.optString("body",""))
+            // ── Terminal Executor ─────────────────────────────────────────────
+            "terminal_executor", "bash"
+                -> bashTool.toolBash(tool.optString("cmd", ""), tool.optString("cwd", getWorkingDir()))
+            "git_tool", "git"
+                -> bashTool.toolBash("git ${tool.optString("args", "status")}", getWorkingDir())
+            "fetch_url", "web_fetch"
+                -> webTool.toolFetchUrl(
+                    tool.optString("url", ""),
+                    tool.optString("method", "GET"),
+                    tool.optString("body", "")
+                )
             "calculate"
-                -> bashTool.toolCalculate(tool.optString("expr",""))
+                -> bashTool.toolCalculate(tool.optString("expr", ""))
 
-            "search_files", "search"
+            // ── Search Tools ──────────────────────────────────────────────────
+            "project_search", "search_files", "search"
                 -> searchTools.toolSearchFiles(
                     tool.optString("dir", tool.optString("path", getWorkingDir())),
-                    tool.optString("query","")
+                    tool.optString("query", "")
                 )
-            "grep"
+            "regex_search", "grep"
                 -> searchTools.toolGrep(
                     tool.optString("dir", getWorkingDir()),
-                    tool.optString("pattern",""),
-                    tool.optString("glob","")
+                    tool.optString("pattern", ""),
+                    tool.optString("glob", "")
+                )
+            "semantic_search"
+                -> searchTools.toolSemanticSearch(
+                    tool.optString("dir", getWorkingDir()),
+                    tool.optString("query", "")
                 )
             "web_search"
-                -> webTool.toolWebSearch(tool.optString("query",""))
+                -> webTool.toolWebSearch(tool.optString("query", ""))
 
-            "memory_save"
-                -> memoryTool.toolMemorySave(
-                    tool.optString("key","note").trim().replace(Regex("[^a-zA-Z0-9_\\- ]"), ""),
-                    tool.optString("value","")
+            // ── Linter ────────────────────────────────────────────────────────
+            "lint", "linter"
+                -> linterTool.toolLint(tool.optString("path", ""))
+
+            // ── Git Tool ──────────────────────────────────────────────────────
+            "git_status"
+                -> gitTool.toolGitStatus()
+            "git_diff"
+                -> gitTool.toolGitDiff(tool.optString("target", "HEAD"))
+            "git_log"
+                -> gitTool.toolGitLog(tool.optInt("count", 10))
+            "git_add"
+                -> gitTool.toolGitAdd(tool.optString("paths", "."))
+            "git_commit"
+                -> gitTool.toolGitCommit(
+                    tool.optString("message", ""),
+                    tool.optBoolean("add_all", true)
                 )
-            "memory_recall" -> memoryTool.toolMemoryRecall()
-            "memory_clear"  -> memoryTool.toolMemoryClear(tool.optString("key",""))
+            "git_push"
+                -> gitTool.toolGitPush(
+                    tool.optString("remote", "origin"),
+                    tool.optString("branch", "")
+                )
+            "git_branch"
+                -> gitTool.toolGitBranch(tool.optString("name", ""))
 
+            // ── Memory System ─────────────────────────────────────────────────
+            "memory_save", "memory_save_long"
+                -> memoryTool.toolMemorySaveLong(
+                    tool.optString("key", "note").trim().replace(Regex("[^a-zA-Z0-9_\\- ]"), ""),
+                    tool.optString("value", tool.optString("content", ""))
+                )
+            "memory_save_short"
+                -> memoryTool.toolMemorySaveShort(
+                    tool.optString("key", "note").trim().replace(Regex("[^a-zA-Z0-9_\\- ]"), ""),
+                    tool.optString("value", tool.optString("content", ""))
+                )
+            "memory_recall", "memory_recall_long"
+                -> memoryTool.toolMemoryRecallLong(tool.optString("key", ""))
+            "memory_recall_short"
+                -> memoryTool.toolMemoryRecallShort()
+            "memory_recall_all"
+                -> memoryTool.toolMemoryRecallAll()
+            "memory_clear", "memory_clear_long"
+                -> memoryTool.toolMemoryClearLong(tool.optString("key", ""))
+            "memory_clear_short"
+                -> memoryTool.toolMemoryClearShort()
+
+            // ── User interaction ──────────────────────────────────────────────
             "ask_user" -> {
                 val q  = tool.optString("question", "What should I do next?")
                 val fn = askUserFn
-                if (fn != null) AgentStep("tool_result", "💬 User replied: ${fn(q)}")
-                else AgentStep("tool_result", "ℹ️ No user available — continuing.")
+                if (fn != null) AgentStep("tool_result", "💬 User: ${fn(q)}")
+                else AgentStep("tool_result", "ℹ️ No user input available — continuing.")
             }
 
+            // ── Complete ──────────────────────────────────────────────────────
             "complete" -> {
                 val summary = tool.optString("summary", "Task complete.")
                 memoryTool.recordTaskDone(summary)

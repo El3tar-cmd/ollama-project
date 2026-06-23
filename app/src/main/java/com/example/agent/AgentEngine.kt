@@ -1,6 +1,8 @@
 package com.example.agent
 
 import android.util.Log
+import com.example.agent.tools.MemoryTool
+import com.example.agent.tools.ToolExecutor
 import com.example.data.api.LlamaCppApi
 import com.example.data.api.OllamaApi
 import com.example.data.model.AgentStep
@@ -14,22 +16,12 @@ class AgentEngine(private val context: android.content.Context) {
 
     var workingDir: String = context.filesDir.absolutePath
 
-    private val toolExecutor by lazy { com.example.agent.tools.ToolExecutor(context) { workingDir } }
+    private val toolExecutor by lazy { ToolExecutor(context) { workingDir } }
+    private val memoryTool   by lazy { MemoryTool(context) { workingDir } }
+    private val stateManager = StateManager()
     private val thinkRegex   = Regex("<think>([\\s\\S]*?)</think>", RegexOption.IGNORE_CASE)
 
-    // ── Estimate task complexity ──────────────────────────────────────────────
-    private fun isComplexTask(task: String): Boolean {
-        val words = task.trim().split(Regex("\\s+")).size
-        val complexKeywords = listOf(
-            "project", "مشروع", "create", "build", "implement", "develop",
-            "refactor", "migrate", "integrate", "design", "architecture",
-            "multiple", "several", "full", "complete", "system", "app",
-            "اعمل", "ابني", "طور", "انشئ", "نظام", "تطبيق"
-        )
-        return words > 20 || complexKeywords.any { task.contains(it, ignoreCase = true) }
-    }
-
-    // ── Generate task plan ────────────────────────────────────────────────────
+    // ── Planning phase ────────────────────────────────────────────────────────
     private suspend fun generatePlan(
         task: String, model: String, baseUrl: String,
         cloudApiKey: String, backend: String
@@ -38,17 +30,14 @@ class AgentEngine(private val context: android.content.Context) {
         var plan = ""
         val planMessages = listOf(
             ChatMessage("system",
-                "You are a task planner. Create a concise numbered plan (5-8 steps max) " +
-                "for the following task. Output ONLY the numbered list. Each step on its own line. " +
-                "Be specific and actionable. Use the same language as the user."),
+                "You are a task planner. Create a concise numbered plan (max 7 steps) for the task. " +
+                "Output ONLY the numbered list, one step per line. Be specific. Use same language as user."),
             ChatMessage("user", task)
         )
         try {
             suspendCancellableCoroutine<Unit> { cont ->
-                val onTok: (String) -> Unit  = { plan += it }
-                val onDone: (Boolean, String) -> Unit = { _, _ ->
-                    if (!cont.isCompleted) cont.resume(Unit)
-                }
+                val onTok:  (String) -> Unit         = { plan += it }
+                val onDone: (Boolean, String) -> Unit = { _, _ -> if (!cont.isCompleted) cont.resume(Unit) }
                 when {
                     cloudApiKey.isNotBlank() && model.endsWith(":cloud") ->
                         api.cloudChatStream(cloudApiKey, model, planMessages,
@@ -70,25 +59,36 @@ class AgentEngine(private val context: android.content.Context) {
         userTask: String,
         model: String,
         baseUrl: String,
-        maxSteps: Int    = 25,
+        maxSteps: Int       = 30,
         cloudApiKey: String = "",
-        backend: String  = "ollama",
+        backend: String     = "ollama",
         onAskUser: (suspend (String) -> String)? = null,
         onStep: suspend (AgentStep) -> Unit
     ) {
         toolExecutor.askUserFn = onAskUser
+        stateManager.reset()
 
-        // ── Planning phase for complex tasks ──────────────────────────────────
-        if (isComplexTask(userTask)) {
-            onStep(AgentStep("info", "🗂️ Generating task plan…"))
+        // ── Task Classification ───────────────────────────────────────────────
+        val workflowType = TaskClassifier.classify(userTask)
+        stateManager.setWorkflow(workflowType)
+        onStep(AgentStep("info",
+            "${TaskClassifier.workflowLabel(workflowType)} workflow · ${workflowType.name}"))
+
+        // ── Planning phase for MEDIUM and LARGE tasks ─────────────────────────
+        if (workflowType != WorkflowType.SIMPLE) {
+            onStep(AgentStep("info", "🗂️ Generating execution plan…"))
             val plan = generatePlan(userTask, model, baseUrl, cloudApiKey, backend)
             if (plan.isNotBlank()) {
                 onStep(AgentStep("plan", plan))
+                stateManager.setPlan(plan.lines().filter { it.isNotBlank() })
             }
         }
 
+        // ── Load memory into system prompt ────────────────────────────────────
+        val memoryContent = try { memoryTool.loadMemoryForPrompt() } catch (_: Exception) { "" }
+
         val messages = mutableListOf(
-            ChatMessage("system", buildSystemPrompt(workingDir)),
+            ChatMessage("system", buildSystemPrompt(workingDir, memoryContent)),
             ChatMessage("user",   userTask)
         )
 
@@ -104,7 +104,7 @@ class AgentEngine(private val context: android.content.Context) {
 
             try {
                 suspendCancellableCoroutine<Unit> { cont ->
-                    val onTok: (String) -> Unit = { response += it }
+                    val onTok:  (String) -> Unit         = { response += it }
                     val onDone: (Boolean, String) -> Unit = { s, m ->
                         if (!s) { streamOk = false; streamErr = m }
                         if (!cont.isCompleted) cont.resume(Unit)
@@ -130,7 +130,7 @@ class AgentEngine(private val context: android.content.Context) {
             if (!streamOk) {
                 errs++
                 onStep(AgentStep("error", "❌ $streamErr", true))
-                if (errs >= 3) { onStep(AgentStep("info", "⚠️ Too many errors.")); break }
+                if (errs >= 3) { onStep(AgentStep("info", "⚠️ Too many errors. Stopping.")); break }
                 delay(1000); continue
             }
             if (response.isBlank()) {
@@ -143,13 +143,13 @@ class AgentEngine(private val context: android.content.Context) {
 
             // Extract <think> blocks
             thinkRegex.findAll(response).forEach { m ->
-                val thinkContent = m.groupValues[1].trim()
-                if (thinkContent.isNotBlank()) onStep(AgentStep("think", thinkContent))
+                val t = m.groupValues[1].trim()
+                if (t.isNotBlank()) { onStep(AgentStep("think", t)); stateManager.markThought() }
             }
 
             val toolCalls = parseToolCalls(response)
 
-            // Strip think + tool markers from display
+            // Build display text — strip internal markers
             val display = response
                 .replace(thinkRegex, "")
                 .replace(Regex("""WRITE_FILE>>[^\n]+\n[\s\S]*?<<WRITE_FILE"""), "")
@@ -159,6 +159,7 @@ class AgentEngine(private val context: android.content.Context) {
                 .trim()
             if (display.isNotBlank()) onStep(AgentStep("assistant", display))
 
+            // No tool calls — nudge or end
             if (toolCalls.isEmpty()) {
                 messages.add(ChatMessage("assistant", response))
                 val nudgeCount = messages.count {
@@ -166,9 +167,10 @@ class AgentEngine(private val context: android.content.Context) {
                 }
                 if (nudgeCount < 2) {
                     messages.add(ChatMessage("user",
-                        "[NUDGE] You MUST output a tool call to continue. Examples:\n" +
-                        "TOOL>>\n{\"name\":\"list_dir\",\"path\":\"$workingDir\"}\n<<TOOL\n\n" +
-                        "Or to finish:\nTOOL>>\n{\"name\":\"complete\",\"summary\":\"done\"}\n<<TOOL"
+                        "[NUDGE] You MUST output a tool call to continue. Use one of these formats:\n\n" +
+                        "TOOL>>\n{\"name\":\"sequence_thinking\",\"content\":\"my reasoning\"}\n<<TOOL\n\n" +
+                        "TOOL>>\n{\"name\":\"complete\",\"summary\":\"done\"}\n<<TOOL\n\n" +
+                        "WRITE_FILE>>$workingDir/example.txt\nfile content\n<<WRITE_FILE"
                     ))
                     continue
                 }
@@ -176,13 +178,39 @@ class AgentEngine(private val context: android.content.Context) {
                 break
             }
 
+            // ── Execute tool calls ────────────────────────────────────────────
             val resultBuf = StringBuilder()
-            var done = false
+            var done      = false
+
             for (call in toolCalls) {
                 val toolName = call.optString("name", "?")
+
+                // Rules Engine check
+                val violation = RulesEngine.validate(call, stateManager.state)
+                if (violation != null) {
+                    onStep(AgentStep("info", violation.advice))
+                    // Advisory only for most rules — don't block, just warn
+                }
+
+                // Track state
+                when {
+                    toolName.contains("think") || toolName == "sequence_thinking"
+                        -> stateManager.markThought()
+                    toolName in setOf("file_reader", "read_file", "line_reader", "read_lines",
+                                      "head_file", "tail_file")
+                        -> stateManager.recordFileRead(call.optString("path", ""))
+                    toolName in setOf("file_writer", "write_file", "multi_file_writer",
+                                      "line_editor", "edit_file", "multi_line_editor",
+                                      "append_file", "replace_all")
+                        -> stateManager.recordFileWrite(call.optString("path",
+                            call.optJSONArray("files")?.optJSONObject(0)?.optString("path") ?: ""))
+                }
+
                 onStep(AgentStep("tool_call", "🔧 $toolName"))
                 val result = toolExecutor.executeTool(call)
+                stateManager.recordStep(toolName, result.content, result.isError)
                 onStep(result)
+
                 resultBuf.appendLine(result.content).appendLine("---")
                 if (result.type == "complete") { done = true; break }
             }
@@ -190,15 +218,22 @@ class AgentEngine(private val context: android.content.Context) {
             messages.add(ChatMessage("assistant", response))
             if (done) break
 
-            messages.add(ChatMessage("user",
-                "Tool results:\n$resultBuf\nProceed. Output the next TOOL>> or WRITE_FILE>> block."))
+            // Suggest next tool from Rules Engine
+            val suggestion = RulesEngine.suggestNextTool(stateManager.state)
+            val hint = if (suggestion != null) " (consider: $suggestion next)" else ""
 
-            // Trim context if too long
-            if (messages.size > 30) {
+            messages.add(ChatMessage("user",
+                "Tool results:\n$resultBuf\n" +
+                "State: ${stateManager.summary()}\n" +
+                "Proceed with next step.$hint Output TOOL>> or WRITE_FILE>> block."))
+
+            // Smart context trimming — keep system + user task + recent history
+            if (messages.size > 28) {
                 val head = messages.take(2)
-                val tail = messages.takeLast(12)
+                val tail = messages.takeLast(10)
                 messages.clear(); messages.addAll(head)
-                messages.add(ChatMessage("system", "[Earlier steps trimmed — context limit]"))
+                messages.add(ChatMessage("system",
+                    "[Context trimmed — ${stateManager.summary()}]"))
                 messages.addAll(tail)
             }
         }

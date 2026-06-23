@@ -23,6 +23,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -41,7 +42,6 @@ import java.io.File
 private fun HtmlPreviewPane(html: String, modifier: Modifier = Modifier) {
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
 
-    // Reload when html content changes
     LaunchedEffect(html) {
         webViewRef?.loadDataWithBaseURL(
             "file:///android_asset/", html, "text/html", "UTF-8", null
@@ -65,28 +65,33 @@ private fun HtmlPreviewPane(html: String, modifier: Modifier = Modifier) {
     )
 }
 
-// ── File editor header tabs ───────────────────────────────────────────────────
+// ── Agent Files Pane ──────────────────────────────────────────────────────────
 @Composable
 fun AgentFilesPane(vm: MainViewModel, context: Context) {
-    if (vm.openFiles.isNotEmpty()) {
-        var showFileSidebar by remember { mutableStateOf(false) }
+    // showFileSidebar is always at top-level so it persists regardless of open files
+    var showFileSidebar by remember { mutableStateOf(false) }
 
-        Column(Modifier.fillMaxSize()) {
-            // Tab bar
-            Row(
-                Modifier.fillMaxWidth().background(OllamaSurface),
-                verticalAlignment = Alignment.CenterVertically
+    Column(Modifier.fillMaxSize()) {
+
+        // ── Header: toggle button + tabs (always visible) ─────────────────────
+        Row(
+            Modifier.fillMaxWidth().background(OllamaSurface),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // File tree toggle — ALWAYS shown
+            IconButton(
+                onClick = { showFileSidebar = !showFileSidebar },
+                modifier = Modifier.size(36.dp)
             ) {
-                IconButton(
-                    onClick = { showFileSidebar = !showFileSidebar },
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Icon(
-                        Icons.Default.Menu, "Toggle file tree",
-                        tint = if (showFileSidebar) OllamaGreen else OllamaTextDim,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
+                Icon(
+                    Icons.Default.Menu, "Toggle file tree",
+                    tint = if (showFileSidebar) OllamaGreen else OllamaTextDim,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+
+            if (vm.openFiles.isNotEmpty()) {
+                // Open-file tabs
                 LazyRow(
                     modifier = Modifier.weight(1f).padding(vertical = 4.dp),
                     horizontalArrangement = Arrangement.spacedBy(2.dp)
@@ -125,32 +130,56 @@ fun AgentFilesPane(vm: MainViewModel, context: Context) {
                         }
                     }
                 }
+            } else {
+                // No files — hint text instead of empty space
+                Text(
+                    "Open a file from the sidebar →",
+                    color = OllamaTextDim.copy(alpha = 0.5f),
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 8.dp)
+                )
             }
+        }
 
-            HorizontalDivider(color = OllamaBorder, thickness = 1.dp)
+        HorizontalDivider(color = OllamaBorder, thickness = 1.dp)
 
-            Row(Modifier.fillMaxSize()) {
-                // File sidebar
-                if (showFileSidebar) {
-                    Column(
-                        Modifier.width(160.dp).fillMaxHeight().background(Color(0xFF0F0F0F))
+        Row(Modifier.fillMaxSize()) {
+            // ── File sidebar ──────────────────────────────────────────────────
+            if (showFileSidebar) {
+                Column(
+                    Modifier.width(160.dp).fillMaxHeight().background(Color(0xFF0F0F0F))
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().background(OllamaSurface)
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Row(
-                            Modifier.fillMaxWidth().background(OllamaSurface)
-                                .padding(horizontal = 8.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Text("📁", fontSize = 11.sp)
+                        Text("📁", fontSize = 11.sp)
+                        Text(
+                            File(vm.agentWorkingDir.ifBlank { "/" }).name,
+                            color = OllamaTextDim, fontSize = 10.sp,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    HorizontalDivider(color = OllamaBorder, thickness = 0.5.dp)
+
+                    if (vm.agentFileTree.isEmpty()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Text(
-                                File(vm.agentWorkingDir).name,
-                                color = OllamaTextDim, fontSize = 10.sp,
-                                fontWeight = FontWeight.Medium,
-                                maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f)
+                                "Empty\nfolder",
+                                color = OllamaTextDim.copy(alpha = 0.5f),
+                                fontSize = 10.sp,
+                                textAlign = TextAlign.Center,
+                                fontFamily = FontFamily.Monospace
                             )
                         }
-                        HorizontalDivider(color = OllamaBorder, thickness = 0.5.dp)
+                    } else {
                         LazyColumn(Modifier.fillMaxSize().padding(4.dp)) {
                             items(vm.agentFileTree) { f ->
                                 val isOpenInTab = vm.openFiles.contains(f)
@@ -176,33 +205,32 @@ fun AgentFilesPane(vm: MainViewModel, context: Context) {
                             }
                         }
                     }
-                    VerticalDivider(color = OllamaBorder, thickness = 1.dp)
                 }
+                VerticalDivider(color = OllamaBorder, thickness = 1.dp)
+            }
 
-                // Editor area
-                Column(Modifier.weight(1f).fillMaxHeight()) {
-                    if (vm.agentSelectedFile != null) {
-                        FileEditorArea(vm, context)
+            // ── Editor area ───────────────────────────────────────────────────
+            Column(Modifier.weight(1f).fillMaxHeight()) {
+                when {
+                    vm.agentSelectedFile != null -> FileEditorArea(vm, context)
+                    else -> {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Text("📂", fontSize = 40.sp)
+                                Text("No file open", color = OllamaTextDim, fontSize = 14.sp)
+                                Text(
+                                    "Tap ☰ to browse files\nor let the agent open one.",
+                                    color = OllamaTextDim.copy(alpha = 0.6f),
+                                    fontSize = 12.sp,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
                     }
                 }
-            }
-        }
-    } else if (vm.agentSelectedFile != null) {
-        Column(Modifier.fillMaxSize()) {
-            FileEditorArea(vm, context)
-        }
-    } else {
-        // Empty state
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Text("📂", fontSize = 40.sp)
-                Text("No file open", color = OllamaTextDim, fontSize = 14.sp)
-                Text("Open a file from the Agent sidebar\nor let the agent create one.",
-                    color = OllamaTextDim.copy(alpha = 0.6f), fontSize = 12.sp,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center)
             }
         }
     }
@@ -217,12 +245,12 @@ private fun FileEditorArea(vm: MainViewModel, context: Context) {
     val isMd     = file.name.endsWith(".md", ignoreCase = true) ||
                    file.name.endsWith(".markdown", ignoreCase = true)
 
-    var showPreview  by remember(file.absolutePath) { mutableStateOf(isHtml || isMd) }
-    var htmlKey      by remember { mutableStateOf(0) }          // forces WebView refresh
+    var showPreview by remember(file.absolutePath) { mutableStateOf(isHtml || isMd) }
+    var htmlKey     by remember { mutableStateOf(0) }
 
     Column(Modifier.fillMaxSize().padding(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
 
-        // ── Toolbar ──────────────────────────────────────────────────────────
+        // ── Toolbar ───────────────────────────────────────────────────────────
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -244,7 +272,6 @@ private fun FileEditorArea(vm: MainViewModel, context: Context) {
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Preview / Edit toggle
                 if (isHtml || isMd) {
                     TextButton(
                         onClick = { showPreview = !showPreview },
@@ -257,7 +284,6 @@ private fun FileEditorArea(vm: MainViewModel, context: Context) {
                         )
                     }
                 }
-                // Rebuild (HTML only)
                 if (isHtml && showPreview) {
                     IconButton(
                         onClick = {
@@ -272,7 +298,6 @@ private fun FileEditorArea(vm: MainViewModel, context: Context) {
                             tint = Color(0xFFFFCC44), modifier = Modifier.size(16.dp))
                     }
                 }
-                // Save
                 OutlinedButton(
                     onClick = {
                         vm.saveCurrentFile()
@@ -282,29 +307,25 @@ private fun FileEditorArea(vm: MainViewModel, context: Context) {
                     border = androidx.compose.foundation.BorderStroke(1.dp, OllamaGreen),
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                 ) { Text("Save", color = OllamaGreen, fontSize = 12.sp) }
-                // Close
                 TextButton(onClick = { vm.closeTab(vm.activeTabIndex) }) {
                     Text("Close", color = OllamaTextDim, fontSize = 12.sp)
                 }
             }
         }
 
-        // ── Content area ─────────────────────────────────────────────────────
+        // ── Content area ──────────────────────────────────────────────────────
         Box(
             Modifier.fillMaxWidth().weight(1f)
                 .clip(RoundedCornerShape(8.dp))
-                .background(if (isHtml && showPreview) Color.White else TerminalBg)
-                .border(1.dp, if (isHtml && showPreview) Color(0xFFFFCC44).copy(alpha = 0.4f) else OllamaBorder,
+                .background(if (isHtml && showPreview) Color.White else com.example.ui.theme.TerminalBg)
+                .border(1.dp,
+                    if (isHtml && showPreview) Color(0xFFFFCC44).copy(alpha = 0.4f) else OllamaBorder,
                     RoundedCornerShape(8.dp))
         ) {
             when {
                 isHtml && showPreview -> {
-                    // HTML live preview — key forces full recompose on rebuild
                     key(htmlKey) {
-                        HtmlPreviewPane(
-                            html = vm.agentFileContent,
-                            modifier = Modifier.fillMaxSize()
-                        )
+                        HtmlPreviewPane(html = vm.agentFileContent, modifier = Modifier.fillMaxSize())
                     }
                 }
                 isMd && showPreview -> {
@@ -312,10 +333,10 @@ private fun FileEditorArea(vm: MainViewModel, context: Context) {
                 }
                 else -> {
                     EnhancedCodeEditor(
-                        code        = vm.agentFileContent,
+                        code         = vm.agentFileContent,
                         onCodeChange = { vm.agentFileContent = it },
-                        language    = language,
-                        modifier    = Modifier.fillMaxSize()
+                        language     = language,
+                        modifier     = Modifier.fillMaxSize()
                     )
                 }
             }

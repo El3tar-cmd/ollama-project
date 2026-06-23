@@ -208,9 +208,13 @@ private fun ColumnScope.WorkspacePane(vm: MainViewModel, context: Context) {
         }
     }
 
-    // Shell input
+    // Shell input — imePadding keeps it above the soft keyboard
     Row(
-        Modifier.fillMaxWidth().background(OllamaSurface).padding(8.dp),
+        Modifier
+            .fillMaxWidth()
+            .imePadding()
+            .background(OllamaSurface)
+            .padding(8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
