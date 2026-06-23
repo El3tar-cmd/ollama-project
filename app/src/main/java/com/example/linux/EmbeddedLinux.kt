@@ -37,9 +37,9 @@ object EmbeddedLinux {
 
     // Debian minimal rootfs — from Andronix (proven, widely used by Android Linux apps)
     val debianRootfsUrl: String get() = when (arch) {
-        "aarch64" -> "https://github.com/AndronixApp/AndronixOrigin/releases/download/Debian-ARM64/debian-arm64.tar.gz"
-        "x86_64"  -> "https://github.com/AndronixApp/AndronixOrigin/releases/download/Debian-x86_64/debian-x86_64.tar.gz"
-        else      -> "https://github.com/AndronixApp/AndronixOrigin/releases/download/Debian-ARM64/debian-arm64.tar.gz"
+        "aarch64" -> "https://github.com/AndronixApp/AndronixOrigin/raw/master/Rootfs/Debian/arm64/debian-rootfs-arm64.tar.xz"
+        "x86_64"  -> "https://github.com/AndronixApp/AndronixOrigin/raw/master/Rootfs/Debian/x86_64/debian-rootfs-x86_64.tar.xz"
+        else      -> "https://github.com/AndronixApp/AndronixOrigin/raw/master/Rootfs/Debian/arm64/debian-rootfs-arm64.tar.xz"
     }
 
     // ── Paths ─────────────────────────────────────────────────────────────────

@@ -11,6 +11,7 @@ import java.io.FileOutputStream
 import java.util.concurrent.TimeUnit
 import java.util.zip.GZIPInputStream
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
+import org.apache.commons.compress.compressors.xz.XZCompressorInputStream
 
 /**
  * Handles downloading and setting up the embedded Debian Linux environment.
@@ -71,21 +72,21 @@ class LinuxSetupManager(private val context: Context) {
             }
 
             // ── 3. Download Debian rootfs ─────────────────────────────────────
-            val rootfsTarGz = File(base, "debian-rootfs.tar.gz")
+            val rootfsArchive = File(base, "debian-rootfs.tar.xz")
             if (!rootfs.resolve("bin/bash").exists()) {
                 emit(Stage.DOWNLOADING_ROOTFS, "Downloading Debian minimal rootfs (~80MB)…", 0)
-                val ok = downloadFile(EmbeddedLinux.debianRootfsUrl, rootfsTarGz) { pct ->
+                val ok = downloadFile(EmbeddedLinux.debianRootfsUrl, rootfsArchive) { pct ->
                     emit(Stage.DOWNLOADING_ROOTFS, "Downloading Debian… $pct%", pct)
                 }
                 if (!ok) { emit(Stage.ERROR, "Failed to download Debian rootfs.", err = true); return@withContext }
 
                 // ── 4. Extract rootfs ─────────────────────────────────────────
                 emit(Stage.EXTRACTING, "Extracting Debian rootfs… (this may take a minute)")
-                val extracted = extractTarGz(rootfsTarGz, rootfs) { msg ->
+                val extracted = extractTar(rootfsArchive, rootfs) { msg ->
                     emit(Stage.EXTRACTING, msg)
                 }
                 if (!extracted) { emit(Stage.ERROR, "Extraction failed.", err = true); return@withContext }
-                rootfsTarGz.delete()
+                rootfsArchive.delete()
                 emit(Stage.EXTRACTING, "Extraction complete ✓")
             }
 
@@ -157,8 +158,8 @@ class LinuxSetupManager(private val context: Context) {
         } catch (_: Exception) { dest.delete(); false }
     }
 
-    // ── TAR.GZ extractor (no external library needed for .tar.gz) ────────────
-    private fun extractTarGz(
+    // ── TAR extractor (supports .gz and .xz) ──────────────────────────────────
+    private fun extractTar(
         archive: File,
         destDir: File,
         onProgress: (String) -> Unit
@@ -167,8 +168,14 @@ class LinuxSetupManager(private val context: Context) {
             destDir.mkdirs()
             var count = 0
             BufferedInputStream(archive.inputStream()).use { bis ->
-                GZIPInputStream(bis).use { gis ->
-                    val tar = TarArchiveInputStream(gis)
+                val decompressionStream = when {
+                    archive.name.endsWith(".xz") -> XZCompressorInputStream(bis)
+                    archive.name.endsWith(".gz") -> GZIPInputStream(bis)
+                    else -> bis // Assume uncompressed tar
+                }
+                
+                decompressionStream.use { dis ->
+                    val tar = TarArchiveInputStream(dis)
                     var entry = tar.nextTarEntry
                     while (entry != null) {
                         val outFile = File(destDir, entry.name)
@@ -177,7 +184,6 @@ class LinuxSetupManager(private val context: Context) {
                             entry.isSymbolicLink -> {
                                 outFile.parentFile?.mkdirs()
                                 try {
-                                    // Create symbolic link
                                     java.nio.file.Files.createSymbolicLink(
                                         outFile.toPath(),
                                         java.nio.file.Paths.get(entry.linkName)
@@ -189,7 +195,6 @@ class LinuxSetupManager(private val context: Context) {
                             else -> {
                                 outFile.parentFile?.mkdirs()
                                 FileOutputStream(outFile).use { fos -> tar.copyTo(fos) }
-                                // Preserve executable bits
                                 val mode = entry.mode
                                 if (mode and 0b001_000_000 != 0) outFile.setExecutable(true, false)
                                 if (mode and 0b000_001_000 != 0) outFile.setExecutable(true, true)
