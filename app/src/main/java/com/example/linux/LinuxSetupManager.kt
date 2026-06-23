@@ -123,7 +123,7 @@ class LinuxSetupManager(private val context: Context) {
             emit(Stage.DONE, "✅ Embedded Linux ready! Python, Node.js, and git available.", 100)
 
         } catch (e: Exception) {
-            onProgress(Progress(Stage.ERROR, "Setup error: ${e.message}", err = true))
+            onProgress(Progress(Stage.ERROR, "Setup error: ${e.message}", isError = true))
         }
     }
 
