@@ -214,7 +214,10 @@ class LinuxSetupManager(private val context: Context) {
             }
             onProgress("Extracted $count files total ✓")
             true
-        } catch (e: Exception) { false }
+        } catch (e: Exception) {
+            onProgress("Extraction failed: ${e.message}")
+            false
+        }
     }
 
     // ── Uninstall ─────────────────────────────────────────────────────────────
