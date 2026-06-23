@@ -37,6 +37,23 @@ import com.example.ui.terminal.formatFileSize
 import com.example.ui.theme.*
 import java.io.File
 
+// ── Tree data model ───────────────────────────────────────────────────────────
+private data class TreeItem(val file: File, val depth: Int)
+
+private fun buildFlatTree(dir: File, expandedDirs: Set<String>, depth: Int = 0): List<TreeItem> {
+    val children = dir.listFiles()
+        ?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() }))
+        ?: return emptyList()
+    return children.flatMap { file ->
+        val item = TreeItem(file, depth)
+        if (file.isDirectory && file.absolutePath in expandedDirs) {
+            listOf(item) + buildFlatTree(file, expandedDirs, depth + 1)
+        } else {
+            listOf(item)
+        }
+    }
+}
+
 // ── HTML WebView Preview ──────────────────────────────────────────────────────
 @Composable
 private fun HtmlPreviewPane(html: String, modifier: Modifier = Modifier) {
@@ -65,10 +82,149 @@ private fun HtmlPreviewPane(html: String, modifier: Modifier = Modifier) {
     )
 }
 
+// ── File Sidebar ──────────────────────────────────────────────────────────────
+@Composable
+private fun FileSidebar(vm: MainViewModel) {
+    val expandedDirs = remember { mutableStateOf(setOf<String>()) }
+    val rootDir = File(vm.agentWorkingDir.ifBlank { "/" })
+    val parentDir = rootDir.parentFile
+
+    // Reading agentFileTree.size causes recomposition when agent adds/deletes files
+    val fileCount = vm.agentFileTree.size
+    val treeItems = remember(vm.agentWorkingDir, expandedDirs.value, fileCount) {
+        buildFlatTree(rootDir, expandedDirs.value)
+    }
+
+    Column(
+        Modifier.width(160.dp).fillMaxHeight().background(Color(0xFF0F0F0F))
+    ) {
+        // ── Header: folder name + back button ─────────────────────────────────
+        Row(
+            Modifier.fillMaxWidth().background(OllamaSurface)
+                .padding(horizontal = 6.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            // Back button — only show when not at a root/top-level directory
+            if (parentDir != null && parentDir.canRead()) {
+                IconButton(
+                    onClick = { vm.updateAgentWorkingDir(parentDir.absolutePath) },
+                    modifier = Modifier.size(22.dp)
+                ) {
+                    Icon(
+                        Icons.Default.ArrowBack, "Go up",
+                        tint = OllamaTextDim,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+            } else {
+                Spacer(Modifier.size(22.dp))
+            }
+            Text("📁", fontSize = 11.sp)
+            Text(
+                rootDir.name.ifBlank { "/" },
+                color = OllamaGreen.copy(alpha = 0.9f),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+        }
+
+        HorizontalDivider(color = OllamaBorder, thickness = 0.5.dp)
+
+        if (treeItems.isEmpty() && rootDir.listFiles()?.isEmpty() == true) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    "Empty\nfolder",
+                    color = OllamaTextDim.copy(alpha = 0.5f),
+                    fontSize = 10.sp,
+                    textAlign = TextAlign.Center,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+        } else {
+            LazyColumn(Modifier.fillMaxSize().padding(4.dp)) {
+                items(treeItems, key = { it.file.absolutePath }) { item ->
+                    val file = item.file
+                    val depth = item.depth
+                    val isDir = file.isDirectory
+                    val isExpanded = file.absolutePath in expandedDirs.value
+                    val isOpenInTab = vm.openFiles.contains(file)
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(
+                                when {
+                                    isOpenInTab -> OllamaGreen.copy(alpha = 0.12f)
+                                    else -> Color.Transparent
+                                }
+                            )
+                            .clickable {
+                                if (isDir) {
+                                    val path = file.absolutePath
+                                    expandedDirs.value = if (isExpanded) {
+                                        expandedDirs.value - path
+                                    } else {
+                                        expandedDirs.value + path
+                                    }
+                                } else {
+                                    vm.openInNewTab(file)
+                                }
+                            }
+                            .padding(
+                                start = (6 + depth * 10).dp,
+                                end = 6.dp,
+                                top = 5.dp,
+                                bottom = 5.dp
+                            )
+                    ) {
+                        // Expand/collapse chevron for directories
+                        if (isDir) {
+                            Icon(
+                                imageVector = if (isExpanded) Icons.Default.KeyboardArrowDown
+                                              else Icons.Default.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = OllamaTextDim.copy(alpha = 0.7f),
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Spacer(Modifier.width(2.dp))
+                        } else {
+                            Spacer(Modifier.width(14.dp))
+                        }
+
+                        Text(
+                            if (isDir) (if (isExpanded) "📂" else "📁") else getFileIcon(file),
+                            fontSize = 11.sp
+                        )
+                        Spacer(Modifier.width(3.dp))
+                        Text(
+                            file.name,
+                            color = when {
+                                isOpenInTab -> OllamaGreen
+                                isDir -> OllamaText.copy(alpha = 0.9f)
+                                else -> OllamaTextDim
+                            },
+                            fontSize = 10.sp,
+                            fontWeight = if (isDir) FontWeight.Medium else FontWeight.Normal,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ── Agent Files Pane ──────────────────────────────────────────────────────────
 @Composable
 fun AgentFilesPane(vm: MainViewModel, context: Context) {
-    // showFileSidebar is always at top-level so it persists regardless of open files
     var showFileSidebar by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize()) {
@@ -78,7 +234,6 @@ fun AgentFilesPane(vm: MainViewModel, context: Context) {
             Modifier.fillMaxWidth().background(OllamaSurface),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // File tree toggle — ALWAYS shown
             IconButton(
                 onClick = { showFileSidebar = !showFileSidebar },
                 modifier = Modifier.size(36.dp)
@@ -91,7 +246,6 @@ fun AgentFilesPane(vm: MainViewModel, context: Context) {
             }
 
             if (vm.openFiles.isNotEmpty()) {
-                // Open-file tabs
                 LazyRow(
                     modifier = Modifier.weight(1f).padding(vertical = 4.dp),
                     horizontalArrangement = Arrangement.spacedBy(2.dp)
@@ -131,15 +285,12 @@ fun AgentFilesPane(vm: MainViewModel, context: Context) {
                     }
                 }
             } else {
-                // No files — hint text instead of empty space
                 Text(
                     "Open a file from the sidebar →",
                     color = OllamaTextDim.copy(alpha = 0.5f),
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace,
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(horizontal = 8.dp)
+                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
                 )
             }
         }
@@ -147,69 +298,11 @@ fun AgentFilesPane(vm: MainViewModel, context: Context) {
         HorizontalDivider(color = OllamaBorder, thickness = 1.dp)
 
         Row(Modifier.fillMaxSize()) {
-            // ── File sidebar ──────────────────────────────────────────────────
             if (showFileSidebar) {
-                Column(
-                    Modifier.width(160.dp).fillMaxHeight().background(Color(0xFF0F0F0F))
-                ) {
-                    Row(
-                        Modifier.fillMaxWidth().background(OllamaSurface)
-                            .padding(horizontal = 8.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text("📁", fontSize = 11.sp)
-                        Text(
-                            File(vm.agentWorkingDir.ifBlank { "/" }).name,
-                            color = OllamaTextDim, fontSize = 10.sp,
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                    HorizontalDivider(color = OllamaBorder, thickness = 0.5.dp)
-
-                    if (vm.agentFileTree.isEmpty()) {
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text(
-                                "Empty\nfolder",
-                                color = OllamaTextDim.copy(alpha = 0.5f),
-                                fontSize = 10.sp,
-                                textAlign = TextAlign.Center,
-                                fontFamily = FontFamily.Monospace
-                            )
-                        }
-                    } else {
-                        LazyColumn(Modifier.fillMaxSize().padding(4.dp)) {
-                            items(vm.agentFileTree) { f ->
-                                val isOpenInTab = vm.openFiles.contains(f)
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(4.dp))
-                                        .background(if (isOpenInTab) OllamaGreen.copy(alpha = 0.1f) else Color.Transparent)
-                                        .clickable { vm.openInNewTab(f) }
-                                        .padding(horizontal = 6.dp, vertical = 5.dp)
-                                ) {
-                                    Text(getFileIcon(f), fontSize = 11.sp)
-                                    Text(
-                                        f.name,
-                                        color = if (isOpenInTab) OllamaGreen else OllamaTextDim,
-                                        fontSize = 10.sp, maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
+                FileSidebar(vm)
                 VerticalDivider(color = OllamaBorder, thickness = 1.dp)
             }
 
-            // ── Editor area ───────────────────────────────────────────────────
             Column(Modifier.weight(1f).fillMaxHeight()) {
                 when {
                     vm.agentSelectedFile != null -> FileEditorArea(vm, context)
@@ -250,7 +343,6 @@ private fun FileEditorArea(vm: MainViewModel, context: Context) {
 
     Column(Modifier.fillMaxSize().padding(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
 
-        // ── Toolbar ───────────────────────────────────────────────────────────
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -313,7 +405,6 @@ private fun FileEditorArea(vm: MainViewModel, context: Context) {
             }
         }
 
-        // ── Content area ──────────────────────────────────────────────────────
         Box(
             Modifier.fillMaxWidth().weight(1f)
                 .clip(RoundedCornerShape(8.dp))

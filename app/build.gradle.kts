@@ -107,6 +107,9 @@ dependencies {
     implementation(libs.logging.interceptor)
     implementation(libs.okhttp)
 
+    // ── Embedded Linux (TAR extraction) ────────────────
+    implementation("org.apache.commons:commons-compress:1.26.1")
+
     // ── Tests ──────────────────────────────────────────
     testImplementation(libs.androidx.compose.ui.test.junit4)
     testImplementation(libs.androidx.core)

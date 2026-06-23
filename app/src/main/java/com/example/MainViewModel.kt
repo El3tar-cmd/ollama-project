@@ -15,6 +15,8 @@ import java.util.concurrent.TimeUnit
 import com.example.agent.AgentEngine
 import com.example.data.api.LlamaCppApi
 import com.example.data.api.OllamaApi
+import com.example.linux.EmbeddedLinux
+import com.example.linux.LinuxSetupManager
 import com.example.data.model.AgentStep
 import com.example.data.model.ChatMessage
 import com.example.data.model.OllamaModel
@@ -155,6 +157,49 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
 
     fun cancelHFDownload() {
         hfDownloadJob?.cancel(); hfDownloadJob = null; hfDownloadProgress = -1f; hfDownloadStatus = ""
+    }
+
+    // ── Embedded Linux ────────────────────────────────────────────────────────
+    var linuxReady          by mutableStateOf(false)
+    var linuxSetupRunning   by mutableStateOf(false)
+    var linuxSetupStage     by mutableStateOf("")
+    var linuxSetupPercent   by mutableStateOf(-1)
+    var linuxSetupError     by mutableStateOf("")
+    var linuxDiskUsageMb    by mutableStateOf(0L)
+
+    fun checkLinuxStatus(context: Context) {
+        linuxReady = EmbeddedLinux.isReady(context)
+        if (linuxReady) linuxDiskUsageMb = EmbeddedLinux.diskUsageMb(context)
+    }
+
+    fun setupLinux(context: Context) {
+        if (linuxSetupRunning) return
+        linuxSetupRunning = true
+        linuxSetupError   = ""
+        viewModelScope.launch(Dispatchers.IO) {
+            LinuxSetupManager(context).setup { progress ->
+                withContext(Dispatchers.Main) {
+                    linuxSetupStage   = progress.message
+                    linuxSetupPercent = progress.percent
+                    if (progress.isError) linuxSetupError = progress.message
+                    if (progress.stage == LinuxSetupManager.Stage.DONE ||
+                        progress.stage == LinuxSetupManager.Stage.ERROR) {
+                        linuxSetupRunning = false
+                        linuxReady = EmbeddedLinux.isReady(context)
+                        if (linuxReady) linuxDiskUsageMb = EmbeddedLinux.diskUsageMb(context)
+                    }
+                }
+            }
+        }
+    }
+
+    fun uninstallLinux(context: Context) {
+        viewModelScope.launch(Dispatchers.IO) {
+            LinuxSetupManager(context).uninstall()
+            withContext(Dispatchers.Main) {
+                linuxReady = false; linuxDiskUsageMb = 0L; linuxSetupStage = ""
+            }
+        }
     }
 
     // Vulkan GPU support
@@ -564,7 +609,11 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
 
     fun startChatSession() {
         chatHistory.clear()
-        chatHistory.add(ChatMessage("assistant", "Hello! I'm ready. Selected model: **$selectedModelChat**"))
+        val modelDisplay = if (activeBackend == "llamacpp")
+            llamaSelectedModel?.name ?: "No model loaded"
+        else
+            selectedModelChat
+        chatHistory.add(ChatMessage("assistant", "Hello! I'm ready. Selected model: **$modelDisplay**"))
     }
 
     fun sendChatMessage(context: Context) {
@@ -573,7 +622,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         if (text.isEmpty()) return
         if (!isLlama && selectedModelChat.isEmpty()) return
         if (isLlama && llamaSelectedModel == null) return
-        val isCloud = selectedModelChat.endsWith(":cloud")
+        val isCloud = !isLlama && selectedModelChat.endsWith(":cloud")
         when {
             isCloud && cloudApiKey.isBlank() -> {
                 Toast.makeText(context, "Cloud model needs an API key — add it in Settings → Cloud Auth", Toast.LENGTH_LONG).show()

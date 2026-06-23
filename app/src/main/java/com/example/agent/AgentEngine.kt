@@ -16,43 +16,63 @@ class AgentEngine(private val context: android.content.Context) {
 
     var workingDir: String = context.filesDir.absolutePath
 
-    private val toolExecutor by lazy { ToolExecutor(context) { workingDir } }
-    private val memoryTool   by lazy { MemoryTool(context) { workingDir } }
-    private val stateManager = StateManager()
-    private val thinkRegex       = Regex("<think>([\\s\\S]*?)</think>", RegexOption.IGNORE_CASE)
-    private val thinkOpenRegex   = Regex("<think>[\\s\\S]*$",           RegexOption.IGNORE_CASE)
+    private val toolExecutor   by lazy { ToolExecutor(context) { workingDir } }
+    private val memoryTool     by lazy { MemoryTool(context) { workingDir } }
+    private val stateManager   = StateManager()
+    private val contextManager = AgentContextManager()
+
+    private val thinkRegex     = Regex("<think>([\\s\\S]*?)</think>", RegexOption.IGNORE_CASE)
+    private val thinkOpenRegex = Regex("<think>[\\s\\S]*$",           RegexOption.IGNORE_CASE)
+
+    // ── LLM call helper ───────────────────────────────────────────────────────
+    private suspend fun callLlm(
+        messages: List<ChatMessage>,
+        model: String, baseUrl: String,
+        cloudApiKey: String, backend: String
+    ): Pair<Boolean, String> {
+        val api = OllamaApi()
+        var response = ""
+        var ok = true
+        var errMsg = ""
+        try {
+            suspendCancellableCoroutine<Unit> { cont ->
+                val onTok:  (String) -> Unit         = { response += it }
+                val onDone: (Boolean, String) -> Unit = { s, m ->
+                    if (!s) { ok = false; errMsg = m }
+                    if (!cont.isCompleted) cont.resume(Unit)
+                }
+                val call = when {
+                    cloudApiKey.isNotBlank() && model.endsWith(":cloud") ->
+                        api.cloudChatStream(cloudApiKey, model, messages,
+                            onTokenGenerated = onTok, onComplete = onDone)
+                    backend == "llamacpp" ->
+                        LlamaCppApi().chatStream(baseUrl, messages,
+                            onToken = onTok, onComplete = onDone)
+                    else ->
+                        api.chatStream(baseUrl, model, messages,
+                            onTokenGenerated = onTok, onComplete = onDone)
+                }
+                cont.invokeOnCancellation { call.cancel() }
+            }
+        } catch (ex: CancellationException) { throw ex }
+        catch (ex: Exception) { ok = false; errMsg = ex.message ?: "unknown" }
+        return ok to (if (ok) response else errMsg)
+    }
 
     // ── Planning phase ────────────────────────────────────────────────────────
     private suspend fun generatePlan(
         task: String, model: String, baseUrl: String,
         cloudApiKey: String, backend: String
     ): String {
-        val api  = OllamaApi()
-        var plan = ""
         val planMessages = listOf(
             ChatMessage("system",
-                "You are a task planner. Create a concise numbered plan (max 7 steps) for the task. " +
-                "Output ONLY the numbered list, one step per line. Be specific. Use same language as user."),
+                "You are a task planner. Create a concise numbered plan (max 7 steps) for the given task. " +
+                "Output ONLY the numbered list, one step per line. Be specific and actionable. " +
+                "Use the same language as the user."),
             ChatMessage("user", task)
         )
-        try {
-            suspendCancellableCoroutine<Unit> { cont ->
-                val onTok:  (String) -> Unit         = { plan += it }
-                val onDone: (Boolean, String) -> Unit = { _, _ -> if (!cont.isCompleted) cont.resume(Unit) }
-                when {
-                    cloudApiKey.isNotBlank() && model.endsWith(":cloud") ->
-                        api.cloudChatStream(cloudApiKey, model, planMessages,
-                            onTokenGenerated = onTok, onComplete = onDone)
-                    backend == "llamacpp" ->
-                        LlamaCppApi().chatStream(baseUrl, planMessages,
-                            onToken = onTok, onComplete = onDone)
-                    else ->
-                        api.chatStream(baseUrl, model, planMessages,
-                            onTokenGenerated = onTok, onComplete = onDone)
-                }
-            }
-        } catch (_: Exception) {}
-        return plan.trim()
+        val (ok, result) = callLlm(planMessages, model, baseUrl, cloudApiKey, backend)
+        return if (ok) result.trim() else ""
     }
 
     // ── Main agent loop ───────────────────────────────────────────────────────
@@ -68,6 +88,7 @@ class AgentEngine(private val context: android.content.Context) {
     ) {
         toolExecutor.askUserFn = onAskUser
         stateManager.reset()
+        contextManager.reset()
 
         // ── Task Classification ───────────────────────────────────────────────
         val workflowType = TaskClassifier.classify(userTask)
@@ -75,7 +96,14 @@ class AgentEngine(private val context: android.content.Context) {
         onStep(AgentStep("info",
             "${TaskClassifier.workflowLabel(workflowType)} workflow · ${workflowType.name}"))
 
-        // ── Planning phase for MEDIUM and LARGE tasks ─────────────────────────
+        // ── Step cap by workflow type ─────────────────────────────────────────
+        val effectiveMaxSteps = when (workflowType) {
+            WorkflowType.SIMPLE -> minOf(maxSteps, 8)
+            WorkflowType.MEDIUM -> minOf(maxSteps, 25)
+            WorkflowType.LARGE  -> maxSteps
+        }
+
+        // ── Planning for MEDIUM and LARGE ─────────────────────────────────────
         if (workflowType != WorkflowType.SIMPLE) {
             onStep(AgentStep("info", "🗂️ Generating execution plan…"))
             val plan = generatePlan(userTask, model, baseUrl, cloudApiKey, backend)
@@ -85,56 +113,39 @@ class AgentEngine(private val context: android.content.Context) {
             }
         }
 
-        // ── Load memory into system prompt ────────────────────────────────────
+        // ── Load memory ───────────────────────────────────────────────────────
         val memoryContent = try { memoryTool.loadMemoryForPrompt() } catch (_: Exception) { "" }
 
+        // ── Build initial messages ────────────────────────────────────────────
         val messages = mutableListOf(
-            ChatMessage("system", buildSystemPrompt(workingDir, memoryContent)),
+            ChatMessage("system", buildSystemPrompt(workingDir, memoryContent, workflowType)),
             ChatMessage("user",   userTask)
         )
 
-        val api   = OllamaApi()
-        var steps = 0
-        var errs  = 0
+        var steps                  = 0
+        var errs                   = 0
+        var consecutiveThinkingOnly = 0
 
-        while (steps < maxSteps) {
+        // ── Main loop ─────────────────────────────────────────────────────────
+        while (steps < effectiveMaxSteps) {
             steps++
-            var response  = ""
-            var streamOk  = true
-            var streamErr = ""
 
-            try {
-                suspendCancellableCoroutine<Unit> { cont ->
-                    val onTok:  (String) -> Unit         = { response += it }
-                    val onDone: (Boolean, String) -> Unit = { s, m ->
-                        if (!s) { streamOk = false; streamErr = m }
-                        if (!cont.isCompleted) cont.resume(Unit)
-                    }
-                    val call = when {
-                        cloudApiKey.isNotBlank() && model.endsWith(":cloud") ->
-                            api.cloudChatStream(cloudApiKey, model, messages,
-                                onTokenGenerated = onTok, onComplete = onDone)
-                        backend == "llamacpp" ->
-                            LlamaCppApi().chatStream(baseUrl, messages,
-                                onToken = onTok, onComplete = onDone)
-                        else ->
-                            api.chatStream(baseUrl, model, messages,
-                                onTokenGenerated = onTok, onComplete = onDone)
-                    }
-                    cont.invokeOnCancellation { call.cancel() }
-                }
-            } catch (ex: CancellationException) { throw ex }
-            catch (ex: Exception) {
-                onStep(AgentStep("error", "❌ LLM error: ${ex.message}", true)); break
+            // Token budget check — compress before calling LLM if near limit
+            if (contextManager.isNearLimit(messages)) {
+                val compressed = contextManager.compress(messages, stateManager.summary(), workflowType)
+                messages.clear(); messages.addAll(compressed)
+                onStep(AgentStep("info", "📦 Context compressed (token budget)."))
             }
+
+            val (streamOk, rawResponse) = callLlm(messages, model, baseUrl, cloudApiKey, backend)
 
             if (!streamOk) {
                 errs++
-                onStep(AgentStep("error", "❌ $streamErr", true))
-                if (errs >= 3) { onStep(AgentStep("info", "⚠️ Too many errors. Stopping.")); break }
+                onStep(AgentStep("error", "❌ $rawResponse", true))
+                if (errs >= 3) { onStep(AgentStep("info", "⚠️ Too many LLM errors. Stopping.")); break }
                 delay(1000); continue
             }
-            if (response.isBlank()) {
+            if (rawResponse.isBlank()) {
                 errs++
                 onStep(AgentStep("error", "❌ Empty response from model.", true))
                 if (errs >= 3) break
@@ -142,7 +153,9 @@ class AgentEngine(private val context: android.content.Context) {
             }
             errs = 0
 
-            // Extract <think> blocks
+            val response = rawResponse
+
+            // ── Extract and display <think> blocks ────────────────────────────
             thinkRegex.findAll(response).forEach { m ->
                 val t = m.groupValues[1].trim()
                 if (t.isNotBlank()) { onStep(AgentStep("think", t)); stateManager.markThought() }
@@ -150,10 +163,10 @@ class AgentEngine(private val context: android.content.Context) {
 
             val toolCalls = parseToolCalls(response)
 
-            // Build display text — strip internal markers + closed/unclosed think blocks
+            // ── Build display text (strip markers + think blocks) ─────────────
             val display = response
                 .replace(thinkRegex, "")
-                .replace(thinkOpenRegex, "")       // unclosed <think>... at end of response
+                .replace(thinkOpenRegex, "")
                 .replace(Regex("""WRITE_FILE>>[^\n]+\n[\s\S]*?<<WRITE_FILE"""), "")
                 .replace(Regex("""TOOL>>\s*\n[\s\S]*?\n?<<TOOL"""), "")
                 .replace(Regex("""```tool\s*\n[\s\S]*?\n?```"""), "")
@@ -161,18 +174,23 @@ class AgentEngine(private val context: android.content.Context) {
                 .trim()
             if (display.isNotBlank()) onStep(AgentStep("assistant", display))
 
-            // No tool calls — nudge or end
+            // ── No tool calls ─────────────────────────────────────────────────
             if (toolCalls.isEmpty()) {
                 messages.add(ChatMessage("assistant", response))
-                val nudgeCount = messages.count {
-                    it.role == "user" && it.content.startsWith("[NUDGE]")
+
+                // SIMPLE: accept direct text answer — no nudging
+                if (workflowType == WorkflowType.SIMPLE) {
+                    onStep(AgentStep("info", "ℹ️ Task complete."))
+                    break
                 }
+
+                val nudgeCount = messages.count { it.role == "user" && it.content.startsWith("[NUDGE]") }
                 if (nudgeCount < 2) {
                     messages.add(ChatMessage("user",
-                        "[NUDGE] You MUST output a tool call to continue. Use one of these formats:\n\n" +
-                        "TOOL>>\n{\"name\":\"sequence_thinking\",\"content\":\"my reasoning\"}\n<<TOOL\n\n" +
-                        "TOOL>>\n{\"name\":\"complete\",\"summary\":\"done\"}\n<<TOOL\n\n" +
-                        "WRITE_FILE>>$workingDir/example.txt\nfile content\n<<WRITE_FILE"
+                        "[NUDGE] You must output a tool call to continue. Use:\n\n" +
+                        "TOOL>>\n{\"name\":\"sequence_thinking\",\"content\":\"my plan\"}\n<<TOOL\n\n" +
+                        "TOOL>>\n{\"name\":\"complete\",\"summary\":\"what was done\"}\n<<TOOL\n\n" +
+                        "WRITE_FILE>>$workingDir/file.ext\ncontent\n<<WRITE_FILE"
                     ))
                     continue
                 }
@@ -180,9 +198,38 @@ class AgentEngine(private val context: android.content.Context) {
                 break
             }
 
+            // ── Cycle detection (consecutive sequence_thinking only) ───────────
+            val onlyThinking = toolCalls.all { tc ->
+                val n = tc.optString("name", "")
+                n == "sequence_thinking" || n.contains("think")
+            }
+            if (onlyThinking) {
+                consecutiveThinkingOnly++
+                // Global cycle check across all tool names
+                val recentTools = stateManager.recentTools(8)
+                if (AgentErrorRecovery.detectCycle(recentTools)) {
+                    val stuck = recentTools.lastOrNull() ?: "unknown"
+                    onStep(AgentStep("info", AgentErrorRecovery.cycleRecoveryMessage(stuck)))
+                    messages.add(ChatMessage("user", AgentErrorRecovery.cycleRecoveryMessage(stuck)))
+                    consecutiveThinkingOnly = 0
+                }
+                if (consecutiveThinkingOnly >= 3) {
+                    onStep(AgentStep("info", "ℹ️ Task complete."))
+                    break
+                }
+            } else {
+                consecutiveThinkingOnly = 0
+            }
+
+            // SIMPLE + 2 consecutive thinking steps → stop
+            if (onlyThinking && consecutiveThinkingOnly >= 2 && workflowType == WorkflowType.SIMPLE) {
+                onStep(AgentStep("info", "ℹ️ Task complete."))
+                break
+            }
+
             // ── Execute tool calls ────────────────────────────────────────────
             val resultBuf = StringBuilder()
-            var done      = false
+            var done = false
 
             for (call in toolCalls) {
                 val toolName = call.optString("name", "?")
@@ -191,7 +238,11 @@ class AgentEngine(private val context: android.content.Context) {
                 val violation = RulesEngine.validate(call, stateManager.state)
                 if (violation != null) {
                     onStep(AgentStep("info", violation.advice))
-                    // Advisory only for most rules — don't block, just warn
+                    if (violation.blocking) {
+                        resultBuf.appendLine("BLOCKED: ${violation.advice}")
+                        stateManager.recordStep(toolName, "BLOCKED: ${violation.advice}", isError = true)
+                        continue   // skip this tool call entirely
+                    }
                 }
 
                 // Track state
@@ -211,36 +262,49 @@ class AgentEngine(private val context: android.content.Context) {
                 onStep(AgentStep("tool_call", "🔧 $toolName"))
                 val result = toolExecutor.executeTool(call)
                 stateManager.recordStep(toolName, result.content, result.isError)
+
+                // Cache file reads into context manager
+                if (toolName in setOf("file_reader", "read_file", "head_file", "line_reader")) {
+                    val path = call.optString("path", "")
+                    if (path.isNotBlank() && !result.isError)
+                        contextManager.cacheFile(path, result.content)
+                }
+
                 onStep(result)
 
-                resultBuf.appendLine(result.content).appendLine("---")
+                // Error recovery injection
+                if (result.isError && toolName !in setOf("sequence_thinking", "think", "lint")) {
+                    val recovery = AgentErrorRecovery.buildRecoveryMessage(toolName, result.content)
+                    resultBuf.appendLine(recovery)
+                } else {
+                    resultBuf.appendLine(result.content).appendLine("---")
+                }
+
                 if (result.type == "complete") { done = true; break }
             }
 
             messages.add(ChatMessage("assistant", response))
             if (done) break
 
-            // Suggest next tool from Rules Engine
+            // ── Build next-iteration feedback ─────────────────────────────────
             val suggestion = RulesEngine.suggestNextTool(stateManager.state)
-            val hint = if (suggestion != null) " (consider: $suggestion next)" else ""
+            val feedback   = contextManager.buildFeedbackMessage(
+                toolResults  = resultBuf.toString(),
+                stateSummary = stateManager.summary(),
+                nextToolHint = suggestion,
+                step         = steps,
+                maxSteps     = effectiveMaxSteps
+            )
+            messages.add(ChatMessage("user", feedback))
 
-            messages.add(ChatMessage("user",
-                "Tool results:\n$resultBuf\n" +
-                "State: ${stateManager.summary()}\n" +
-                "Proceed with next step.$hint Output TOOL>> or WRITE_FILE>> block."))
-
-            // Smart context trimming — keep system + user task + recent history
-            if (messages.size > 28) {
-                val head = messages.take(2)
-                val tail = messages.takeLast(10)
-                messages.clear(); messages.addAll(head)
-                messages.add(ChatMessage("system",
-                    "[Context trimmed — ${stateManager.summary()}]"))
-                messages.addAll(tail)
+            // ── Smart context trimming (hard limit) ───────────────────────────
+            if (contextManager.isOverLimit(messages) || messages.size > 32) {
+                val compressed = contextManager.compress(messages, stateManager.fullSummary(), workflowType)
+                messages.clear(); messages.addAll(compressed)
             }
         }
 
-        if (steps >= maxSteps)
-            onStep(AgentStep("info", "⚠️ Max steps ($maxSteps) reached."))
+        if (steps >= effectiveMaxSteps)
+            onStep(AgentStep("info", "⚠️ Max steps ($effectiveMaxSteps) reached. ${stateManager.summary()}"))
     }
 }

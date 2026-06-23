@@ -324,6 +324,98 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
             }
         }
 
+        // ── Embedded Linux Section ────────────────────────────────────────────
+        LaunchedEffect(Unit) { vm.checkLinuxStatus(context) }
+
+        SectionCard("EMBEDDED LINUX", "Debian arm64 • Python 3 • Node.js • git — no Termux needed") {
+            if (vm.linuxReady) {
+                // ── Ready state ───────────────────────────────────────────────
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Box(Modifier.size(8.dp).clip(CircleShape).background(OllamaGreen))
+                            Text("Debian Linux ready", color = OllamaGreen,
+                                fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        }
+                        Text("Python 3  ·  Node.js  ·  git  ·  curl",
+                            color = OllamaTextDim, fontSize = 11.sp)
+                        Text("Disk usage: ${vm.linuxDiskUsageMb} MB",
+                            color = OllamaTextDim, fontSize = 10.sp)
+                    }
+                    OutlinedButton(
+                        onClick  = { vm.uninstallLinux(context) },
+                        border   = BorderStroke(1.dp, OllamaRed.copy(alpha = 0.5f)),
+                        modifier = Modifier.height(34.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp)
+                    ) { Text("Uninstall", color = OllamaRed, fontSize = 12.sp) }
+                }
+            } else if (vm.linuxSetupRunning) {
+                // ── Setup in progress ─────────────────────────────────────────
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(vm.linuxSetupStage, color = OllamaText, fontSize = 13.sp)
+                    if (vm.linuxSetupPercent in 0..100) {
+                        LinearProgressIndicator(
+                            progress = { vm.linuxSetupPercent / 100f },
+                            modifier = Modifier.fillMaxWidth().height(6.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                            color    = OllamaGreen,
+                            trackColor = OllamaBorder
+                        )
+                        Text("${vm.linuxSetupPercent}%", color = OllamaTextDim, fontSize = 10.sp)
+                    } else {
+                        LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth().height(6.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                            color    = OllamaGreen,
+                            trackColor = OllamaBorder
+                        )
+                    }
+                    if (vm.linuxSetupError.isNotBlank()) {
+                        Text("⚠️ ${vm.linuxSetupError}",
+                            color = Color(0xFFFFAA33), fontSize = 11.sp)
+                    }
+                }
+            } else {
+                // ── Not installed ─────────────────────────────────────────────
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Box(Modifier.size(8.dp).clip(CircleShape).background(OllamaTextDim))
+                        Text("Not installed", color = OllamaTextDim,
+                            fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    }
+                    Text(
+                        "Install a self-contained Debian Linux environment (~80MB, one-time download). " +
+                        "Gives the AI agent Python 3, Node.js, git, and apt — with zero Termux dependency.",
+                        color = OllamaTextDim, fontSize = 12.sp, lineHeight = 18.sp
+                    )
+                    if (vm.linuxSetupError.isNotBlank()) {
+                        Text("Last error: ${vm.linuxSetupError}",
+                            color = Color(0xFFFFAA33), fontSize = 11.sp)
+                    }
+                    Button(
+                        onClick = { vm.setupLinux(context) },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = OllamaGreen, contentColor = OllamaBg
+                        )
+                    ) {
+                        Text("Install Embedded Linux", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    }
+                    Text(
+                        "Architecture: ${com.example.linux.EmbeddedLinux.arch}  ·  " +
+                        "Requires internet connection for first-time setup.",
+                        color = OllamaTextDim, fontSize = 10.sp
+                    )
+                }
+            }
+        }
+
         Spacer(Modifier.height(8.dp))
     }
 }

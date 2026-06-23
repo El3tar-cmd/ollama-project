@@ -237,6 +237,7 @@ fun ChatScreen(vm: MainViewModel, context: Context) {
             listState.animateScrollToItem(vm.chatHistory.size - 1)
     }
     LaunchedEffect(vm.selectedModelChat) { if (vm.selectedModelChat.isNotEmpty() && vm.chatHistory.isEmpty()) vm.startChatSession() }
+    LaunchedEffect(vm.llamaSelectedModel) { if (vm.activeBackend == "llamacpp" && vm.llamaSelectedModel != null && vm.chatHistory.isEmpty()) vm.startChatSession() }
 
     var modelDropdownExpanded by remember { mutableStateOf(false) }
     val isLlamaBackend = vm.activeBackend == "llamacpp"
