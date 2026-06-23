@@ -30,9 +30,9 @@ object EmbeddedLinux {
     // ── Download URLs ─────────────────────────────────────────────────────────
     // PRoot static binary — from proot-me/proot official GitHub releases
     val prootUrl: String get() = when (arch) {
-        "aarch64" -> "https://github.com/proot-me/proot/releases/download/v5.4.0/proot-v5.4.0-aarch64-static"
-        "x86_64"  -> "https://github.com/proot-me/proot/releases/download/v5.4.0/proot-v5.4.0-x86_64-static"
-        else      -> "https://github.com/proot-me/proot/releases/download/v5.4.0/proot-v5.4.0-aarch64-static"
+        "aarch64" -> "https://github.com/proot-me/proot/releases/download/v5.2.0/proot-v5.2.0-aarch64-static"
+        "x86_64"  -> "https://github.com/proot-me/proot/releases/download/v5.2.0/proot-v5.2.0-x86_64-static"
+        else      -> "https://github.com/proot-me/proot/releases/download/v5.2.0/proot-v5.2.0-aarch64-static"
     }
 
     // Debian minimal rootfs — from Andronix (proven, widely used by Android Linux apps)
