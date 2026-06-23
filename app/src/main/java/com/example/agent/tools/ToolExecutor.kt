@@ -129,6 +129,21 @@ class ToolExecutor(
                 -> bashTool.toolBash(tool.optString("cmd", ""), tool.optString("cwd", getWorkingDir()))
             "git_tool", "git"
                 -> bashTool.toolBash("git ${tool.optString("args", "status")}", getWorkingDir())
+
+            // ── Python Executor ───────────────────────────────────────────────
+            "run_python", "python_exec", "python"
+                -> bashTool.toolRunPython(
+                    tool.optString("code", tool.optString("cmd", "")),
+                    tool.optString("cwd", getWorkingDir())
+                )
+
+            // ── Node.js Executor ──────────────────────────────────────────────
+            "run_node", "node_exec", "node"
+                -> bashTool.toolRunNode(
+                    tool.optString("code", tool.optString("cmd", "")),
+                    tool.optString("cwd", getWorkingDir())
+                )
+
             "fetch_url", "web_fetch"
                 -> webTool.toolFetchUrl(
                     tool.optString("url", ""),

@@ -177,6 +177,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     )
     val shellHistory  = mutableListOf<String>()
     var shellHistIdx  by mutableStateOf(-1)
+    var shellRuntime  by mutableStateOf("BASH") // "BASH" | "PYTHON" | "NODE"
     var shellInput    by mutableStateOf("")
 
     // Cloud auth
@@ -766,13 +767,20 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
 
     fun runShellCommand() {
         val cmd = shellInput.trim()
-        shellInput = ""
-        if (cmd.isEmpty()) return
+        shellInput = ""; if (cmd.isEmpty()) return
         shellHistory.remove(cmd); shellHistory.add(0, cmd); shellHistIdx = -1
+        when (shellRuntime) {
+            "PYTHON" -> dispatchPython(cmd)
+            "NODE"   -> dispatchNode(cmd)
+            else     -> dispatchBash(cmd)
+        }
+    }
+
+    private fun dispatchBash(cmd: String) {
         shellLines.add(ShellLine("❯ $cmd", ShellLineType.COMMAND))
         if (cmd == "clear" || cmd == "cls") { shellLines.clear(); return }
         if (cmd.startsWith("cd")) {
-            val arg = cmd.removePrefix("cd").trim()
+            val arg    = cmd.removePrefix("cd").trim()
             val target = when {
                 arg.isEmpty() || arg == "~" -> System.getenv("HOME") ?: shellCwd
                 arg.startsWith("/")         -> arg
@@ -787,25 +795,95 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
             }
             return
         }
+        viewModelScope.launch(Dispatchers.IO) { execRuntimeCmd("sh", listOf("-c", cmd), emptyMap()) }
+    }
+
+    private fun dispatchPython(cmd: String) {
+        shellLines.add(ShellLine(">>> $cmd", ShellLineType.COMMAND))
+        if (cmd == "clear") { shellLines.clear(); return }
         viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val process = ProcessBuilder("sh", "-c", cmd)
-                    .directory(java.io.File(shellCwd))
-                    .redirectErrorStream(true)
-                    .start()
-                val reader = process.inputStream.bufferedReader()
-                var ln: String?
-                while (reader.readLine().also { ln = it } != null) {
-                    val l = ln!!
-                    withContext(Dispatchers.Main) { shellLines.add(ShellLine(l, ShellLineType.OUTPUT)) }
+            val py = com.example.terminal.RuntimeManager.findPython(ctx)
+            if (py == null) {
+                withContext(Dispatchers.Main) {
+                    shellLines.add(ShellLine("❌ Python not found", ShellLineType.ERROR))
+                    shellLines.add(ShellLine("💡 Install Termux → pkg install python", ShellLineType.INFO))
                 }
-                val exit = process.waitFor()
-                if (exit != 0) withContext(Dispatchers.Main) {
-                    shellLines.add(ShellLine("❌ Exit: $exit", ShellLineType.ERROR))
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) { shellLines.add(ShellLine("❌ ${e.message}", ShellLineType.ERROR)) }
+                return@launch
             }
+            val (bin, args) = when {
+                cmd.trimStart().startsWith("python") -> Pair("sh", listOf("-c", cmd))
+                cmd.endsWith(".py")                  -> Pair(py, listOf(cmd))
+                else                                 -> Pair(py, listOf("-c", cmd))
+            }
+            execRuntimeCmd(bin, args, mapOf(
+                "PYTHONIOENCODING"        to "utf-8",
+                "PYTHONDONTWRITEBYTECODE" to "1",
+                "PATH" to buildRuntimePath(java.io.File(py).parent)
+            ))
+        }
+    }
+
+    private fun dispatchNode(cmd: String) {
+        shellLines.add(ShellLine("> $cmd", ShellLineType.COMMAND))
+        if (cmd == "clear") { shellLines.clear(); return }
+        viewModelScope.launch(Dispatchers.IO) {
+            val node = com.example.terminal.RuntimeManager.findNode(ctx)
+            if (node == null) {
+                withContext(Dispatchers.Main) {
+                    shellLines.add(ShellLine("❌ Node.js not found", ShellLineType.ERROR))
+                    shellLines.add(ShellLine("💡 Install Termux → pkg install nodejs", ShellLineType.INFO))
+                }
+                return@launch
+            }
+            val (bin, args) = when {
+                cmd.trimStart().startsWith("node") -> Pair("sh", listOf("-c", cmd))
+                cmd.endsWith(".js")                -> Pair(node, listOf(cmd))
+                else                               -> Pair(node, listOf("-e", cmd))
+            }
+            execRuntimeCmd(bin, args, mapOf(
+                "NODE_PATH" to "/data/data/com.termux/files/usr/lib/node_modules",
+                "PATH" to buildRuntimePath(java.io.File(node).parent)
+            ))
+        }
+    }
+
+    private fun buildRuntimePath(extraBin: String? = null): String =
+        listOfNotNull(
+            "/data/data/com.termux/files/usr/bin",
+            extraBin,
+            "/system/bin",
+            "/system/usr/bin",
+            "/usr/bin"
+        ).distinct().joinToString(":")
+
+    private suspend fun execRuntimeCmd(bin: String, args: List<String>, extraEnv: Map<String, String>) {
+        try {
+            val pb = ProcessBuilder(listOf(bin) + args)
+                .directory(java.io.File(shellCwd))
+                .redirectErrorStream(true)
+            pb.environment().apply {
+                put("HOME",   System.getenv("HOME") ?: ctx.filesDir.absolutePath)
+                put("TMPDIR", ctx.cacheDir.absolutePath)
+                put("PATH",   buildRuntimePath())
+                put("LD_LIBRARY_PATH", listOfNotNull(
+                    ctx.applicationInfo.nativeLibraryDir,
+                    "/data/data/com.termux/files/usr/lib".takeIf { java.io.File(it).exists() }
+                ).joinToString(":"))
+                putAll(extraEnv)
+            }
+            val process = pb.start()
+            val reader  = process.inputStream.bufferedReader()
+            var ln: String?
+            while (reader.readLine().also { ln = it } != null) {
+                val l = ln!!
+                withContext(Dispatchers.Main) { shellLines.add(ShellLine(l, ShellLineType.OUTPUT)) }
+            }
+            val exit = process.waitFor()
+            if (exit != 0) withContext(Dispatchers.Main) {
+                shellLines.add(ShellLine("⚠️ exit $exit", ShellLineType.ERROR))
+            }
+        } catch (e: Exception) {
+            withContext(Dispatchers.Main) { shellLines.add(ShellLine("❌ ${e.message}", ShellLineType.ERROR)) }
         }
     }
 

@@ -2,6 +2,7 @@ package com.example.agent.tools
 
 import android.content.Context
 import com.example.data.model.AgentStep
+import com.example.terminal.RuntimeManager
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -23,25 +24,80 @@ class BashTool(private val context: Context, private val getWorkingDir: () -> St
             .build()
     }
 
-    fun toolBash(cmd: String, cwd: String): AgentStep {
-        if (cmd.isBlank()) return err("bash: cmd required")
+    private fun buildPath(extraBin: String? = null): String =
+        listOfNotNull(
+            "/data/data/com.termux/files/usr/bin",
+            extraBin,
+            "/system/bin",
+            "/system/usr/bin",
+            "/usr/bin"
+        ).distinct().joinToString(":")
+
+    private fun execProcess(
+        bin: String,
+        args: List<String>,
+        cwd: String,
+        extraEnv: Map<String, String> = emptyMap(),
+        timeoutSec: Long = 60L
+    ): AgentStep {
         return try {
-            val pb = ProcessBuilder("/system/bin/sh", "-c", cmd)
+            val pb = ProcessBuilder(listOf(bin) + args)
             pb.directory(File(if (File(cwd).exists()) cwd else getWorkingDir()))
             pb.environment().apply {
                 put("HOME",            context.filesDir.absolutePath)
                 put("TMPDIR",          context.cacheDir.absolutePath)
-                put("LD_LIBRARY_PATH", context.applicationInfo.nativeLibraryDir)
+                put("PATH",            buildPath())
+                put("LD_LIBRARY_PATH", listOfNotNull(
+                    context.applicationInfo.nativeLibraryDir,
+                    "/data/data/com.termux/files/usr/lib".takeIf { File(it).exists() }
+                ).joinToString(":"))
                 put("OLLAMA_MODELS",   File(context.filesDir, "ollama_models").absolutePath)
+                putAll(extraEnv)
             }
             pb.redirectErrorStream(true)
             val proc    = pb.start()
             val output  = proc.inputStream.bufferedReader().readText()
-            val timeout = !proc.waitFor(30, TimeUnit.SECONDS)
-            if (timeout) { proc.destroy(); return err("bash: timed out\n${output.take(300)}") }
-            val icon = if (proc.exitValue() == 0) "✅" else "⚠️"
-            ok("$icon exit=${proc.exitValue()}\n\$ $cmd\n${output.take(3000).trimEnd()}")
-        } catch (e: Exception) { err("bash: ${e.message}") }
+            val timeout = !proc.waitFor(timeoutSec, TimeUnit.SECONDS)
+            if (timeout) { proc.destroy(); return err("timed out after ${timeoutSec}s\n${output.take(300)}") }
+            val icon    = if (proc.exitValue() == 0) "✅" else "⚠️"
+            ok("$icon exit=${proc.exitValue()}\n\$ ${listOf(bin) + args}\n${output.take(3000).trimEnd()}")
+        } catch (e: Exception) { err("exec: ${e.message}") }
+    }
+
+    fun toolBash(cmd: String, cwd: String): AgentStep {
+        if (cmd.isBlank()) return err("bash: cmd required")
+        return execProcess("/system/bin/sh", listOf("-c", cmd), cwd)
+    }
+
+    fun toolRunPython(code: String, cwd: String): AgentStep {
+        if (code.isBlank()) return err("run_python: code required")
+        val py = RuntimeManager.findPython(context)
+            ?: return err("Python not found.\n💡 Install Termux and run: pkg install python")
+        val (bin, args) = when {
+            code.trimStart().startsWith("python") -> Pair("/system/bin/sh", listOf("-c", code))
+            code.trimEnd().endsWith(".py") && !code.contains("\n") -> Pair(py, listOf(code.trim()))
+            else -> Pair(py, listOf("-c", code))
+        }
+        return execProcess(bin, args, cwd, mapOf(
+            "PYTHONIOENCODING"        to "utf-8",
+            "PYTHONDONTWRITEBYTECODE" to "1",
+            "PATH" to buildPath(File(py).parent)
+        ), timeoutSec = 120L)
+    }
+
+    fun toolRunNode(code: String, cwd: String): AgentStep {
+        if (code.isBlank()) return err("run_node: code required")
+        val node = RuntimeManager.findNode(context)
+            ?: return err("Node.js not found.\n💡 Install Termux and run: pkg install nodejs")
+        val (bin, args) = when {
+            code.trimStart().startsWith("node") -> Pair("/system/bin/sh", listOf("-c", code))
+            code.trimEnd().endsWith(".js") && !code.contains("\n") -> Pair(node, listOf(code.trim()))
+            else -> Pair(node, listOf("-e", code))
+        }
+        return execProcess(bin, args, cwd, mapOf(
+            "NODE_PATH" to "/data/data/com.termux/files/usr/lib/node_modules",
+            "PATH" to buildPath(File(node).parent)
+        ), timeoutSec = 120L)
     }
 
     fun toolFetchUrl(url: String, method: String, body: String): AgentStep {

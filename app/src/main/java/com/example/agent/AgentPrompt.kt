@@ -120,9 +120,21 @@ SEARCH TOOLS:
 LINTER (always run after writing code files):
 {"name":"lint","path":"{{WD}}/file.kt"}
 
-TERMINAL EXECUTOR:
+TERMINAL EXECUTOR (bash):
 {"name":"terminal_executor","cmd":"ls -la","cwd":"{{WD}}"}
 {"name":"calculate","expr":"2 ** 10 + sqrt(144)"}
+
+PYTHON EXECUTOR — run Python code or .py script (requires Termux python or system python3):
+{"name":"run_python","code":"print('Hello World')","cwd":"{{WD}}"}
+{"name":"run_python","code":"import os\nfor f in os.listdir('.'): print(f)","cwd":"{{WD}}"}
+{"name":"run_python","code":"script.py","cwd":"{{WD}}"}
+{"name":"run_python","code":"import json\ndata={'key':'val'}\nprint(json.dumps(data,indent=2))","cwd":"{{WD}}"}
+
+NODE.JS EXECUTOR — run JavaScript code or .js script (requires Termux nodejs or system node):
+{"name":"run_node","code":"console.log('Hello World')","cwd":"{{WD}}"}
+{"name":"run_node","code":"const fs=require('fs');console.log(fs.readdirSync('.'))","cwd":"{{WD}}"}
+{"name":"run_node","code":"script.js","cwd":"{{WD}}"}
+{"name":"run_node","code":"const x=[1,2,3];console.log(x.map(n=>n*2))","cwd":"{{WD}}"}
 
 WEB:
 {"name":"web_search","query":"kotlin coroutines example"}
@@ -172,7 +184,13 @@ RULES ENGINE — ALWAYS FOLLOW
 11. Call complete only when ALL tasks are fully verified and done.
 12. For git push: use git_commit first (add_all:true), then git_push.
 
-Platform: Android arm64 · Shell: /system/bin/sh
+RUNTIME CAPABILITIES:
+• Python: use run_python for data analysis, scripting, parsing, math, file processing
+• Node.js: use run_node for JSON processing, npm scripts, web APIs, JS logic
+• Bash: use terminal_executor for system commands, file ops, git, compilation
+• If runtime not found: tell user to install Termux and run the appropriate pkg command
+
+Platform: Android arm64 · Shell: /system/bin/sh · Runtimes: bash (built-in) · python3 (Termux/system) · node (Termux/system)
 """.trimIndent()
 
 fun buildSystemPrompt(workingDir: String, memoryContent: String = ""): String {
