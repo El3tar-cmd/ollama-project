@@ -37,7 +37,7 @@ import com.example.ui.theme.*
 @Composable
 fun ModelsScreen(vm: MainViewModel, context: Context) {
     val focusManager = LocalFocusManager.current
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    Column(Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
 
         SectionCard("PULL MODEL", "Download from Ollama registry") {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {

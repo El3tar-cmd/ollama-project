@@ -19,7 +19,8 @@ class AgentEngine(private val context: android.content.Context) {
     private val toolExecutor by lazy { ToolExecutor(context) { workingDir } }
     private val memoryTool   by lazy { MemoryTool(context) { workingDir } }
     private val stateManager = StateManager()
-    private val thinkRegex   = Regex("<think>([\\s\\S]*?)</think>", RegexOption.IGNORE_CASE)
+    private val thinkRegex       = Regex("<think>([\\s\\S]*?)</think>", RegexOption.IGNORE_CASE)
+    private val thinkOpenRegex   = Regex("<think>[\\s\\S]*$",           RegexOption.IGNORE_CASE)
 
     // ── Planning phase ────────────────────────────────────────────────────────
     private suspend fun generatePlan(
@@ -149,9 +150,10 @@ class AgentEngine(private val context: android.content.Context) {
 
             val toolCalls = parseToolCalls(response)
 
-            // Build display text — strip internal markers
+            // Build display text — strip internal markers + closed/unclosed think blocks
             val display = response
                 .replace(thinkRegex, "")
+                .replace(thinkOpenRegex, "")       // unclosed <think>... at end of response
                 .replace(Regex("""WRITE_FILE>>[^\n]+\n[\s\S]*?<<WRITE_FILE"""), "")
                 .replace(Regex("""TOOL>>\s*\n[\s\S]*?\n?<<TOOL"""), "")
                 .replace(Regex("""```tool\s*\n[\s\S]*?\n?```"""), "")

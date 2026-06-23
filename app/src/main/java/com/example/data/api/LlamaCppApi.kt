@@ -45,6 +45,14 @@ class LlamaCppApi {
         for (m in messages) {
             msgsArray.put(JSONObject().put("role", m.role).put("content", m.content))
         }
+        val stopTokens = JSONArray().apply {
+            put("<<TOOL")
+            put("<<WRITE_FILE")
+            put("\nUser:")
+            put("\nHuman:")
+            put("[NUDGE]")
+            put("Tool results:")
+        }
         val body = JSONObject().apply {
             put("model", "local")
             put("messages", msgsArray)
@@ -54,6 +62,7 @@ class LlamaCppApi {
             put("top_k", topK)
             put("repeat_penalty", repeatPenalty)
             put("max_tokens", maxTokens)
+            put("stop", stopTokens)
         }
         val req = Request.Builder()
             .url("$baseUrl/v1/chat/completions")

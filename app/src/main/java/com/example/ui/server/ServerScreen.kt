@@ -38,7 +38,7 @@ import com.example.ui.theme.*
 fun ServerScreen(vm: MainViewModel, context: Context) {
     val scroll = rememberScrollState()
     Column(
-        Modifier.fillMaxSize().verticalScroll(scroll).padding(16.dp),
+        Modifier.fillMaxSize().imePadding().verticalScroll(scroll).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Row(
