@@ -1,6 +1,7 @@
 package com.example.linux
 
 import android.content.Context
+import android.os.Build
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -48,91 +49,91 @@ class LinuxSetupManager(private val context: Context) {
 
     suspend fun setup(onProgress: suspend (Progress) -> Unit) = withContext(Dispatchers.IO) {
 
-        fun emit(stage: Stage, msg: String, pct: Int = -1, err: Boolean = false) {
-            kotlinx.coroutines.runBlocking { onProgress(Progress(stage, msg, pct, err)) }
+        suspend fun emit(stage: Stage, msg: String, pct: Int = -1, err: Boolean = false) {
+            onProgress(Progress(stage, msg, pct, err))
         }
 
         try {
             // ── 1. Prepare directories ────────────────────────────────────────
-            emit(Stage.PREPARING, "Creating directories…")
+            emit(Stage.PREPARING, \"Creating directories…\")
             val base   = EmbeddedLinux.baseDir(context)
-            val binDir = File(base, "bin").also { it.mkdirs() }
+            val binDir = File(base, \"bin\").also { it.mkdirs() }
             val rootfs = EmbeddedLinux.rootfsDir(context).also { it.mkdirs() }
             val proot  = EmbeddedLinux.prootBin(context)
 
             // ── 2. Download PRoot binary ──────────────────────────────────────
             if (!proot.exists() || !proot.canExecute()) {
-                emit(Stage.DOWNLOADING_PROOT, "Downloading PRoot binary…", 0)
+                emit(Stage.DOWNLOADING_PROOT, \"Downloading PRoot binary…\", 0)
                 val ok = downloadFile(EmbeddedLinux.prootUrl, proot) { pct ->
-                    emit(Stage.DOWNLOADING_PROOT, "Downloading PRoot… $pct%", pct)
+                    emit(Stage.DOWNLOADING_PROOT, \"Downloading PRoot… $pct%\", pct)
                 }
-                if (!ok) { emit(Stage.ERROR, "Failed to download PRoot binary.", err = true); return@withContext }
+                if (!ok) { emit(Stage.ERROR, \"Failed to download PRoot binary.\", err = true); return@withContext }
                 proot.setExecutable(true, false)
-                emit(Stage.DOWNLOADING_PROOT, "PRoot ready ✓", 100)
+                emit(Stage.DOWNLOADING_PROOT, \"PRoot ready ✓\", 100)
             }
 
             // ── 3. Download Debian rootfs ─────────────────────────────────────
-            val rootfsArchive = File(base, "debian-rootfs.tar.xz")
-            if (!rootfs.resolve("bin/bash").exists()) {
-                emit(Stage.DOWNLOADING_ROOTFS, "Downloading Debian minimal rootfs (~80MB)…", 0)
+            val rootfsArchive = File(base, \"debian-rootfs.tar.xz\")
+            if (!rootfs.resolve(\"bin/bash\").exists()) {
+                emit(Stage.DOWNLOADING_ROOTFS, \"Downloading Debian minimal rootfs (~80MB)…\", 0)
                 val ok = downloadFile(EmbeddedLinux.debianRootfsUrl, rootfsArchive) { pct ->
-                    emit(Stage.DOWNLOADING_ROOTFS, "Downloading Debian… $pct%", pct)
+                    emit(Stage.DOWNLOADING_ROOTFS, \"Downloading Debian… $pct%\", pct)
                 }
-                if (!ok) { emit(Stage.ERROR, "Failed to download Debian rootfs.", err = true); return@withContext }
+                if (!ok) { emit(Stage.ERROR, \"Failed to download Debian rootfs.\", err = true); return@withContext }
 
                 // ── 4. Extract rootfs ─────────────────────────────────────────
-                emit(Stage.EXTRACTING, "Extracting Debian rootfs… (this may take a minute)")
+                emit(Stage.EXTRACTING, \"Extracting Debian rootfs… (this may take a minute)\")
                 val extracted = extractTar(rootfsArchive, rootfs) { msg ->
                     emit(Stage.EXTRACTING, msg)
                 }
-                if (!extracted) { emit(Stage.ERROR, "Extraction failed.", err = true); return@withContext }
+                if (!extracted) { emit(Stage.ERROR, \"Extraction failed.\", err = true); return@withContext }
                 rootfsArchive.delete()
-                emit(Stage.EXTRACTING, "Extraction complete ✓")
+                emit(Stage.EXTRACTING, \"Extraction complete ✓\")
             }
 
             // ── 5. Configure system ───────────────────────────────────────────
-            emit(Stage.CONFIGURING, "Configuring DNS and system…")
+            emit(Stage.CONFIGURING, \"Configuring DNS and system…\")
             EmbeddedLinux.configureSystem(context)
 
             // ── 6. Update apt and install runtimes ────────────────────────────
             if (!EmbeddedLinux.runtimesInstalled(context)) {
-                emit(Stage.INSTALLING_RUNTIMES, "Updating package list… (first run only)")
+                emit(Stage.INSTALLING_RUNTIMES, \"Updating package list… (first run only)\")
                 val updateResult = EmbeddedLinux.exec(context,
-                    "apt-get update -y 2>&1", timeoutSec = 180)
+                    \"apt-get update -y 2>&1\", timeoutSec = 180)
                 if (!updateResult.success) {
                     emit(Stage.INSTALLING_RUNTIMES,
-                        "apt-get update warning (may still work): ${updateResult.output.take(200)}")
+                        \"apt-get update warning (may still work): ${updateResult.output.take(200)}\")
                 }
 
-                emit(Stage.INSTALLING_RUNTIMES, "Installing Python 3, Node.js, git, curl…")
+                emit(Stage.INSTALLING_RUNTIMES, \"Installing Python 3, Node.js, git, curl…\")
                 val installResult = EmbeddedLinux.install(context,
-                    "python3", "python3-pip", "nodejs", "npm", "git", "curl", "wget",
-                    "nano", "vim-tiny", "build-essential"
+                    \"python3\", \"python3-pip\", \"nodejs\", \"npm\", \"git\", \"curl\", \"wget\",
+                    \"nano\", \"vim-tiny\", \"build-essential\"
                 )
                 if (!installResult.success) {
                     emit(Stage.INSTALLING_RUNTIMES,
-                        "Install warning: ${installResult.output.takeLast(300)}")
+                        \"Install warning: ${installResult.output.takeLast(300)}\")
                 }
 
                 // Mark runtimes as installed even if some failed (partial install still useful)
-                EmbeddedLinux.runtimesFile(context).writeText("installed")
-                emit(Stage.INSTALLING_RUNTIMES, "Runtimes installed ✓")
+                EmbeddedLinux.runtimesFile(context).writeText(\"installed\")
+                emit(Stage.INSTALLING_RUNTIMES, \"Runtimes installed ✓\")
             }
 
             // ── 7. Mark complete ──────────────────────────────────────────────
-            EmbeddedLinux.setupDone(context).writeText("ok")
-            emit(Stage.DONE, "✅ Embedded Linux ready! Python, Node.js, and git available.", 100)
+            EmbeddedLinux.setupDone(context).writeText(\"ok\")
+            emit(Stage.DONE, \"✅ Embedded Linux ready! Python, Node.js, and git available.\", 100)
 
         } catch (e: Exception) {
-            onProgress(Progress(Stage.ERROR, "Setup error: ${e.message}", isError = true))
+            onProgress(Progress(Stage.ERROR, \"Setup error: ${e.message}\", isError = true))
         }
     }
 
     // ── Download helper ───────────────────────────────────────────────────────
-    private fun downloadFile(
+    private suspend fun downloadFile(
         url: String,
         dest: File,
-        onProgress: (Int) -> Unit
+        onProgress: suspend (Int) -> Unit
     ): Boolean {
         return try {
             dest.parentFile?.mkdirs()
@@ -159,18 +160,18 @@ class LinuxSetupManager(private val context: Context) {
     }
 
     // ── TAR extractor (supports .gz and .xz) ──────────────────────────────────
-    private fun extractTar(
+    private suspend fun extractTar(
         archive: File,
         destDir: File,
-        onProgress: (String) -> Unit
+        onProgress: suspend (String) -> Unit
     ): Boolean {
         return try {
             destDir.mkdirs()
             var count = 0
             BufferedInputStream(archive.inputStream()).use { bis ->
                 val decompressionStream = when {
-                    archive.name.endsWith(".xz") -> XZCompressorInputStream(bis)
-                    archive.name.endsWith(".gz") -> GZIPInputStream(bis)
+                    archive.name.endsWith(\".xz\") -> XZCompressorInputStream(bis)
+                    archive.name.endsWith(\".gz\") -> GZIPInputStream(bis)
                     else -> bis // Assume uncompressed tar
                 }
                 
@@ -183,14 +184,17 @@ class LinuxSetupManager(private val context: Context) {
                             entry.isDirectory -> outFile.mkdirs()
                             entry.isSymbolicLink -> {
                                 outFile.parentFile?.mkdirs()
-                                try {
-                                    java.nio.file.Files.createSymbolicLink(
-                                        outFile.toPath(),
-                                        java.nio.file.Paths.get(entry.linkName)
-                                    )
-                                } catch (_: Exception) {
-                                    // Skip broken symlinks
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                    try {
+                                        java.nio.file.Files.createSymbolicLink(
+                                            outFile.toPath(),
+                                            java.nio.file.Paths.get(entry.linkName)
+                                        )
+                                    } catch (_: Exception) {
+                                        // Skip broken symlinks
+                                    }
                                 }
+                                // For API < 26, we just skip symlinks as they are hard to implement manually
                             }
                             else -> {
                                 outFile.parentFile?.mkdirs()
@@ -201,18 +205,14 @@ class LinuxSetupManager(private val context: Context) {
                             }
                         }
                         count++
-                        if (count % 500 == 0) onProgress("Extracting… $count files")
+                        if (count % 500 == 0) onProgress(\"Extracting… $count files\")
                         entry = tar.nextTarEntry
                     }
                 }
             }
-            onProgress("Extracted $count files total ✓")
+            onProgress(\"Extracted $count files total ✓\")
             true
         } catch (e: Exception) { false }
     }
 
-    // ── Uninstall ─────────────────────────────────────────────────────────────
-    fun uninstall() {
-        EmbeddedLinux.baseDir(context).deleteRecursively()
-    }
-}
+    // ── Uninstall ─────────────────────────────────────────────────────────────\n    fun uninstall() {\n        EmbeddedLinux.baseDir(context).deleteRecursively()\n    }\n}\n"}
