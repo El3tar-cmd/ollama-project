@@ -54,6 +54,17 @@ class LinuxSetupManager(private val context: Context) {
         }
 
         try {
+            // Check available disk space before starting
+            val baseDir = EmbeddedLinux.baseDir(context)
+            val availableSpace = baseDir.freeSpace
+            val requiredSpace = 500L * 1024 * 1024 // 500MB minimum
+            
+            if (availableSpace < requiredSpace) {
+                val availableMB = availableSpace / (1024 * 1024)
+                emit(Stage.ERROR, "Insufficient disk space. Need at least 500MB, available: ${availableMB}MB", err = true)
+                return@withContext
+            }
+
             // ── 1. Prepare directories ────────────────────────────────────────
             emit(Stage.PREPARING, "Creating directories…")
             val base   = EmbeddedLinux.baseDir(context)
@@ -87,7 +98,13 @@ class LinuxSetupManager(private val context: Context) {
                     emit(Stage.EXTRACTING, msg)
                 }
                 if (!extracted) { emit(Stage.ERROR, "Extraction failed.", err = true); return@withContext }
-                rootfsArchive.delete()
+                
+                // Clean up archive to save space
+                try {
+                    rootfsArchive.delete()
+                } catch (e: Exception) {
+                    // Non-critical, continue
+                }
                 emit(Stage.EXTRACTING, "Extraction complete ✓")
             }
 
@@ -99,7 +116,7 @@ class LinuxSetupManager(private val context: Context) {
             if (!EmbeddedLinux.runtimesInstalled(context)) {
                 emit(Stage.INSTALLING_RUNTIMES, "Updating package list… (first run only)")
                 val updateResult = EmbeddedLinux.exec(context,
-                    "apt-get update -y 2>&1", timeoutSec = 180)
+                    "apt-get update -y 2>&1", timeoutSec = 300)
                 if (!updateResult.success) {
                     emit(Stage.INSTALLING_RUNTIMES,
                         "apt-get update warning (may still work): ${updateResult.output.take(200)}")
@@ -137,9 +154,15 @@ class LinuxSetupManager(private val context: Context) {
     ): Boolean = withContext(Dispatchers.IO) {
         try {
             dest.parentFile?.mkdirs()
+            // Delete existing file if present
+            if (dest.exists()) {
+                dest.delete()
+            }
+            
             val request  = Request.Builder().url(url).build()
             val response = client.newCall(request).execute()
             if (!response.isSuccessful) return@withContext false
+            
             val body   = response.body ?: return@withContext false
             val total  = body.contentLength()
             var downloaded = 0L
@@ -151,14 +174,30 @@ class LinuxSetupManager(private val context: Context) {
                     while (input.read(buf).also { read = it } != -1) {
                         out.write(buf, 0, read)
                         downloaded += read
-                        if (total > 0) onProgress(((downloaded * 100) / total).toInt())
+                        if (total > 0) {
+                            val progress = ((downloaded * 100) / total).toInt()
+                            onProgress(progress)
+                        }
+                        // Check for coroutine cancellation
+                        if (!isActive) {
+                            throw kotlinx.coroutines.CancellationException("Download cancelled")
+                        }
                     }
                 }
             }
             true
-        } catch (_: Exception) { 
-            dest.delete()
-            false 
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // Clean up partial download
+            try {
+                dest.delete()
+            } catch (_: Exception) {}
+            false
+        } catch (e: Exception) {
+            // Clean up partial download on error
+            try {
+                dest.delete()
+            } catch (_: Exception) {}
+            false
         }
     }
 

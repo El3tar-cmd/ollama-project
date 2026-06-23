@@ -15,6 +15,10 @@ class OllamaExecutor(private val context: Context) {
 
     val binDir    = File(context.filesDir, "bin")
     val modelsDir = File(context.filesDir, "ollama_models")
+    
+    // Track background threads for proper cleanup
+    private val activeThreads = mutableSetOf<Thread>()
+    private val activeProcesses = mutableSetOf<Process>()
 
     /**
      * PRIMARY binary: libollama.so extracted by the package installer into
@@ -133,13 +137,22 @@ class OllamaExecutor(private val context: Context) {
         pb.environment().putAll(envMap)
         pb.redirectErrorStream(true)
         val proc = pb.start()
-        Thread {
+        
+        synchronized(activeProcesses) { activeProcesses.add(proc) }
+        
+        val thread = Thread {
             try {
                 val reader = proc.inputStream.bufferedReader()
                 var line: String?
                 while (reader.readLine().also { line = it } != null) onLog(line ?: "")
             } catch (e: Exception) { onLog("Log pipe closed: ${e.message}") }
-        }.start()
+            finally {
+                synchronized(activeProcesses) { activeProcesses.remove(proc) }
+            }
+        }
+        synchronized(activeThreads) { activeThreads.add(thread) }
+        thread.start()
+        
         return proc
     }
 
@@ -218,8 +231,44 @@ class OllamaExecutor(private val context: Context) {
     fun stopOllamaService(process: Process?) {
         try {
             process?.destroy()
+            process?.waitFor(2, TimeUnit.SECONDS)
+            if (process?.isAlive == true) {
+                process.destroyForcibly()
+            }
+            synchronized(activeProcesses) { activeProcesses.remove(process) }
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping process", e)
+        }
+    }
+    
+    /**
+     * Clean up all active threads and processes - call this when app is shutting down
+     */
+    fun cleanup() {
+        synchronized(activeProcesses) {
+            activeProcesses.toList().forEach { proc ->
+                try {
+                    if (proc.isAlive) {
+                        proc.destroy()
+                        proc.waitFor(1, TimeUnit.SECONDS)
+                        if (proc.isAlive) proc.destroyForcibly()
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error cleaning up process", e)
+                }
+            }
+            activeProcesses.clear()
+        }
+        
+        synchronized(activeThreads) {
+            activeThreads.toList().forEach { thread ->
+                try {
+                    if (thread.isAlive) thread.interrupt()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error interrupting thread", e)
+                }
+            }
+            activeThreads.clear()
         }
     }
 
@@ -235,21 +284,30 @@ class OllamaExecutor(private val context: Context) {
             return
         }
         val envMap = buildEnv("127.0.0.1:11434", "*", apiKey)
-        Thread {
+        val thread = Thread {
             try {
                 val proc = ProcessBuilder(listOf(binary.absolutePath) + args.toList())
                     .apply {
                         environment().putAll(envMap)
                         redirectErrorStream(true)
                     }.start()
-                val reader = proc.inputStream.bufferedReader()
-                var line: String?
-                while (reader.readLine().also { line = it } != null) onLog(line ?: "")
-                proc.waitFor()
+                
+                synchronized(activeProcesses) { activeProcesses.add(proc) }
+                
+                try {
+                    val reader = proc.inputStream.bufferedReader()
+                    var line: String?
+                    while (reader.readLine().also { line = it } != null) onLog(line ?: "")
+                    proc.waitFor()
+                } finally {
+                    synchronized(activeProcesses) { activeProcesses.remove(proc) }
+                }
             } catch (e: Exception) {
                 onLog("Command failed: ${e.message}")
             }
-        }.start()
+        }
+        synchronized(activeThreads) { activeThreads.add(thread) }
+        thread.start()
     }
 
     /**
@@ -270,7 +328,10 @@ class OllamaExecutor(private val context: Context) {
                     environment().putAll(envMap)
                     redirectErrorStream(true)
                 }.start()
-            Thread {
+            
+            synchronized(activeProcesses) { activeProcesses.add(proc) }
+            
+            val thread = Thread {
                 try {
                     val stream = proc.inputStream
                     val sb     = StringBuilder()
@@ -296,7 +357,13 @@ class OllamaExecutor(private val context: Context) {
                     }
                     if (sb.isNotBlank()) onLog(sb.toString().trim())
                 } catch (e: Exception) { onLog("Login stream: ${e.message}") }
-            }.start()
+                finally {
+                    synchronized(activeProcesses) { activeProcesses.remove(proc) }
+                }
+            }
+            synchronized(activeThreads) { activeThreads.add(thread) }
+            thread.start()
+            
             proc
         } catch (e: Exception) {
             onLog("login failed: ${e.message}")

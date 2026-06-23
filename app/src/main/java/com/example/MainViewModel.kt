@@ -29,6 +29,17 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     private val settingsPrefs = ctx.getSharedPreferences("devhive_prefs", android.content.Context.MODE_PRIVATE)
     val executor         = OllamaExecutor(ctx)
     val agentEngine      = AgentEngine(ctx)
+    
+    // Track coroutines for proper cleanup
+    private val initJob = viewModelScope.launch(Dispatchers.IO) {
+        // Periodic auto-save every 3 seconds
+        while (isActive) {
+            kotlinx.coroutines.delay(3000)
+            if (isActive) {
+                withContext(Dispatchers.Main) { saveSettings() }
+            }
+        }
+    }
 
 
 
@@ -269,13 +280,6 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         // FIX: Initialize Linux status immediately on app launch
         checkLinuxStatus(ctx)
         
-        // Periodic auto-save every 3 seconds
-        viewModelScope.launch(Dispatchers.IO) {
-            while (true) {
-                kotlinx.coroutines.delay(3000)
-                withContext(Dispatchers.Main) { saveSettings() }
-            }
-        }
         cloudApiKey = prefs.getString("cloud_api_key", "") ?: ""
         isLoggedIn  = cloudApiKey.isNotBlank()
         checkBinaryInstalled()
@@ -293,6 +297,16 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         refreshServiceStatus()
         syncLogs()
         startApiWatcher()
+    }
+    
+    override fun onCleared() {
+        super.onCleared()
+        // Clean up executor resources
+        executor.cleanup()
+        // Cancel init job
+        initJob.cancel()
+        // Cancel agent job if running
+        agentJob?.cancel()
     }
 
     private fun syncLogs() {

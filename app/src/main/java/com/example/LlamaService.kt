@@ -119,8 +119,15 @@ class LlamaService : Service() {
         pb.redirectErrorStream(true)
         val proc = pb.start()
         serverProcess = proc
-        proc.inputStream.bufferedReader().forEachLine { line -> log(line) }
-        proc.waitFor()
+        try {
+            proc.inputStream.bufferedReader().forEachLine { line -> log(line) }
+            proc.waitFor()
+        } catch (e: Exception) {
+            log("❌ Process error: ${e.message}")
+        } finally {
+            serverProcess = null
+            isRunning = false
+        }
     }
 
     private fun log(msg: String) {
@@ -131,8 +138,19 @@ class LlamaService : Service() {
     }
 
     override fun onDestroy() {
-        serverProcess?.destroyForcibly()
-        serverProcess = null
+        serverProcess?.let { proc ->
+            try {
+                proc.destroy()
+                // Wait a bit for graceful shutdown
+                Thread.sleep(500)
+                if (proc.isAlive) {
+                    proc.destroyForcibly()
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("LlamaService", "Error stopping process", e)
+            }
+            serverProcess = null
+        }
         isRunning = false
         super.onDestroy()
     }

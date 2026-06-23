@@ -106,7 +106,14 @@ class OllamaService : Service() {
 
     override fun onDestroy() {
         isRunning = false
-        activeProcess?.let { ollamaExecutor.stopOllamaService(it); activeProcess = null }
+        activeProcess?.let { 
+            try {
+                ollamaExecutor.stopOllamaService(it)
+            } catch (e: Exception) {
+                android.util.Log.e("OllamaService", "Error stopping process", e)
+            }
+            activeProcess = null
+        }
         serviceInstance = null
         addLog("DevHive IDE service stopped.")
         super.onDestroy()
