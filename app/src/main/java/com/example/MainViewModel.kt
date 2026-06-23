@@ -265,6 +265,10 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         llamaPort         = settingsPrefs.getString("llama_port", "8080") ?: "8080"
         selectedModelChat = settingsPrefs.getString("sel_model_chat", "") ?: ""
         agentModel        = settingsPrefs.getString("agent_model", "") ?: ""
+        
+        // FIX: Initialize Linux status immediately on app launch
+        checkLinuxStatus(ctx)
+        
         // Periodic auto-save every 3 seconds
         viewModelScope.launch(Dispatchers.IO) {
             while (true) {
