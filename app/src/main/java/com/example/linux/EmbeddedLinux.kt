@@ -50,10 +50,12 @@ object EmbeddedLinux {
     fun baseDir(context: Context)    = File(context.filesDir, "embedded_linux")
     fun prootBin(context: Context)   = File(baseDir(context), "bin/proot")
     fun packagedProotBin(context: Context): File? {
-        val nativeDir = context.applicationInfo.nativeLibraryDir ?: return null
-        return File(nativeDir, "libproot.so").takeIf { it.exists() && it.canExecute() }
+        // PRoot release binaries are standalone ELF executables, not Android
+        // shared libraries. Bundling them as lib*.so can make Android's linker
+        // reject or mis-run them, so runtime execution uses filesDir/bin/proot.
+        return null
     }
-    fun executableProotBin(context: Context): File = packagedProotBin(context) ?: prootBin(context)
+    fun executableProotBin(context: Context): File = prootBin(context)
     fun rootfsDir(context: Context)  = File(baseDir(context), "rootfs")
     fun setupDone(context: Context)  = File(baseDir(context), ".setup_complete")
     fun runtimesFile(context: Context) = File(baseDir(context), ".runtimes_installed")
@@ -89,7 +91,7 @@ object EmbeddedLinux {
         
         Log.d("EmbeddedLinux", ">>> isReady() check:")
         Log.d("EmbeddedLinux", "    proot exists: ${proot.exists()} (${proot.absolutePath})")
-        Log.d("EmbeddedLinux", "    packaged proot: ${packagedProotBin(context)?.absolutePath ?: "(missing)"}")
+        Log.d("EmbeddedLinux", "    packaged proot: disabled for standalone PRoot executable")
         Log.d("EmbeddedLinux", "    proot canExecute: ${proot.canExecute()}")
         Log.d("EmbeddedLinux", "    rootfs exists: ${rootfs.exists()} (${rootfs.absolutePath})")
         Log.d("EmbeddedLinux", "    rootfs healthy: ${rootfsHealthy(context)}")
@@ -109,15 +111,15 @@ object EmbeddedLinux {
 
     fun repairProotPermissions(context: Context): Boolean {
         val downloaded = prootBin(context)
-        if (!downloaded.exists()) return packagedProotBin(context) != null
+        if (!downloaded.exists()) return false
         return try {
             downloaded.setReadable(true, false)
             downloaded.setExecutable(true, false)
             Os.chmod(downloaded.absolutePath, 0b111_101_101)
-            downloaded.canExecute() || packagedProotBin(context) != null
+            downloaded.canExecute()
         } catch (e: Exception) {
             Log.w("EmbeddedLinux", "Could not chmod downloaded PRoot: ${e.message}")
-            downloaded.canExecute() || packagedProotBin(context) != null
+            downloaded.canExecute()
         }
     }
 

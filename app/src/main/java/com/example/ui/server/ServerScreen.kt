@@ -327,7 +327,7 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
         // ── Embedded Linux Section ────────────────────────────────────────────
         LaunchedEffect(Unit) { vm.checkLinuxStatus(context) }
 
-        SectionCard("EMBEDDED LINUX", "Debian arm64 • Python 3 • Node.js • git — no Termux needed") {
+        SectionCard("EMBEDDED LINUX", "Alpine arm64 • Python 3 • Node.js • git — no Termux needed") {
             if (vm.linuxReady) {
                 // ── Ready state ───────────────────────────────────────────────
                 Row(
@@ -339,7 +339,7 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
                         Row(verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             Box(Modifier.size(8.dp).clip(CircleShape).background(OllamaGreen))
-                            Text("Debian Linux ready", color = OllamaGreen,
+                            Text("Alpine Linux ready", color = OllamaGreen,
                                 fontWeight = FontWeight.Bold, fontSize = 14.sp)
                         }
                         Text("Python 3  ·  Node.js  ·  git  ·  curl",

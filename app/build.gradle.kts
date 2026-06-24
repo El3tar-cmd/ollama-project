@@ -18,7 +18,9 @@ android {
     defaultConfig {
         applicationId = "com.ollamadevhive.server"
         minSdk = 24
-        targetSdk = 36
+        // PRoot is a standalone executable stored under app filesDir.
+        // Android 10+ blocks executing app-data binaries for apps targeting 29+.
+        targetSdk = 28
         versionCode = 1
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
