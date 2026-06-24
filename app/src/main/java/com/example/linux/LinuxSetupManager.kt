@@ -2,6 +2,7 @@ package com.example.linux
 
 import android.content.Context
 import android.os.Build
+import android.system.Os
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
@@ -79,7 +80,15 @@ class LinuxSetupManager(private val context: Context) {
             }
 
             val rootfsArchive = File(base, "alpine-rootfs.tar.gz")
-            if (!rootfs.resolve("bin/sh").exists()) {
+            if (rootfs.exists() && !EmbeddedLinux.rootfsHealthy(context)) {
+                emit(Stage.PREPARING, "Existing Alpine rootfs is incomplete; reinstalling…")
+                rootfs.deleteRecursively()
+                rootfs.mkdirs()
+                EmbeddedLinux.setupDone(context).delete()
+                EmbeddedLinux.runtimesFile(context).delete()
+            }
+
+            if (!EmbeddedLinux.rootfsHealthy(context)) {
                 emit(Stage.DOWNLOADING_ROOTFS, "Downloading Alpine minimal rootfs (~20MB)…", 0)
                 val ok = downloadFile(EmbeddedLinux.debianRootfsUrl, rootfsArchive) { pct ->
                     emit(Stage.DOWNLOADING_ROOTFS, "Downloading Alpine… $pct%", pct)
@@ -174,6 +183,7 @@ class LinuxSetupManager(private val context: Context) {
             destDir.mkdirs()
             var count = 0
             var lastUpdateTime = System.currentTimeMillis()
+            val pendingHardLinks = mutableListOf<Pair<File, String>>()
             
             BufferedInputStream(archive.inputStream()).use { bis ->
                 val decompressionStream = when {
@@ -198,7 +208,18 @@ class LinuxSetupManager(private val context: Context) {
                         try {
                             if (entry.isDirectory) {
                                 outFile.mkdirs()
-                            } else if (!entry.isSymbolicLink) {
+                            } else if (entry.isSymbolicLink) {
+                                outFile.parentFile?.mkdirs()
+                                if (outFile.exists()) outFile.delete()
+                                try {
+                                    Os.symlink(entry.linkName, outFile.absolutePath)
+                                } catch (e: Exception) {
+                                    Log.w("LinuxSetupManager", "Could not create symlink ${entry.name}: ${e.message}")
+                                }
+                            } else if (entry.isLink) {
+                                outFile.parentFile?.mkdirs()
+                                pendingHardLinks.add(outFile to entry.linkName)
+                            } else {
                                 outFile.parentFile?.mkdirs()
                                 FileOutputStream(outFile).use { fos ->
                                     val buffer = ByteArray(32768) 
@@ -224,10 +245,23 @@ class LinuxSetupManager(private val context: Context) {
                         }
                         entry = tar.nextTarEntry
                     }
+
+                    pendingHardLinks.forEach { (outFile, linkName) ->
+                        val source = File(destDir, linkName)
+                        try {
+                            if (source.exists() && !outFile.exists()) {
+                                source.copyTo(outFile, overwrite = true)
+                                outFile.setExecutable(source.canExecute(), false)
+                                outFile.setReadable(true, false)
+                            }
+                        } catch (e: Exception) {
+                            Log.w("LinuxSetupManager", "Could not restore hard link ${outFile.name}: ${e.message}")
+                        }
+                    }
                 }
             }
             onProgress("Extracted $count files total ✓")
-            true
+            EmbeddedLinux.rootfsHealthy(context)
         } catch (e: Exception) {
             Log.e("LinuxSetupManager", "Critical extraction failure", e)
             onProgress("Extraction failed: ${e.localizedMessage ?: "Unknown error"}")

@@ -6,6 +6,7 @@ import android.system.Os
 import java.io.File
 import android.util.Log
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Manages the embedded Debian Linux environment running inside the app via PRoot.
@@ -57,6 +58,13 @@ object EmbeddedLinux {
     fun setupDone(context: Context)  = File(baseDir(context), ".setup_complete")
     fun runtimesFile(context: Context) = File(baseDir(context), ".runtimes_installed")
 
+    fun rootfsHealthy(context: Context): Boolean {
+        val rootfs = rootfsDir(context)
+        return File(rootfs, "bin/sh").exists() &&
+            File(rootfs, "bin/sh").canExecute() &&
+            File(rootfs, "etc").exists()
+    }
+
     // ── State checks ──────────────────────────────────────────────────────────
     fun isReady(context: Context): Boolean {
         repairProotPermissions(context)
@@ -69,11 +77,13 @@ object EmbeddedLinux {
         Log.d("EmbeddedLinux", "    packaged proot: ${packagedProotBin(context)?.absolutePath ?: "(missing)"}")
         Log.d("EmbeddedLinux", "    proot canExecute: ${proot.canExecute()}")
         Log.d("EmbeddedLinux", "    rootfs exists: ${rootfs.exists()} (${rootfs.absolutePath})")
+        Log.d("EmbeddedLinux", "    rootfs healthy: ${rootfsHealthy(context)}")
         Log.d("EmbeddedLinux", "    setupDone exists: ${done.exists()} (${done.absolutePath})")
         
         return proot.exists() &&
         proot.canExecute() &&
         rootfs.exists() &&
+        rootfsHealthy(context) &&
         done.exists()
     }
 
@@ -177,14 +187,17 @@ object EmbeddedLinux {
             }
             pb.redirectErrorStream(true)
             Log.d("EmbeddedLinux", ">>> Starting process...")
-            val proc    = pb.start()
+            val proc = pb.start()
+            val (outputThread, outputRef) = proc.readOutputAsync()
             val timeout = !proc.waitFor(timeoutSec, TimeUnit.SECONDS)
             if (timeout) {
                 proc.destroy()
-                val output = proc.inputStream.bufferedReader().readText()
+                outputThread.join(1000)
+                val output = outputRef.get()
                 return ExecResult(-1, "Command timed out after ${timeoutSec}s\n${output.take(300)}")
             }
-            val output = proc.inputStream.bufferedReader().readText()
+            outputThread.join(3000)
+            val output = outputRef.get()
             Log.d("EmbeddedLinux", ">>> Process finished, exitCode: ${proc.exitValue()}")
             ExecResult(proc.exitValue(), output.take(8000).trimEnd())
         } catch (e: Exception) { 
@@ -203,7 +216,7 @@ object EmbeddedLinux {
     fun install(context: Context, vararg packages: String): ExecResult {
         val pkgList = packages.joinToString(" ")
         return exec(context,
-            "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $pkgList 2>&1",
+            "apk add --no-cache $pkgList 2>&1",
             timeoutSec = 300L
         )
     }
@@ -242,5 +255,21 @@ object EmbeddedLinux {
 
     data class ExecResult(val exitCode: Int, val output: String) {
         val success get() = exitCode == 0
+    }
+
+    private fun Process.readOutputAsync(): Pair<Thread, AtomicReference<String>> {
+        val output = AtomicReference("")
+        val thread = Thread {
+            output.set(
+                try {
+                    inputStream.bufferedReader().readText()
+                } catch (e: Exception) {
+                    "Failed to read process output: ${e.message}"
+                }
+            )
+        }
+        thread.isDaemon = true
+        thread.start()
+        return thread to output
     }
 }

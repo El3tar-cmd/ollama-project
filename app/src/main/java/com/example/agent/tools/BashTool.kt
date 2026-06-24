@@ -9,6 +9,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 class BashTool(private val context: Context, private val getWorkingDir: () -> String) {
 
@@ -139,14 +140,36 @@ class BashTool(private val context: Context, private val getWorkingDir: () -> St
                 putAll(extraEnv)
             }
             pb.redirectErrorStream(true)
-            val proc    = pb.start()
-            val output  = proc.inputStream.bufferedReader().readText()
+            val proc = pb.start()
+            val (outputThread, outputRef) = proc.readOutputAsync()
             val timeout = !proc.waitFor(timeoutSec, TimeUnit.SECONDS)
-            if (timeout) { proc.destroy(); return err("timed out after ${timeoutSec}s\n${output.take(300)}") }
+            if (timeout) {
+                proc.destroy()
+                outputThread.join(1000)
+                return err("timed out after ${timeoutSec}s\n${outputRef.get().take(300)}")
+            }
+            outputThread.join(3000)
+            val output = outputRef.get()
             val icon = if (proc.exitValue() == 0) "✅" else "⚠️"
             val content = "$icon exit=${proc.exitValue()} [$label]\n$ ${(listOf(bin) + args).joinToString(" ")}\n${output.take(3000).trimEnd()}"
             if (proc.exitValue() == 0) ok(content) else AgentStep("tool_result", content, isError = true)
         } catch (e: Exception) { err("exec: ${e.message}") }
+    }
+
+    private fun Process.readOutputAsync(): Pair<Thread, AtomicReference<String>> {
+        val output = AtomicReference("")
+        val thread = Thread {
+            output.set(
+                try {
+                    inputStream.bufferedReader().readText()
+                } catch (e: Exception) {
+                    "Failed to read process output: ${e.message}"
+                }
+            )
+        }
+        thread.isDaemon = true
+        thread.start()
+        return thread to output
     }
 
     private fun String.isProotInfrastructureError(): Boolean =
