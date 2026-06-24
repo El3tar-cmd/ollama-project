@@ -59,7 +59,7 @@ class OllamaService : Service() {
         }
 
         if (proc != null) {
-            android.util.Log.d(TAG, "    Ollama started successfully, pid: ${proc.pid}")
+            android.util.Log.d(TAG, "    Ollama started successfully")
             isRunning     = true
             activeProcess = proc
             notifManager?.notify(NOTIF_ID, buildNotification(
