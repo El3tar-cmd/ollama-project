@@ -194,10 +194,8 @@ class LinuxSetupManager(private val context: Context) {
                 return@withContext false
             }
             
-            val total  = body.contentLength()
+            val total = body.contentLength()
             Log.d("LinuxSetupManager", "Content length: $total bytes")
-            
-            val total  = body.contentLength()
             var downloaded = 0L
 
             FileOutputStream(dest).use { out ->
