@@ -12,7 +12,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Send
-import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Code
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -48,7 +48,7 @@ fun TerminalScreen(vm: MainViewModel, context: Context) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Icon(Icons.Default.Terminal, null, tint = OllamaGreen, modifier = Modifier.size(16.dp))
+            Icon(Icons.Default.Code, null, tint = OllamaGreen, modifier = Modifier.size(16.dp))
             Text("Alpine Linux (PRoot)", color = OllamaGreen, fontSize = 11.sp,
                 fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
             Spacer(Modifier.weight(1f))
