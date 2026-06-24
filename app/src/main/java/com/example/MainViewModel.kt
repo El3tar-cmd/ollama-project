@@ -193,7 +193,18 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
                 withContext(Dispatchers.Main) {
                     linuxSetupStage   = progress.message
                     linuxSetupPercent = progress.percent
-                    if (progress.isError) linuxSetupError = progress.message
+                    if (progress.isError) {
+                        linuxSetupError = progress.message
+                        liveLogs.add("[Linux Setup Error] ${progress.message}")
+                    } else {
+                        // Only add to logs if it's a significant stage change to avoid spamming
+                        // but for errors, we definitely want them. 
+                        // We can add a simple check or just log everything.
+                        // Let's log the progress messages to the terminal as well.
+                        if (progress.message.contains("Done") || progress.message.contains("Starting")) {
+                            liveLogs.add("[Linux Setup] ${progress.message}")
+                        }
+                    }
                     if (progress.stage == LinuxSetupManager.Stage.DONE ||
                         progress.stage == LinuxSetupManager.Stage.ERROR) {
                         linuxSetupRunning = false
