@@ -114,15 +114,34 @@ class LlamaService : Service() {
     }
 
     private fun runProcess(cmd: List<String>, env: Map<String, String>) {
+        android.util.Log.d("LlamaService", ">>> runProcess() called")
+        android.util.Log.d("LlamaService", "    command: $cmd")
+        
         val pb = ProcessBuilder(cmd)
         pb.environment().putAll(env)
         pb.redirectErrorStream(true)
-        val proc = pb.start()
-        serverProcess = proc
-        try {
-            proc.inputStream.bufferedReader().forEachLine { line -> log(line) }
-            proc.waitFor()
+        
+        val proc = try {
+            pb.start()
         } catch (e: Exception) {
+            android.util.Log.e("LlamaService", "!!! Process start failed: ${e.message}", e)
+            log("!!! Process start failed: ${e.message}")
+            throw e
+        }
+        
+        serverProcess = proc
+        android.util.Log.d("LlamaService", "    Process started, pid: ${proc.pid}")
+        
+        try {
+            proc.inputStream.bufferedReader().forEachLine { line -> 
+                android.util.Log.d("LlamaService", "    [OUT] $line")
+                log(line) 
+            }
+            val exitCode = proc.waitFor()
+            android.util.Log.d("LlamaService", "    Process exited with code: $exitCode")
+            log("Process exited with code: $exitCode")
+        } catch (e: Exception) {
+            android.util.Log.e("LlamaService", "!!! Process error: ${e.message}", e)
             log("❌ Process error: ${e.message}")
         } finally {
             serverProcess = null

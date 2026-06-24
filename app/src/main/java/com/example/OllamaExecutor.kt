@@ -141,11 +141,22 @@ class OllamaExecutor(private val context: Context) {
         envMap: Map<String, String>,
         onLog: (String) -> Unit
     ): Process {
+        Log.d(TAG, ">>> startAndStream() called")
+        Log.d(TAG, "    command: $command")
+        
         val pb = ProcessBuilder(command)
         pb.environment().putAll(envMap)
         pb.redirectErrorStream(true)
-        val proc = pb.start()
         
+        val proc = try {
+            pb.start()
+        } catch (e: Exception) {
+            Log.e(TAG, "!!! Process start failed: ${e.message}", e)
+            onLog("!!! Process start failed: ${e.message}")
+            throw e
+        }
+        
+        Log.d(TAG, "    Process started successfully, pid: ${proc.pid}")
         synchronized(activeProcesses) { activeProcesses.add(proc) }
         
         val thread = Thread {
@@ -154,7 +165,11 @@ class OllamaExecutor(private val context: Context) {
                     var line: String?
                     while (reader.readLine().also { line = it } != null) onLog(line ?: "")
                 }
-            } catch (e: Exception) { onLog("Log pipe closed: ${e.message}") }
+                Log.d(TAG, "    Process output stream closed (EOF)")
+            } catch (e: Exception) { 
+                Log.e(TAG, "    Log pipe error: ${e.message}", e)
+                onLog("Log pipe closed: ${e.message}") 
+            }
             finally {
                 synchronized(activeProcesses) { activeProcesses.remove(proc) }
             }
@@ -171,31 +186,40 @@ class OllamaExecutor(private val context: Context) {
         apiKey: String = "",
         onLog: (String) -> Unit
     ): Process? {
+        Log.d(TAG, ">>> startOllamaService() called")
+        
         setupEnvironment()
 
         val binary = resolveBinary()
         if (binary == null) {
+            Log.e(TAG, "!!! Binary not found - resolveBinary() returned null")
             onLog("Error: Ollama binary not found. Tap Install to download it.")
             return null
         }
+        Log.d(TAG, "    Binary resolved: ${binary.absolutePath}, exists: ${binary.exists()}")
 
         val envMap = buildEnv(host, origins, apiKey)
+        Log.d(TAG, "    Environment built, OLLAMA_HOST: $host")
 
         // ── Strategy 0: native lib (always executable — no SELinux restriction) ──
         if (binary == nativeBinary) {
+            Log.d(TAG, "    Strategy 0: Using native lib")
             onLog("Starting via nativeLibraryDir: ${binary.absolutePath}")
             try {
                 return startAndStream(listOf(binary.absolutePath, "serve"), envMap, onLog)
             } catch (e: Exception) {
+                Log.e(TAG, "    Strategy 0 failed: ${e.message}", e)
                 onLog("Native lib exec failed: ${e.message}")
             }
         }
 
         // ── Strategy 1: Direct execution of downloaded binary ──
+        Log.d(TAG, "    Strategy 1: Direct execution")
         try {
             return startAndStream(listOf(binary.absolutePath, "serve"), envMap, onLog)
         } catch (e: Exception) {
             val msg = e.message ?: ""
+            Log.e(TAG, "    Strategy 1 failed: $msg")
             if (!msg.contains("error=13") && !msg.contains("Permission denied")) {
                 onLog("Failed to start Ollama: $msg")
                 return null
@@ -205,6 +229,7 @@ class OllamaExecutor(private val context: Context) {
 
         // ── Strategy 2: Copy to externalCacheDir (may be on exec-allowed fs) ──
         context.externalCacheDir?.let { extCache ->
+            Log.d(TAG, "    Strategy 2: External cache copy")
             try {
                 val extBin = File(extCache, "ollama")
                 binary.copyTo(extBin, overwrite = true)
@@ -212,22 +237,26 @@ class OllamaExecutor(private val context: Context) {
                 onLog("Trying external cache: ${extBin.absolutePath}")
                 return startAndStream(listOf(extBin.absolutePath, "serve"), envMap, onLog)
             } catch (e2: Exception) {
+                Log.e(TAG, "    Strategy 2 failed: ${e2.message}", e2)
                 onLog("External cache fallback failed: ${e2.message}")
             }
         }
 
         // ── Strategy 3: Android dynamic linker ──
+        Log.d(TAG, "    Strategy 3: Android linker")
         for (linker in listOf("/system/bin/linker64", "/apex/com.android.runtime/bin/linker64")) {
             if (File(linker).exists()) {
                 try {
                     onLog("Trying linker64: $linker")
                     return startAndStream(listOf(linker, binary.absolutePath, "serve"), envMap, onLog)
                 } catch (e3: Exception) {
+                    Log.e(TAG, "    Strategy 3 ($linker) failed: ${e3.message}", e3)
                     onLog("linker64 fallback failed: ${e3.message}")
                 }
             }
         }
 
+        Log.e(TAG, "!!! All strategies failed!")
         onLog("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         onLog("All execution strategies failed.")
         onLog("Device SELinux policy blocks binary execution from user storage.")
@@ -286,33 +315,50 @@ class OllamaExecutor(private val context: Context) {
      * Uses the same environment as the daemon (including HOME and OLLAMA_API_KEY).
      */
     fun execOllamaCommand(vararg args: String, apiKey: String = "", onLog: (String) -> Unit) {
+        Log.d(TAG, ">>> execOllamaCommand() called with args: ${args.toList()}")
+        
         setupEnvironment()
         val binary = resolveBinary()
         if (binary == null) {
+            Log.e(TAG, "!!! Binary not found in execOllamaCommand")
             onLog("Error: Ollama binary not found.")
             return
         }
+        Log.d(TAG, "    Binary: ${binary.absolutePath}")
+        
         val envMap = buildEnv("127.0.0.1:11434", "*", apiKey)
         val thread = Thread {
             try {
-                val proc = ProcessBuilder(listOf(binary.absolutePath) + args.toList())
+                val cmd = listOf(binary.absolutePath) + args.toList()
+                Log.d(TAG, "    Running command: $cmd")
+                
+                val proc = ProcessBuilder(cmd)
                     .apply {
                         environment().putAll(envMap)
                         redirectErrorStream(true)
                     }.start()
                 
+                Log.d(TAG, "    Process started, pid: ${proc.pid}")
                 synchronized(activeProcesses) { activeProcesses.add(proc) }
                 
                 try {
                     proc.inputStream.bufferedReader().use { reader ->
                         var line: String?
-                        while (reader.readLine().also { line = it } != null) onLog(line ?: "")
+                        while (reader.readLine().also { line = it } != null) {
+                            Log.d(TAG, "    [OUT] $line")
+                            onLog(line ?: "")
+                        }
                     }
-                    proc.waitFor()
+                    val exitCode = proc.waitFor()
+                    Log.d(TAG, "    Process exited with code: $exitCode")
+                } catch (e: Exception) {
+                    Log.e(TAG, "    Command execution error: ${e.message}", e)
+                    onLog("Command failed: ${e.message}")
                 } finally {
                     synchronized(activeProcesses) { activeProcesses.remove(proc) }
                 }
             } catch (e: Exception) {
+                Log.e(TAG, "!!! Command failed to start: ${e.message}", e)
                 onLog("Command failed: ${e.message}")
             }
         }
@@ -329,16 +375,25 @@ class OllamaExecutor(private val context: Context) {
      * ensures we surface the URL as soon as the binary writes it.
      */
     fun execLogin(onLog: (String) -> Unit): Process? {
+        Log.d(TAG, ">>> execLogin() called")
+        
         setupEnvironment()
-        val binary = resolveBinary() ?: run { onLog("Error: binary not found."); return null }
+        val binary = resolveBinary() ?: run { 
+            Log.e(TAG, "!!! Binary not found in execLogin")
+            onLog("Error: binary not found."); return null 
+        }
+        Log.d(TAG, "    Binary: ${binary.absolutePath}")
+        
         val envMap = buildEnv("127.0.0.1:11434", "*")
         return try {
+            Log.d(TAG, "    Starting login process...")
             val proc = ProcessBuilder(listOf(binary.absolutePath, "login"))
                 .apply {
                     environment().putAll(envMap)
                     redirectErrorStream(true)
                 }.start()
             
+            Log.d(TAG, "    Process started, pid: ${proc.pid}")
             synchronized(activeProcesses) { activeProcesses.add(proc) }
             
             val thread = Thread {
@@ -350,7 +405,10 @@ class OllamaExecutor(private val context: Context) {
                             val ch = buf[0].toInt().toChar()
                             if (ch == '\n' || ch == '\r') {
                                 val line = sb.toString().trim()
-                                if (line.isNotBlank()) onLog(line)
+                                if (line.isNotBlank()) {
+                                    Log.d(TAG, "    [LOGIN] $line")
+                                    onLog(line)
+                                }
                                 sb.clear()
                             } else {
                                 sb.append(ch)
@@ -360,14 +418,21 @@ class OllamaExecutor(private val context: Context) {
                                 if (partial.contains("https://ollama.com/connect") &&
                                     partial.length > 40 &&
                                     !partial.endsWith("connect")) {
+                                    Log.d(TAG, "    [LOGIN URL] $partial")
                                     onLog(partial.trim())
                                     sb.clear()
                                 }
                             }
                         }
-                        if (sb.toString().isNotBlank()) onLog(sb.toString().trim())
+                        if (sb.toString().isNotBlank()) {
+                            Log.d(TAG, "    [LOGIN] ${sb.toString()}")
+                            onLog(sb.toString().trim())
+                        }
                     }
-                } catch (e: Exception) { onLog("Login stream: ${e.message}") }
+                } catch (e: Exception) { 
+                    Log.e(TAG, "    Login stream error: ${e.message}", e)
+                    onLog("Login stream: ${e.message}") 
+                }
                 finally {
                     synchronized(activeProcesses) { activeProcesses.remove(proc) }
                 }
@@ -377,6 +442,7 @@ class OllamaExecutor(private val context: Context) {
             
             proc
         } catch (e: Exception) {
+            Log.e(TAG, "!!! Login failed: ${e.message}", e)
             onLog("login failed: ${e.message}")
             null
         }

@@ -21,6 +21,7 @@ class OllamaService : Service() {
         private const val CHANNEL_ID = "OllamaChannel"
     }
 
+    private val TAG = "OllamaService"
     private lateinit var ollamaExecutor: OllamaExecutor
     private var notifManager: NotificationManager? = null
 
@@ -46,13 +47,19 @@ class OllamaService : Service() {
 
         startForeground(NOTIF_ID, buildNotification("Starting…", "Launching Ollama daemon"))
 
-        activeProcess?.let { ollamaExecutor.stopOllamaService(it); activeProcess = null }
-
+        activeProcess?.let { 
+            android.util.Log.d(TAG, "    Stopping existing process...")
+            ollamaExecutor.stopOllamaService(it); activeProcess = null 
+        }
+        
+        android.util.Log.d(TAG, ">>> Starting Ollama service...")
         val proc = ollamaExecutor.startOllamaService(host, origins, apiKey) { line ->
+            android.util.Log.d(TAG, "    [OLLAMA] $line")
             addLog(line)
         }
 
         if (proc != null) {
+            android.util.Log.d(TAG, "    Ollama started successfully, pid: ${proc.pid}")
             isRunning     = true
             activeProcess = proc
             notifManager?.notify(NOTIF_ID, buildNotification(
@@ -60,6 +67,7 @@ class OllamaService : Service() {
                 getString(R.string.notification_msg)
             ))
         } else {
+            android.util.Log.e(TAG, "!!! startOllamaService returned null!")
             isRunning = false
             addLog("Failed to launch Ollama process — stopping service.")
             stopForeground(STOP_FOREGROUND_REMOVE)
