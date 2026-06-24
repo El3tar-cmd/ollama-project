@@ -64,14 +64,18 @@ class LinuxSetupManager(private val context: Context) {
             val rootfs = EmbeddedLinux.rootfsDir(context).also { it.mkdirs() }
             val proot = EmbeddedLinux.prootBin(context)
 
-            if (!proot.exists() || !proot.canExecute()) {
+            if (EmbeddedLinux.packagedProotBin(context) != null) {
+                emit(Stage.DOWNLOADING_PROOT, "Packaged PRoot ready ✓", 100)
+            } else if (!proot.exists() || !proot.canExecute()) {
                 emit(Stage.DOWNLOADING_PROOT, "Downloading PRoot binary…", 0)
                 val ok = downloadFile(EmbeddedLinux.prootUrl, proot) { pct ->
                     emit(Stage.DOWNLOADING_PROOT, "Downloading PRoot… $pct%", pct)
                 }
                 if (!ok) { emit(Stage.ERROR, "Failed to download PRoot binary.", err = true); return@withContext }
-                proot.setExecutable(true, false)
+                EmbeddedLinux.repairProotPermissions(context)
                 emit(Stage.DOWNLOADING_PROOT, "PRoot ready ✓", 100)
+            } else {
+                EmbeddedLinux.repairProotPermissions(context)
             }
 
             val rootfsArchive = File(base, "alpine-rootfs.tar.gz")

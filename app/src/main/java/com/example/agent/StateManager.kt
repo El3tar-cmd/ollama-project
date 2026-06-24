@@ -1,7 +1,6 @@
 package com.example.agent
 
 data class AgentState(
-    val workflowType: WorkflowType = WorkflowType.MEDIUM,
     val stepCount: Int = 0,
     val errorCount: Int = 0,
     val toolsUsed: List<String> = emptyList(),
@@ -20,10 +19,6 @@ data class AgentState(
 class StateManager {
     private var _state = AgentState()
     val state get() = _state
-
-    fun setWorkflow(type: WorkflowType) {
-        _state = _state.copy(workflowType = type)
-    }
 
     fun recordStep(toolName: String, result: String, isError: Boolean = false) {
         val accomplishment = if (!isError && toolName !in setOf("sequence_thinking", "think")) {
@@ -91,7 +86,7 @@ class StateManager {
     fun reset() { _state = AgentState() }
 
     fun summary(): String = buildString {
-        append("Steps:${_state.stepCount} Errors:${_state.errorCount} Workflow:${_state.workflowType.name}")
+        append("Steps:${_state.stepCount} Errors:${_state.errorCount}")
         if (_state.toolsUsed.isNotEmpty())
             append(" | Last:${_state.toolsUsed.takeLast(4).joinToString("→")}")
         if (_state.filesRead.isNotEmpty())
@@ -106,7 +101,7 @@ class StateManager {
 
     fun fullSummary(): String = buildString {
         appendLine("=== Agent Progress ===")
-        appendLine("Workflow: ${_state.workflowType.name} | Steps: ${_state.stepCount} | Errors: ${_state.errorCount}")
+        appendLine("Steps: ${_state.stepCount} | Errors: ${_state.errorCount}")
         if (_state.planSteps.isNotEmpty()) {
             appendLine("Plan (${_state.planSteps.size} steps):")
             _state.planSteps.forEachIndexed { i, s -> appendLine("  ${i+1}. $s") }

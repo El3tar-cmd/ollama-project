@@ -2,6 +2,7 @@ package com.example.linux
 
 import android.content.Context
 import android.os.Build
+import android.system.Os
 import java.io.File
 import android.util.Log
 import java.util.concurrent.TimeUnit
@@ -47,18 +48,25 @@ object EmbeddedLinux {
     // ── Paths ─────────────────────────────────────────────────────────────────
     fun baseDir(context: Context)    = File(context.filesDir, "embedded_linux")
     fun prootBin(context: Context)   = File(baseDir(context), "bin/proot")
+    fun packagedProotBin(context: Context): File? {
+        val nativeDir = context.applicationInfo.nativeLibraryDir ?: return null
+        return File(nativeDir, "libproot.so").takeIf { it.exists() && it.canExecute() }
+    }
+    fun executableProotBin(context: Context): File = packagedProotBin(context) ?: prootBin(context)
     fun rootfsDir(context: Context)  = File(baseDir(context), "rootfs")
     fun setupDone(context: Context)  = File(baseDir(context), ".setup_complete")
     fun runtimesFile(context: Context) = File(baseDir(context), ".runtimes_installed")
 
     // ── State checks ──────────────────────────────────────────────────────────
     fun isReady(context: Context): Boolean {
-        val proot = prootBin(context)
+        repairProotPermissions(context)
+        val proot = executableProotBin(context)
         val rootfs = rootfsDir(context)
         val done = setupDone(context)
         
         Log.d("EmbeddedLinux", ">>> isReady() check:")
         Log.d("EmbeddedLinux", "    proot exists: ${proot.exists()} (${proot.absolutePath})")
+        Log.d("EmbeddedLinux", "    packaged proot: ${packagedProotBin(context)?.absolutePath ?: "(missing)"}")
         Log.d("EmbeddedLinux", "    proot canExecute: ${proot.canExecute()}")
         Log.d("EmbeddedLinux", "    rootfs exists: ${rootfs.exists()} (${rootfs.absolutePath})")
         Log.d("EmbeddedLinux", "    setupDone exists: ${done.exists()} (${done.absolutePath})")
@@ -71,6 +79,20 @@ object EmbeddedLinux {
 
     fun runtimesInstalled(context: Context): Boolean = runtimesFile(context).exists()
 
+    fun repairProotPermissions(context: Context): Boolean {
+        val downloaded = prootBin(context)
+        if (!downloaded.exists()) return packagedProotBin(context) != null
+        return try {
+            downloaded.setReadable(true, false)
+            downloaded.setExecutable(true, false)
+            Os.chmod(downloaded.absolutePath, 0b111_101_101)
+            downloaded.canExecute() || packagedProotBin(context) != null
+        } catch (e: Exception) {
+            Log.w("EmbeddedLinux", "Could not chmod downloaded PRoot: ${e.message}")
+            downloaded.canExecute() || packagedProotBin(context) != null
+        }
+    }
+
     fun diskUsageMb(context: Context): Long {
         fun dirSize(d: File): Long = d.walkBottomUp().filter { it.isFile }.sumOf { it.length() }
         return dirSize(baseDir(context)) / (1024 * 1024)
@@ -78,7 +100,7 @@ object EmbeddedLinux {
 
     // ── PRoot command builder ─────────────────────────────────────────────────
     fun buildProotCommand(context: Context, innerCmd: String): List<String> {
-        val proot  = prootBin(context).absolutePath
+        val proot  = executableProotBin(context).absolutePath
         val rootfs = rootfsDir(context).absolutePath
         return listOf(
             proot,
@@ -138,7 +160,7 @@ object EmbeddedLinux {
             pb.directory(context.filesDir)
             pb.environment().apply {
                 put("PROOT_NO_SECCOMP", "1")  // Required on some Android kernels
-                put("PROOT_LOADER", prootBin(context).absolutePath)
+                put("PROOT_LOADER", executableProotBin(context).absolutePath)
                 put("TMPDIR", context.cacheDir.absolutePath)
             }
             pb.redirectErrorStream(true)
@@ -151,7 +173,11 @@ object EmbeddedLinux {
             ExecResult(proc.exitValue(), output.take(8000).trimEnd())
         } catch (e: Exception) { 
             Log.e("EmbeddedLinux", ">>> exec() exception: ${e.message}", e)
-            ExecResult(-1, "PRoot exec error: ${e.message}") 
+            val proot = executableProotBin(context)
+            val hint = if ((e.message ?: "").contains("Permission denied", ignoreCase = true)) {
+                " Android denied execution for ${proot.absolutePath}. Rebuild/reinstall the APK so PRoot is packaged as app/src/main/jniLibs/arm64-v8a/libproot.so, then reinstall Embedded Linux from the Server tab if needed."
+            } else ""
+            ExecResult(-1, "PRoot exec error: ${e.message}$hint")
         }
     }
 

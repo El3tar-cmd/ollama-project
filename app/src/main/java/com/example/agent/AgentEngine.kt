@@ -18,6 +18,7 @@ class AgentEngine(private val context: android.content.Context) {
 
     private val toolExecutor   by lazy { ToolExecutor(context) { workingDir } }
     private val memoryTool     by lazy { MemoryTool(context) { workingDir } }
+    private val planManager    by lazy { ProjectPlanManager { workingDir } }
     private val stateManager   = StateManager()
     private val contextManager = AgentContextManager()
 
@@ -90,41 +91,23 @@ class AgentEngine(private val context: android.content.Context) {
         stateManager.reset()
         contextManager.reset()
 
-        // ── Task Classification ───────────────────────────────────────────────
-        val workflowType = TaskClassifier.classify(userTask)
-        stateManager.setWorkflow(workflowType)
-        onStep(AgentStep("info",
-            "${TaskClassifier.workflowLabel(workflowType)} workflow · ${workflowType.name}"))
-
-        // ── Step cap by workflow type ─────────────────────────────────────────
-        val effectiveMaxSteps = when (workflowType) {
-            WorkflowType.SIMPLE -> minOf(maxSteps, 8)
-            WorkflowType.MEDIUM -> minOf(maxSteps, 25)
-            WorkflowType.LARGE  -> maxSteps
-        }
-
-        // ── Planning for MEDIUM and LARGE ─────────────────────────────────────
-        if (workflowType != WorkflowType.SIMPLE) {
-            onStep(AgentStep("info", "🗂️ Generating execution plan…"))
-            val plan = generatePlan(userTask, model, baseUrl, cloudApiKey, backend)
-            if (plan.isNotBlank()) {
-                onStep(AgentStep("plan", plan))
-                stateManager.setPlan(plan.lines().filter { it.isNotBlank() })
-            }
-        }
+        val effectiveMaxSteps = maxSteps
+        onStep(AgentStep("info", "Agent loop started · max steps $effectiveMaxSteps"))
 
         // ── Load memory ───────────────────────────────────────────────────────
         val memoryContent = try { memoryTool.loadMemoryForPrompt() } catch (_: Exception) { "" }
+        val projectPlanContext = try { planManager.loadContext() } catch (_: Exception) { "" }
 
         // ── Build initial messages ────────────────────────────────────────────
         val messages = mutableListOf(
-            ChatMessage("system", buildSystemPrompt(workingDir, memoryContent, workflowType)),
+            ChatMessage("system", buildSystemPrompt(workingDir, memoryContent, projectPlanContext)),
             ChatMessage("user",   userTask)
         )
 
         var steps                  = 0
         var errs                   = 0
         var consecutiveThinkingOnly = 0
+        val toolSignatureCounts     = mutableMapOf<String, Int>()
 
         // ── Main loop ─────────────────────────────────────────────────────────
         while (steps < effectiveMaxSteps) {
@@ -132,7 +115,7 @@ class AgentEngine(private val context: android.content.Context) {
 
             // Token budget check — compress before calling LLM if near limit
             if (contextManager.isNearLimit(messages)) {
-                val compressed = contextManager.compress(messages, stateManager.summary(), workflowType)
+                val compressed = contextManager.compress(messages, stateManager.summary())
                 messages.clear(); messages.addAll(compressed)
                 onStep(AgentStep("info", "📦 Context compressed (token budget)."))
             }
@@ -177,23 +160,6 @@ class AgentEngine(private val context: android.content.Context) {
             // ── No tool calls ─────────────────────────────────────────────────
             if (toolCalls.isEmpty()) {
                 messages.add(ChatMessage("assistant", response))
-
-                // SIMPLE: accept direct text answer — no nudging
-                if (workflowType == WorkflowType.SIMPLE) {
-                    onStep(AgentStep("info", "ℹ️ Task complete."))
-                    break
-                }
-
-                val nudgeCount = messages.count { it.role == "user" && it.content.startsWith("[NUDGE]") }
-                if (nudgeCount < 2) {
-                    messages.add(ChatMessage("user",
-                        "[NUDGE] You must output a tool call to continue. Use:\n\n" +
-                        "TOOL>>\n{\"name\":\"sequence_thinking\",\"content\":\"my plan\"}\n<<TOOL\n\n" +
-                        "TOOL>>\n{\"name\":\"complete\",\"summary\":\"what was done\"}\n<<TOOL\n\n" +
-                        "WRITE_FILE>>$workingDir/file.ext\ncontent\n<<WRITE_FILE"
-                    ))
-                    continue
-                }
                 onStep(AgentStep("info", "ℹ️ Task complete."))
                 break
             }
@@ -221,18 +187,35 @@ class AgentEngine(private val context: android.content.Context) {
                 consecutiveThinkingOnly = 0
             }
 
-            // SIMPLE + 2 consecutive thinking steps → stop
-            if (onlyThinking && consecutiveThinkingOnly >= 2 && workflowType == WorkflowType.SIMPLE) {
-                onStep(AgentStep("info", "ℹ️ Task complete."))
-                break
-            }
-
             // ── Execute tool calls ────────────────────────────────────────────
             val resultBuf = StringBuilder()
             var done = false
 
             for (call in toolCalls) {
                 val toolName = call.optString("name", "?")
+                val signature = "$toolName|${call.toString()}"
+                val repeatedCount = (toolSignatureCounts[signature] ?: 0) + 1
+                toolSignatureCounts[signature] = repeatedCount
+                if (repeatedCount >= 3 && toolName != "complete") {
+                    val advice = "Repeated identical tool call blocked: $toolName. Inspect the last result and choose a different tool or arguments."
+                    onStep(AgentStep("info", advice))
+                    resultBuf.appendLine("BLOCKED: $advice")
+                    messages.add(ChatMessage("user", "[RECOVERY] $advice"))
+                    continue
+                }
+
+                if (toolName == "complete" &&
+                    stateManager.state.filesWritten.isNotEmpty() &&
+                    "git_diff" !in stateManager.state.toolsUsed
+                ) {
+                    val advice = "Before complete, review changes with git_diff because files were modified."
+                    onStep(AgentStep("info", "⚠️ $advice"))
+                    resultBuf.appendLine("BLOCKED: $advice")
+                    messages.add(ChatMessage("user",
+                        "[VERIFY] Files were changed. Call git_diff first, then complete with a verified summary."
+                    ))
+                    continue
+                }
 
                 // Rules Engine check
                 val violation = RulesEngine.validate(call, stateManager.state)
@@ -280,7 +263,11 @@ class AgentEngine(private val context: android.content.Context) {
                     resultBuf.appendLine(result.content).appendLine("---")
                 }
 
-                if (result.type == "complete") { done = true; break }
+                if (result.type == "complete") {
+                    try { planManager.markFirstPendingDone("completed by agent") } catch (_: Exception) {}
+                    done = true
+                    break
+                }
             }
 
             messages.add(ChatMessage("assistant", response))
@@ -299,7 +286,7 @@ class AgentEngine(private val context: android.content.Context) {
 
             // ── Smart context trimming (hard limit) ───────────────────────────
             if (contextManager.isOverLimit(messages) || messages.size > 32) {
-                val compressed = contextManager.compress(messages, stateManager.fullSummary(), workflowType)
+                val compressed = contextManager.compress(messages, stateManager.fullSummary())
                 messages.clear(); messages.addAll(compressed)
             }
         }

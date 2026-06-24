@@ -3,7 +3,6 @@ package com.example.agent.tools
 import android.content.Context
 import com.example.data.model.AgentStep
 import com.example.linux.EmbeddedLinux
-import com.example.terminal.TermuxBridge
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -25,7 +24,7 @@ class BashTool(private val context: Context, private val getWorkingDir: () -> St
             .build()
     }
 
-    // ── Strategy: Embedded Linux → Termux → Error ─────────────────────────────
+    // ── Strategy: Embedded Linux → limited Android shell → Error ──────────────
 
     private fun runInEmbeddedLinux(cmd: String, cwd: String, timeoutSec: Long = 60L): AgentStep? {
         if (!EmbeddedLinux.isReady(context)) return null
@@ -34,28 +33,32 @@ class BashTool(private val context: Context, private val getWorkingDir: () -> St
         return ok("$icon exit=${result.exitCode} [embedded-linux]\n$ $cmd\n${result.output.take(3000).trimEnd()}")
     }
 
-    private fun runInTermux(cmd: String, cwd: String, timeoutSec: Long = 60L): AgentStep {
-        val (code, output) = TermuxBridge.executeViaShell(context, cmd, cwd, timeoutSec)
-        val icon = if (code == 0) "✅" else "⚠️"
-        return ok("$icon exit=$code [termux]\n$ $cmd\n${output.take(3000).trimEnd()}")
-    }
+    private fun runInAndroidShell(cmd: String, cwd: String, timeoutSec: Long = 60L): AgentStep =
+        execProcess(
+            bin = "/system/bin/sh",
+            args = listOf("-c", cmd),
+            cwd = cwd,
+            extraEnv = mapOf(
+                "HOME" to getWorkingDir(),
+                "PATH" to "/system/bin:/system/xbin:/vendor/bin",
+                "TMPDIR" to context.cacheDir.absolutePath
+            ),
+            timeoutSec = timeoutSec,
+            label = "android-shell"
+        )
 
     // ── Public tool methods ───────────────────────────────────────────────────
 
     fun toolBash(cmd: String, cwd: String): AgentStep {
         if (cmd.isBlank()) return err("bash: cmd required")
 
-        // 1. Try embedded Linux
         runInEmbeddedLinux(cmd, cwd)?.let { return it }
-
-        // 2. Fall back to Termux
-        return runInTermux(cmd, cwd)
+        return runInAndroidShell(cmd, cwd)
     }
 
     fun toolRunPython(code: String, cwd: String): AgentStep {
         if (code.isBlank()) return err("run_python: code required")
 
-        // 1. Embedded Linux — python3 is pre-installed
         if (EmbeddedLinux.isReady(context)) {
             val cmd = when {
                 code.trimEnd().endsWith(".py") && !code.contains("\n") ->
@@ -65,42 +68,12 @@ class BashTool(private val context: Context, private val getWorkingDir: () -> St
             }
             runInEmbeddedLinux(cmd, cwd, timeoutSec = 120)?.let { return it }
         }
-
-        // 2. Termux direct binary
-        val py = TermuxBridge.findPython(context)
-        if (py != null) {
-            val result = execProcess(
-                bin = py,
-                args = if (code.trimEnd().endsWith(".py") && !code.contains("\n"))
-                    listOf(code.trim()) else listOf("-c", code),
-                cwd = cwd,
-                extraEnv = mapOf(
-                    "PYTHONIOENCODING"        to "utf-8",
-                    "PYTHONDONTWRITEBYTECODE" to "1",
-                    "PATH" to "${File(py).parent}:/data/data/com.termux/files/usr/bin:/system/bin"
-                ),
-                timeoutSec = 120L
-            )
-            if (!result.isError) return result
-        }
-
-        // 3. Shell PATH injection via Termux
-        val shellCmd = when {
-            code.trimEnd().endsWith(".py") && !code.contains("\n") ->
-                "python3 ${code.trim()} 2>&1"
-            else -> "python3 -c ${shellEscape(code)} 2>&1"
-        }
-        val (exitCode, output) = TermuxBridge.executeViaShell(context, shellCmd, cwd, timeoutSec = 120)
-        if (exitCode == 0 || output.isNotBlank())
-            return ok("${if (exitCode == 0) "✅" else "⚠️"} exit=$exitCode [termux-shell]\n$ python3\n${output.take(3000).trimEnd()}")
-
-        return err("Python not found. Setup Embedded Linux in the Server tab for seamless execution, or install Termux + python.")
+        return err("Python is available after Embedded Linux is installed from the Server tab.")
     }
 
     fun toolRunNode(code: String, cwd: String): AgentStep {
         if (code.isBlank()) return err("run_node: code required")
 
-        // 1. Embedded Linux — nodejs pre-installed
         if (EmbeddedLinux.isReady(context)) {
             val cmd = when {
                 code.trimEnd().endsWith(".js") && !code.contains("\n") ->
@@ -110,35 +83,7 @@ class BashTool(private val context: Context, private val getWorkingDir: () -> St
             }
             runInEmbeddedLinux(cmd, cwd, timeoutSec = 120)?.let { return it }
         }
-
-        // 2. Termux direct binary
-        val node = TermuxBridge.findNode(context)
-        if (node != null) {
-            val result = execProcess(
-                bin = node,
-                args = if (code.trimEnd().endsWith(".js") && !code.contains("\n"))
-                    listOf(code.trim()) else listOf("-e", code),
-                cwd = cwd,
-                extraEnv = mapOf(
-                    "NODE_PATH" to "/data/data/com.termux/files/usr/lib/node_modules",
-                    "PATH" to "${File(node).parent}:/data/data/com.termux/files/usr/bin:/system/bin"
-                ),
-                timeoutSec = 120L
-            )
-            if (!result.isError) return result
-        }
-
-        // 3. Shell PATH injection via Termux
-        val shellCmd = when {
-            code.trimEnd().endsWith(".js") && !code.contains("\n") ->
-                "node ${code.trim()} 2>&1"
-            else -> "node -e ${shellEscape(code)} 2>&1"
-        }
-        val (exitCode, output) = TermuxBridge.executeViaShell(context, shellCmd, cwd, timeoutSec = 120)
-        if (exitCode == 0 || output.isNotBlank())
-            return ok("${if (exitCode == 0) "✅" else "⚠️"} exit=$exitCode [termux-shell]\n$ node\n${output.take(3000).trimEnd()}")
-
-        return err("Node.js not found. Setup Embedded Linux in the Server tab for seamless execution, or install Termux + nodejs.")
+        return err("Node.js is available after Embedded Linux is installed from the Server tab.")
     }
 
     fun toolFetchUrl(url: String, method: String, body: String): AgentStep {
@@ -178,13 +123,13 @@ class BashTool(private val context: Context, private val getWorkingDir: () -> St
         args: List<String>,
         cwd: String,
         extraEnv: Map<String, String> = emptyMap(),
-        timeoutSec: Long = 60L
+        timeoutSec: Long = 60L,
+        label: String = "process"
     ): AgentStep {
         return try {
             val pb = ProcessBuilder(listOf(bin) + args)
             pb.directory(File(if (File(cwd).exists()) cwd else getWorkingDir()))
             pb.environment().apply {
-                putAll(TermuxBridge.buildTermuxEnv(context))
                 putAll(extraEnv)
             }
             pb.redirectErrorStream(true)
@@ -193,7 +138,7 @@ class BashTool(private val context: Context, private val getWorkingDir: () -> St
             val timeout = !proc.waitFor(timeoutSec, TimeUnit.SECONDS)
             if (timeout) { proc.destroy(); return err("timed out after ${timeoutSec}s\n${output.take(300)}") }
             val icon = if (proc.exitValue() == 0) "✅" else "⚠️"
-            ok("$icon exit=${proc.exitValue()}\n$ ${(listOf(bin) + args).joinToString(" ")}\n${output.take(3000).trimEnd()}")
+            ok("$icon exit=${proc.exitValue()} [$label]\n$ ${(listOf(bin) + args).joinToString(" ")}\n${output.take(3000).trimEnd()}")
         } catch (e: Exception) { err("exec: ${e.message}") }
     }
 

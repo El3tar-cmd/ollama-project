@@ -45,7 +45,7 @@ class ToolExecutor(
             }
 
             // ── Directory Explorer & File System ──────────────────────────────
-            "directory_explorer", "list_dir", "list"
+            "directory_explorer", "list_directory_files", "list_dir", "list", "ls"
                 -> fileTools.toolListDir(tool.optString("path", getWorkingDir()))
             "tree"
                 -> fileTools.toolTree(
@@ -58,9 +58,9 @@ class ToolExecutor(
                 -> fileTools.toolFileExists(tool.optString("path", ""))
 
             // ── File Reader ───────────────────────────────────────────────────
-            "file_reader", "read_file"
+            "file_reader", "read_file", "read"
                 -> fileTools.toolReadFile(tool.optString("path", ""))
-            "line_reader", "read_lines"
+            "line_reader", "read_file_lines", "read_lines"
                 -> fileTools.toolReadLines(
                     tool.optString("path", ""),
                     tool.optInt("start", 1),
@@ -75,13 +75,13 @@ class ToolExecutor(
                                           tool.optString("b", tool.optString("path_b", "")))
 
             // ── File Writer ───────────────────────────────────────────────────
-            "file_writer", "write_file"
+            "file_writer", "write_file", "create_file"
                 -> fileTools.toolWriteFile(tool.optString("path", ""), tool.optString("content", ""))
             "append_file"
                 -> fileTools.toolAppendFile(tool.optString("path", ""), tool.optString("content", ""))
 
             // ── Line Editor ───────────────────────────────────────────────────
-            "line_editor", "edit_file"
+            "line_editor", "replace_in_file", "edit_file"
                 -> fileTools.toolEditFile(
                     tool.optString("path", ""),
                     tool.optString("old", ""),
@@ -109,13 +109,13 @@ class ToolExecutor(
             }
 
             // ── File management ───────────────────────────────────────────────
-            "delete_file"
+            "delete_file", "delete_path", "remove_file"
                 -> fileTools.toolDeleteFile(tool.optString("path", ""))
-            "copy_file"
+            "copy_file", "copy_path"
                 -> fileTools.toolCopyFile(tool.optString("src", ""), tool.optString("dst", ""))
-            "move_file"
+            "move_file", "rename_path", "move_path"
                 -> fileTools.toolMoveFile(tool.optString("src", ""), tool.optString("dst", ""))
-            "create_dir"
+            "create_dir", "create_directory", "mkdir"
                 -> fileTools.toolCreateDir(tool.optString("path", ""))
             "find_files"
                 -> fileTools.toolFindFiles(
@@ -125,7 +125,7 @@ class ToolExecutor(
                 )
 
             // ── Terminal Executor ─────────────────────────────────────────────
-            "terminal_executor", "bash"
+            "terminal_executor", "run_command", "bash", "shell"
                 -> bashTool.toolBash(tool.optString("cmd", ""), tool.optString("cwd", getWorkingDir()))
             "git_tool", "git"
                 -> bashTool.toolBash("git ${tool.optString("args", "status")}", getWorkingDir())
@@ -154,7 +154,7 @@ class ToolExecutor(
                 -> bashTool.toolCalculate(tool.optString("expr", ""))
 
             // ── Search Tools ──────────────────────────────────────────────────
-            "project_search", "search_files", "search"
+            "project_search", "search_content", "search_files", "search"
                 -> searchTools.toolSearchFiles(
                     tool.optString("dir", tool.optString("path", getWorkingDir())),
                     tool.optString("query", "")
@@ -222,7 +222,7 @@ class ToolExecutor(
                 -> memoryTool.toolMemoryClearShort()
 
             // ── User interaction ──────────────────────────────────────────────
-            "ask_user" -> {
+            "ask_user", "ask_human" -> {
                 val q  = tool.optString("question", "What should I do next?")
                 val fn = askUserFn
                 if (fn != null) AgentStep("tool_result", "💬 User: ${fn(q)}")

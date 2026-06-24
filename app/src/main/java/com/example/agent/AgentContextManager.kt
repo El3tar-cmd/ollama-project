@@ -59,16 +59,11 @@ class AgentContextManager {
      */
     fun compress(
         messages: List<ChatMessage>,
-        stateSummary: String,
-        workflowType: WorkflowType
+        stateSummary: String
     ): List<ChatMessage> {
         if (messages.size <= 6) return messages
         val head = messages.take(2)          // system prompt + original task
-        val tailSize = when (workflowType) {
-            WorkflowType.SIMPLE -> 4
-            WorkflowType.MEDIUM -> 8
-            WorkflowType.LARGE  -> 12
-        }
+        val tailSize = 12
         val tail = messages.takeLast(tailSize)
         val droppedCount = messages.size - 2 - tailSize
 
