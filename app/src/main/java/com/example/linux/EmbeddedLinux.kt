@@ -79,6 +79,9 @@ object EmbeddedLinux {
 
     fun runtimesInstalled(context: Context): Boolean = runtimesFile(context).exists()
 
+    private fun prootTmpDir(context: Context): File =
+        File(context.cacheDir, "proot-tmp").also { it.mkdirs() }
+
     fun repairProotPermissions(context: Context): Boolean {
         val downloaded = prootBin(context)
         if (!downloaded.exists()) return packagedProotBin(context) != null
@@ -98,6 +101,18 @@ object EmbeddedLinux {
         return dirSize(baseDir(context)) / (1024 * 1024)
     }
 
+    private fun prepareRuntimeDirs(context: Context) {
+        prootTmpDir(context)
+        File(rootfsDir(context), "tmp").also {
+            it.mkdirs()
+            try { Os.chmod(it.absolutePath, 0b111_111_111) } catch (_: Exception) {}
+        }
+        File(rootfsDir(context), "root").mkdirs()
+        File(rootfsDir(context), "proc").mkdirs()
+        File(rootfsDir(context), "dev").mkdirs()
+        File(rootfsDir(context), "sys").mkdirs()
+    }
+
     // ── PRoot command builder ─────────────────────────────────────────────────
     fun buildProotCommand(context: Context, innerCmd: String): List<String> {
         val proot  = executableProotBin(context).absolutePath
@@ -110,18 +125,8 @@ object EmbeddedLinux {
             "-b", "/sys:/sys",
             "-b", "/proc:/proc",
             "-b", "/dev/urandom:/dev/random",
-            "-b", "/proc/self/fd:/dev/fd",
-            "-b", "/proc/self/fd/0:/dev/stdin",
-            "-b", "/proc/self/fd/1:/dev/stdout",
-            "-b", "/proc/self/fd/2:/dev/stderr",
             // Bind app working dir so agent files are accessible
             "-w", "/root",
-            "/usr/bin/env", "-i",
-            "HOME=/root",
-            "USER=root",
-            "TERM=xterm-256color",
-            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-            "LANG=C.UTF-8",
             "/bin/sh", "-c", innerCmd
         )
     }
@@ -143,6 +148,7 @@ object EmbeddedLinux {
             return ExecResult(-1, "Embedded Linux not ready. Please set it up first.")
         }
         return try {
+            prepareRuntimeDirs(context)
             val fullCmd = if (hostCwd != null) "cd /workspace && $cmd" else cmd
             val prootCmd = buildProotCommand(context, fullCmd).toMutableList()
             Log.d("EmbeddedLinux", ">>> prootCmd: $prootCmd")
@@ -161,15 +167,25 @@ object EmbeddedLinux {
             pb.environment().apply {
                 put("PROOT_NO_SECCOMP", "1")  // Required on some Android kernels
                 put("PROOT_LOADER", executableProotBin(context).absolutePath)
+                put("PROOT_TMP_DIR", prootTmpDir(context).absolutePath)
                 put("TMPDIR", context.cacheDir.absolutePath)
+                put("HOME", "/root")
+                put("USER", "root")
+                put("TERM", "xterm-256color")
+                put("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+                put("LANG", "C.UTF-8")
             }
             pb.redirectErrorStream(true)
             Log.d("EmbeddedLinux", ">>> Starting process...")
             val proc    = pb.start()
-            val output  = proc.inputStream.bufferedReader().readText()
             val timeout = !proc.waitFor(timeoutSec, TimeUnit.SECONDS)
+            if (timeout) {
+                proc.destroy()
+                val output = proc.inputStream.bufferedReader().readText()
+                return ExecResult(-1, "Command timed out after ${timeoutSec}s\n${output.take(300)}")
+            }
+            val output = proc.inputStream.bufferedReader().readText()
             Log.d("EmbeddedLinux", ">>> Process finished, exitCode: ${proc.exitValue()}")
-            if (timeout) { proc.destroy(); return ExecResult(-1, "Command timed out after ${timeoutSec}s\n${output.take(300)}") }
             ExecResult(proc.exitValue(), output.take(8000).trimEnd())
         } catch (e: Exception) { 
             Log.e("EmbeddedLinux", ">>> exec() exception: ${e.message}", e)

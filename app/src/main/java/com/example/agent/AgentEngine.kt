@@ -243,7 +243,16 @@ class AgentEngine(private val context: android.content.Context) {
                 }
 
                 onStep(AgentStep("tool_call", "🔧 $toolName"))
-                val result = toolExecutor.executeTool(call)
+                val result = try {
+                    toolExecutor.executeTool(call)
+                } catch (ex: Exception) {
+                    Log.e(TAG_AGENT, "Tool execution crashed: $toolName", ex)
+                    AgentStep(
+                        "tool_result",
+                        "❌ Tool '$toolName' failed internally: ${ex.message ?: ex::class.java.simpleName}",
+                        isError = true
+                    )
+                }
                 stateManager.recordStep(toolName, result.content, result.isError)
 
                 // Cache file reads into context manager

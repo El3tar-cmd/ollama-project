@@ -29,8 +29,10 @@ class BashTool(private val context: Context, private val getWorkingDir: () -> St
     private fun runInEmbeddedLinux(cmd: String, cwd: String, timeoutSec: Long = 60L): AgentStep? {
         if (!EmbeddedLinux.isReady(context)) return null
         val result = EmbeddedLinux.exec(context, cmd, cwd.takeIf { File(it).exists() }, timeoutSec)
+        if (!result.success && result.output.isProotInfrastructureError()) return null
         val icon = if (result.success) "✅" else "⚠️"
-        return ok("$icon exit=${result.exitCode} [embedded-linux]\n$ $cmd\n${result.output.take(3000).trimEnd()}")
+        val content = "$icon exit=${result.exitCode} [embedded-linux]\n$ $cmd\n${result.output.take(3000).trimEnd()}"
+        return if (result.success) ok(content) else AgentStep("tool_result", content, isError = true)
     }
 
     private fun runInAndroidShell(cmd: String, cwd: String, timeoutSec: Long = 60L): AgentStep =
@@ -51,6 +53,10 @@ class BashTool(private val context: Context, private val getWorkingDir: () -> St
 
     fun toolBash(cmd: String, cwd: String): AgentStep {
         if (cmd.isBlank()) return err("bash: cmd required")
+
+        if (cmd.trim() in setOf("pwd", "echo \$PWD")) {
+            return ok("✅ exit=0 [workspace]\n$ pwd\n${File(cwd).takeIf { it.exists() }?.absolutePath ?: getWorkingDir()}")
+        }
 
         runInEmbeddedLinux(cmd, cwd)?.let { return it }
         return runInAndroidShell(cmd, cwd)
@@ -138,9 +144,17 @@ class BashTool(private val context: Context, private val getWorkingDir: () -> St
             val timeout = !proc.waitFor(timeoutSec, TimeUnit.SECONDS)
             if (timeout) { proc.destroy(); return err("timed out after ${timeoutSec}s\n${output.take(300)}") }
             val icon = if (proc.exitValue() == 0) "✅" else "⚠️"
-            ok("$icon exit=${proc.exitValue()} [$label]\n$ ${(listOf(bin) + args).joinToString(" ")}\n${output.take(3000).trimEnd()}")
+            val content = "$icon exit=${proc.exitValue()} [$label]\n$ ${(listOf(bin) + args).joinToString(" ")}\n${output.take(3000).trimEnd()}"
+            if (proc.exitValue() == 0) ok(content) else AgentStep("tool_result", content, isError = true)
         } catch (e: Exception) { err("exec: ${e.message}") }
     }
+
+    private fun String.isProotInfrastructureError(): Boolean =
+        contains("proot error:", ignoreCase = true) ||
+        contains("can't create glue rootfs", ignoreCase = true) ||
+        contains("PROOT_TMP_DIR", ignoreCase = true) ||
+        contains("can't sanitize binding", ignoreCase = true) ||
+        contains("PRoot exec error", ignoreCase = true)
 
     private fun shellEscape(s: String): String = "'${s.replace("'", "'\\''")}'"
 
