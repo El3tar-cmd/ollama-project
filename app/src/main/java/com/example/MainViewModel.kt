@@ -6,6 +6,7 @@ import android.widget.Toast
 import androidx.compose.runtime.*
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.delay
@@ -808,19 +809,28 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         agentInput = ""; isAgentRunning = true
         agentSteps.add(AgentStep("user", task))
         agentJob = viewModelScope.launch(Dispatchers.IO) {
-            agentEngine.runAgentLoop(
-                userTask    = task,
-                model       = if (isCloudModel) cloudRouteModelName(agentModel) else agentModel,
-                baseUrl     = if (activeBackend == "llamacpp") "http://127.0.0.1:$llamaPort" else "http://$hostUrlState",
-                cloudApiKey = cloudApiKey,
-                backend     = activeBackend,
-                maxSteps    = agentMaxSteps,
-                onAskUser   = { question ->
-                    withContext(Dispatchers.Main) { agentPendingQuestion = question }
-                    agentAnswerChannel.receive()
+            try {
+                agentEngine.runAgentLoop(
+                    userTask    = task,
+                    model       = if (isCloudModel) cloudRouteModelName(agentModel) else agentModel,
+                    baseUrl     = if (activeBackend == "llamacpp") "http://127.0.0.1:$llamaPort" else "http://$hostUrlState",
+                    cloudApiKey = cloudApiKey,
+                    backend     = activeBackend,
+                    maxSteps    = agentMaxSteps,
+                    onAskUser   = { question ->
+                        withContext(Dispatchers.Main) { agentPendingQuestion = question }
+                        agentAnswerChannel.receive()
+                    }
+                ) { step -> withContext(Dispatchers.Main) { agentSteps.add(step) } }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    agentSteps.add(AgentStep("error", "❌ Agent crashed: ${e.message ?: e::class.java.simpleName}", true))
                 }
-            ) { step -> withContext(Dispatchers.Main) { agentSteps.add(step) } }
-            withContext(Dispatchers.Main) { isAgentRunning = false; agentJob = null; refreshFileTree() }
+            } finally {
+                withContext(Dispatchers.Main) { isAgentRunning = false; agentJob = null; refreshFileTree() }
+            }
         }
     }
 

@@ -10,6 +10,7 @@ import com.example.data.model.ChatMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
+import org.json.JSONObject
 import kotlin.coroutines.resume
 
 class AgentEngine(private val context: android.content.Context) {
@@ -93,6 +94,11 @@ class AgentEngine(private val context: android.content.Context) {
 
         val effectiveMaxSteps = maxSteps
         onStep(AgentStep("info", "Agent loop started · max steps $effectiveMaxSteps"))
+
+        executeSimpleShellTask(userTask, onStep)?.let {
+            onStep(AgentStep("info", "ℹ️ Task complete."))
+            return
+        }
 
         // ── Load memory ───────────────────────────────────────────────────────
         val memoryContent = try { memoryTool.loadMemoryForPrompt() } catch (_: Exception) { "" }
@@ -302,5 +308,37 @@ class AgentEngine(private val context: android.content.Context) {
 
         if (steps >= effectiveMaxSteps)
             onStep(AgentStep("info", "⚠️ Max steps ($effectiveMaxSteps) reached. ${stateManager.summary()}"))
+    }
+
+    private suspend fun executeSimpleShellTask(
+        task: String,
+        onStep: suspend (AgentStep) -> Unit
+    ): Unit? {
+        val cmd = task.trim()
+        if (!cmd.matches(Regex("""^(ls|pwd|whoami|date)(\s+[-./\w]+)?$"""))) return null
+        val tool = when {
+            cmd == "pwd" -> JSONObject().put("name", "bash").put("cmd", "pwd").put("cwd", workingDir)
+            cmd.startsWith("ls") -> {
+                val arg = cmd.removePrefix("ls").trim()
+                JSONObject()
+                    .put("name", "list_dir")
+                    .put("path", if (arg.isBlank()) workingDir else arg)
+            }
+            else -> JSONObject().put("name", "bash").put("cmd", cmd).put("cwd", workingDir)
+        }
+        val name = tool.optString("name", "?")
+        onStep(AgentStep("tool_call", "🔧 $name"))
+        val result = try {
+            toolExecutor.executeTool(tool)
+        } catch (ex: Exception) {
+            Log.e(TAG_AGENT, "Simple tool execution crashed: $name", ex)
+            AgentStep(
+                "tool_result",
+                "❌ Tool '$name' failed internally: ${ex.message ?: ex::class.java.simpleName}",
+                isError = true
+            )
+        }
+        onStep(result)
+        return Unit
     }
 }

@@ -60,9 +60,24 @@ object EmbeddedLinux {
 
     fun rootfsHealthy(context: Context): Boolean {
         val rootfs = rootfsDir(context)
-        return File(rootfs, "bin/sh").exists() &&
-            File(rootfs, "bin/sh").canExecute() &&
-            File(rootfs, "etc").exists()
+        return rootfsEntryExists(rootfs, "bin/sh") &&
+            rootfsEntryExists(rootfs, "etc")
+    }
+
+    private fun rootfsEntryExists(rootfs: File, relativePath: String): Boolean {
+        val entry = File(rootfs, relativePath)
+        if (entry.exists()) return true
+        return try {
+            val target = Os.readlink(entry.absolutePath)
+            val resolved = if (target.startsWith("/")) {
+                File(rootfs, target.removePrefix("/"))
+            } else {
+                File(entry.parentFile, target)
+            }
+            resolved.exists()
+        } catch (_: Exception) {
+            false
+        }
     }
 
     // ── State checks ──────────────────────────────────────────────────────────
