@@ -253,37 +253,84 @@ class LinuxSetupManager(private val context: Context) {
         onProgress: suspend (String) -> Unit
     ): Boolean = withContext(Dispatchers.IO) {
         try {
-            Log.d("LinuxSetupManager", "Starting extraction from: ${archive.absolutePath} to: ${destDir.absolutePath}")
+            Log.d("LinuxSetupManager", "=== Starting extraction ===")
+            Log.d("LinuxSetupManager", "Archive: ${archive.absolutePath} (${archive.length()} bytes)")
+            Log.d("LinuxSetupManager", "Destination: ${destDir.absolutePath}")
+            
             destDir.mkdirs()
             var count = 0
             BufferedInputStream(archive.inputStream()).use { bis ->
                 val decompressionStream = when {
-                    archive.name.endsWith(".xz") -> XZCompressorInputStream(bis)
-                    archive.name.endsWith(".gz") -> GZIPInputStream(bis)
-                    else -> bis 
+                    archive.name.endsWith(".xz") -> {
+                        Log.d("LinuxSetupManager", "Using XZ decompression")
+                        XZCompressorInputStream(bis)
+                    }
+                    archive.name.endsWith(".gz") -> {
+                        Log.d("LinuxSetupManager", "Using GZIP decompression")
+                        GZIPInputStream(bis)
+                    }
+                    else -> {
+                        Log.d("LinuxSetupManager", "Using raw stream")
+                        bis 
+                    }
                 }
                 
                 decompressionStream.use { dis ->
                     val tar = TarArchiveInputStream(dis)
                     var entry = tar.nextTarEntry
+                    var entryCount = 0
                     while (entry != null) {
-                        val outFile = File(destDir, entry.name)
-                        when {
-                            entry.isDirectory -> outFile.mkdirs()
-                            entry.isSymbolicLink -> {
-                                outFile.parentFile?.mkdirs()
-                                // Android does NOT support java.nio.file.Files.createSymbolicLink on internal storage.
-                                // We skip symlinks to prevent crashes. PRoot will handle the environment.
-                                Log.w("LinuxSetupManager", "Skipping symlink: ${entry.name} -> ${entry.linkName}")
-                            }
-                            else -> {
-                                outFile.parentFile?.mkdirs()
-                                FileOutputStream(outFile).use { fos -> tar.copyTo(fos) }
-                                val mode = entry.mode
-                                if (mode and 0b001_000_000 != 0) outFile.setExecutable(true, false)
-                                if (mode and 0b000_001_000 != 0) outFile.setExecutable(true, true)
-                            }
+                        entryCount++
+                        if (entryCount % 1000 == 0) {
+                            Log.d("LinuxSetupManager", "Processing entry $entryCount: ${entry.name}")
                         }
+                        
+                        val outFile = File(destDir, entry.name)
+                        
+                        // Sanitize entry name to prevent path traversal
+                        val safePath = outFile.canonicalPath
+                        val destPath = destDir.canonicalPath
+                        if (!safePath.startsWith(destPath)) {
+                            Log.w("LinuxSetupManager", "Skipping unsafe path: ${entry.name}")
+                            entry = tar.nextTarEntry
+                            continue
+                        }
+                        
+                        try {
+                            when {
+                                entry.isDirectory -> {
+                                    Log.d("LinuxSetupManager", "Creating directory: ${entry.name}")
+                                    outFile.mkdirs()
+                                }
+                                entry.isSymbolicLink -> {
+                                    Log.w("LinuxSetupManager", "Skipping symlink: ${entry.name} -> ${entry.linkName}")
+                                }
+                                else -> {
+                                    Log.d("LinuxSetupManager", "Extracting file: ${entry.name} (${entry.size} bytes)")
+                                    outFile.parentFile?.mkdirs()
+                                    FileOutputStream(outFile).use { fos ->
+                                        var totalBytes = 0L
+                                        val buffer = ByteArray(8192)
+                                        var len: Int
+                                        while (tar.read(buffer).also { len = it } != -1) {
+                                            fos.write(buffer, 0, len)
+                                            totalBytes += len
+                                        }
+                                        Log.d("LinuxSetupManager", "File ${entry.name} written: $totalBytes bytes")
+                                    }
+                                    
+                                    val mode = entry.mode
+                                    if (mode and 0b001_000_000 != 0) outFile.setExecutable(true, false)
+                                    if (mode and 0b000_001_000 != 0) outFile.setExecutable(true, true)
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.e("LinuxSetupManager", "Error processing entry ${entry.name}", e)
+                            // Continue with next entry instead of failing completely
+                            entry = tar.nextTarEntry
+                            continue
+                        }
+                        
                         count++
                         if (count % 500 == 0) {
                             onProgress("Extracting… $count files")
@@ -293,12 +340,13 @@ class LinuxSetupManager(private val context: Context) {
                     }
                 }
             }
-            Log.d("LinuxSetupManager", "Extraction complete: $count files extracted to ${destDir.absolutePath}")
+            Log.d("LinuxSetupManager", "=== Extraction complete: $count files ===")
             onProgress("Extracted $count files total ✓")
             true
         } catch (e: Exception) {
-            Log.e("LinuxSetupManager", "Extraction error from ${archive.absolutePath}", e)
-            Log.e("LinuxSetupManager", "Exception type: ${e.javaClass.simpleName}, Message: ${e.message}")
+            Log.e("LinuxSetupManager", "Critical extraction error", e)
+            Log.e("LinuxSetupManager", "Exception type: ${e.javaClass.simpleName}")
+            Log.e("LinuxSetupManager", "Exception message: ${e.message}")
             onProgress("Extraction failed: ${e.message}")
             false
         }
