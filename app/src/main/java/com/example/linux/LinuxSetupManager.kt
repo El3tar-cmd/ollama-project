@@ -74,7 +74,7 @@ class LinuxSetupManager(private val context: Context) {
                 emit(Stage.DOWNLOADING_PROOT, "PRoot ready ✓", 100)
             }
 
-            val rootfsArchive = File(base, "alpine-rootfs.tar.xz")
+            val rootfsArchive = File(base, "alpine-rootfs.tar.gz")
             if (!rootfs.resolve("bin/sh").exists()) {
                 emit(Stage.DOWNLOADING_ROOTFS, "Downloading Alpine minimal rootfs (~20MB)…", 0)
                 val ok = downloadFile(EmbeddedLinux.debianRootfsUrl, rootfsArchive) { pct ->
