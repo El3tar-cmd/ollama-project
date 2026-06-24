@@ -17,7 +17,8 @@ import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.xz.XZCompressorInputStream
 
 /**
- * Handles downloading and setting up the embedded Debian Linux environment.
+ * Handles downloading and setting up the embedded Alpine Linux environment.
+ * Transitioned from Debian to Alpine to prevent crashes due to massive rootfs size.
  */
 class LinuxSetupManager(private val context: Context) {
 
@@ -73,15 +74,15 @@ class LinuxSetupManager(private val context: Context) {
                 emit(Stage.DOWNLOADING_PROOT, "PRoot ready ✓", 100)
             }
 
-            val rootfsArchive = File(base, "debian-rootfs.tar.xz")
-            if (!rootfs.resolve("bin/bash").exists()) {
-                emit(Stage.DOWNLOADING_ROOTFS, "Downloading Debian minimal rootfs (~80MB)…", 0)
+            val rootfsArchive = File(base, "alpine-rootfs.tar.xz")
+            if (!rootfs.resolve("bin/sh").exists()) {
+                emit(Stage.DOWNLOADING_ROOTFS, "Downloading Alpine minimal rootfs (~20MB)…", 0)
                 val ok = downloadFile(EmbeddedLinux.debianRootfsUrl, rootfsArchive) { pct ->
-                    emit(Stage.DOWNLOADING_ROOTFS, "Downloading Debian… $pct%", pct)
+                    emit(Stage.DOWNLOADING_ROOTFS, "Downloading Alpine… $pct%", pct)
                 }
-                if (!ok) { emit(Stage.ERROR, "Failed to download Debian rootfs.", err = true); return@withContext }
+                if (!ok) { emit(Stage.ERROR, "Failed to download Alpine rootfs.", err = true); return@withContext }
 
-                emit(Stage.EXTRACTING, "Extracting Debian rootfs… (this may take a minute)")
+                emit(Stage.EXTRACTING, "Extracting Alpine rootfs… (very fast)")
                 val extracted = extractTar(rootfsArchive, rootfs) { msg ->
                     emit(Stage.EXTRACTING, msg)
                 }
@@ -99,15 +100,15 @@ class LinuxSetupManager(private val context: Context) {
             }
 
             if (!EmbeddedLinux.runtimesInstalled(context)) {
-                emit(Stage.INSTALLING_RUNTIMES, "Updating package list… (first run only)")
+                emit(Stage.INSTALLING_RUNTIMES, "Updating package list (apk)… (first run only)")
                 try {
-                    val updateResult = EmbeddedLinux.exec(context, "apt-get update -y 2>&1", timeoutSec = 300)
+                    val updateResult = EmbeddedLinux.exec(context, "apk update 2>&1", timeoutSec = 300)
                     if (!updateResult.success) {
-                        emit(Stage.INSTALLING_RUNTIMES, "apt-get update warning: ${updateResult.output.take(200)}")
+                        emit(Stage.INSTALLING_RUNTIMES, "apk update warning: ${updateResult.output.take(200)}")
                     }
 
                     emit(Stage.INSTALLING_RUNTIMES, "Installing Python 3, Node.js, git, curl…")
-                    val installResult = EmbeddedLinux.install(context, "python3", "python3-pip", "nodejs", "npm", "git", "curl", "wget", "nano", "vim-tiny", "build-essential")
+                    val installResult = EmbeddedLinux.exec(context, "apk add --no-cache python3 py3-pip nodejs npm git curl wget nano vim build-base 2>&1", timeoutSec = 600)
                     if (!installResult.success) {
                         emit(Stage.INSTALLING_RUNTIMES, "Install warning: ${installResult.output.takeLast(300)}")
                     }
@@ -195,7 +196,6 @@ class LinuxSetupManager(private val context: Context) {
                                 outFile.mkdirs()
                             } else if (!entry.isSymbolicLink) {
                                 outFile.parentFile?.mkdirs()
-                                // Use a larger buffer for writing to reduce I/O overhead
                                 FileOutputStream(outFile).use { fos ->
                                     val buffer = ByteArray(32768) 
                                     var len: Int
@@ -213,7 +213,6 @@ class LinuxSetupManager(private val context: Context) {
                         }
                         
                         count++
-                        // Throttling UI updates to avoid saturating the main thread
                         val currentTime = System.currentTimeMillis()
                         if (currentTime - lastUpdateTime > 500 && count % 100 == 0) {
                             onProgress("Extracting… $count files")
@@ -227,7 +226,7 @@ class LinuxSetupManager(private val context: Context) {
             true
         } catch (e: Exception) {
             Log.e("LinuxSetupManager", "Critical extraction failure", e)
-            onProgress("Extraction failed: ${e.localizedMessage ?: "Unknown error"}")
+            onProgress("Extraction failed: ${e.localizedMessage ?: \"Unknown error\"}")
             false
         }
     }

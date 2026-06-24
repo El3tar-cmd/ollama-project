@@ -36,11 +36,11 @@ object EmbeddedLinux {
         else      -> "https://github.com/proot-me/proot/releases/download/v5.2.0/proot-v5.2.0-aarch64-static"
     }
 
-    // Debian minimal rootfs — from Andronix (proven, widely used by Android Linux apps)
+    // Lightweight Alpine Linux rootfs — significantly smaller to prevent crashes during extraction
     val debianRootfsUrl: String get() = when (arch) {
-        "aarch64" -> "https://github.com/AndronixApp/AndronixOrigin/raw/master/Rootfs/Debian/arm64/debian-rootfs-arm64.tar.xz"
-        "x86_64"  -> "https://github.com/AndronixApp/AndronixOrigin/raw/master/Rootfs/Debian/x86_64/debian-rootfs-x86_64.tar.xz"
-        else      -> "https://github.com/AndronixApp/AndronixOrigin/raw/master/Rootfs/Debian/arm64/debian-rootfs-arm64.tar.xz"
+        "aarch64" -> "https://github.com/AndronixApp/AndronixOrigin/raw/master/Rootfs/Alpine/arm64/alpine-rootfs-arm64.tar.xz"
+        "x86_64"  -> "https://github.com/AndronixApp/AndronixOrigin/raw/master/Rootfs/Alpine/x86_64/alpine-rootfs-x86_64.tar.xz"
+        else      -> "https://github.com/AndronixApp/AndronixOrigin/raw/master/Rootfs/Alpine/arm64/alpine-rootfs-arm64.tar.xz"
     }
 
     // ── Paths ─────────────────────────────────────────────────────────────────
@@ -99,7 +99,7 @@ object EmbeddedLinux {
             "TERM=xterm-256color",
             "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "LANG=C.UTF-8",
-            "/bin/bash", "--login", "-c", innerCmd
+            "/bin/sh", "-c", innerCmd
         )
     }
 
