@@ -1,6 +1,8 @@
 # Local scratch/work files
 scratch/
 .local/
+.kotlin/
+.github-devy/rag_index.json
 test_server.py
 
 # Android/Gradle build output
