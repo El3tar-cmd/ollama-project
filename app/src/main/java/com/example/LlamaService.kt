@@ -130,7 +130,7 @@ class LlamaService : Service() {
         }
         
         serverProcess = proc
-        android.util.Log.d("LlamaService", "    Process started, pid: ${proc.pid}")
+        android.util.Log.d("LlamaService", "    Process started")
         
         try {
             proc.inputStream.bufferedReader().forEachLine { line -> 

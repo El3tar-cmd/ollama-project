@@ -156,7 +156,7 @@ class OllamaExecutor(private val context: Context) {
             throw e
         }
         
-        Log.d(TAG, "    Process started successfully, pid: ${proc.pid}")
+        Log.d(TAG, "    Process started successfully")
         synchronized(activeProcesses) { activeProcesses.add(proc) }
         
         val thread = Thread {
@@ -338,7 +338,7 @@ class OllamaExecutor(private val context: Context) {
                         redirectErrorStream(true)
                     }.start()
                 
-                Log.d(TAG, "    Process started, pid: ${proc.pid}")
+                Log.d(TAG, "    Process started")
                 synchronized(activeProcesses) { activeProcesses.add(proc) }
                 
                 try {
@@ -393,7 +393,7 @@ class OllamaExecutor(private val context: Context) {
                     redirectErrorStream(true)
                 }.start()
             
-            Log.d(TAG, "    Process started, pid: ${proc.pid}")
+            Log.d(TAG, "    Process started")
             synchronized(activeProcesses) { activeProcesses.add(proc) }
             
             val thread = Thread {
