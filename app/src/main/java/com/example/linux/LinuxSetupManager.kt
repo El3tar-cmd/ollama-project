@@ -58,14 +58,28 @@ class LinuxSetupManager(private val context: Context) {
         try {
             // Check available disk space before starting
             val baseDir = EmbeddedLinux.baseDir(context)
-            val availableSpace = baseDir.freeSpace
-            val requiredSpace = 200L * 1024 * 1024 // 200MB minimum (reduced from 500MB to prevent false negatives)
+            Log.d("LinuxSetupManager", "Base directory: ${baseDir.absolutePath}")
+            Log.d("LinuxSetupManager", "Base directory exists: ${baseDir.exists()}")
+            
+            // Use usableSpace instead of freeSpace for better Android compatibility
+            // Also check the parent directory if the baseDir doesn't exist yet
+            val storageDir = if (baseDir.exists()) baseDir else baseDir.parentFile ?: context.filesDir
+            Log.d("LinuxSetupManager", "Storage directory for space check: ${storageDir.absolutePath}")
+            
+            val availableSpace = storageDir.usableSpace
+            val availableMB = availableSpace / (1024 * 1024)
+            Log.d("LinuxSetupManager", "Available space: ${availableMB}MB (${availableSpace} bytes)")
+            
+            val requiredSpace = 200L * 1024 * 1024 // 200MB minimum
+            Log.d("LinuxSetupManager", "Required space: 200MB (${requiredSpace} bytes)")
             
             if (availableSpace < requiredSpace) {
-                val availableMB = availableSpace / (1024 * 1024)
+                Log.e("LinuxSetupManager", "Insufficient disk space! Available: ${availableMB}MB, Required: 200MB")
                 emit(Stage.ERROR, "Insufficient disk space. Need at least 200MB, available: ${availableMB}MB", err = true)
                 return@withContext
             }
+            
+            Log.d("LinuxSetupManager", "Disk space check passed ✓")
 
             // ── 1. Prepare directories ────────────────────────────────────────
             emit(Stage.PREPARING, "Creating directories…")
@@ -161,24 +175,48 @@ class LinuxSetupManager(private val context: Context) {
                 dest.delete()
             }
             
+            Log.d("LinuxSetupManager", "Starting download from: $url")
+            Log.d("LinuxSetupManager", "Target destination: ${dest.absolutePath}")
+            Log.d("LinuxSetupManager", "Storage dir: ${dest.parentFile?.absolutePath}")
+            
             val request  = Request.Builder().url(url).build()
             val response = client.newCall(request).execute()
-            if (!response.isSuccessful) return@withContext false
             
-            val body   = response.body ?: return@withContext false
+            Log.d("LinuxSetupManager", "HTTP response code: ${response.code}")
+            
+            if (!response.isSuccessful) {
+                Log.e("LinuxSetupManager", "Download failed with HTTP code: ${response.code} for URL: $url")
+                return@withContext false
+            }
+            
+            val body   = response.body ?: run {
+                Log.e("LinuxSetupManager", "Response body is null for URL: $url")
+                return@withContext false
+            }
+            
+            val total  = body.contentLength()
+            Log.d("LinuxSetupManager", "Content length: $total bytes")
+            
             val total  = body.contentLength()
             var downloaded = 0L
 
             FileOutputStream(dest).use { out ->
                 body.byteStream().use { input ->
-                    val buf = ByteArray(8192)
+                    val buf = ByteArray(16384)
                     var read: Int
+                    var lastLogTime = 0L
                     while (input.read(buf).also { read = it } != -1) {
                         out.write(buf, 0, read)
                         downloaded += read
                         if (total > 0) {
                             val progress = ((downloaded * 100) / total).toInt()
                             onProgress(progress)
+                            // Log progress every 5 seconds
+                            val now = System.currentTimeMillis()
+                            if (now - lastLogTime > 5000) {
+                                Log.d("LinuxSetupManager", "Download progress: $progress% ($downloaded/$total bytes)")
+                                lastLogTime = now
+                            }
                         }
                         if (!isActive) {
                             throw kotlinx.coroutines.CancellationException("Download cancelled")
@@ -186,12 +224,26 @@ class LinuxSetupManager(private val context: Context) {
                     }
                 }
             }
+            Log.d("LinuxSetupManager", "Download completed successfully: ${dest.absolutePath}, size: ${dest.length()} bytes")
             true
         } catch (e: kotlinx.coroutines.CancellationException) {
-            try { dest.delete() } catch (_: Exception) {}
+            Log.w("LinuxSetupManager", "Download cancelled by user/system")
+            try { 
+                if (dest.exists()) dest.delete() 
+                Log.d("LinuxSetupManager", "Deleted partial file: ${dest.absolutePath}")
+            } catch (_: Exception) {
+                Log.e("LinuxSetupManager", "Failed to delete partial file: ${dest.absolutePath}")
+            }
             false
         } catch (e: Exception) {
-            try { dest.delete() } catch (_: Exception) {}
+            Log.e("LinuxSetupManager", "Download exception occurred for URL: $url", e)
+            Log.e("LinuxSetupManager", "Exception type: ${e.javaClass.simpleName}, Message: ${e.message}")
+            try { 
+                if (dest.exists()) dest.delete()
+                Log.d("LinuxSetupManager", "Deleted partial file after exception: ${dest.absolutePath}")
+            } catch (_: Exception) {
+                Log.e("LinuxSetupManager", "Failed to delete partial file after exception: ${dest.absolutePath}")
+            }
             false
         }
     }
@@ -203,6 +255,7 @@ class LinuxSetupManager(private val context: Context) {
         onProgress: suspend (String) -> Unit
     ): Boolean = withContext(Dispatchers.IO) {
         try {
+            Log.d("LinuxSetupManager", "Starting extraction from: ${archive.absolutePath} to: ${destDir.absolutePath}")
             destDir.mkdirs()
             var count = 0
             BufferedInputStream(archive.inputStream()).use { bis ->
@@ -234,15 +287,20 @@ class LinuxSetupManager(private val context: Context) {
                             }
                         }
                         count++
-                        if (count % 500 == 0) onProgress("Extracting… $count files")
+                        if (count % 500 == 0) {
+                            onProgress("Extracting… $count files")
+                            Log.d("LinuxSetupManager", "Extracted $count files so far")
+                        }
                         entry = tar.nextTarEntry
                     }
                 }
             }
+            Log.d("LinuxSetupManager", "Extraction complete: $count files extracted to ${destDir.absolutePath}")
             onProgress("Extracted $count files total ✓")
             true
         } catch (e: Exception) {
-            Log.e("LinuxSetupManager", "Extraction error", e)
+            Log.e("LinuxSetupManager", "Extraction error from ${archive.absolutePath}", e)
+            Log.e("LinuxSetupManager", "Exception type: ${e.javaClass.simpleName}, Message: ${e.message}")
             onProgress("Extraction failed: ${e.message}")
             false
         }
