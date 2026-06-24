@@ -37,10 +37,11 @@ object EmbeddedLinux {
     }
 
     // Lightweight Alpine Linux rootfs — significantly smaller to prevent crashes during extraction
+    // Using official Alpine Linux CDN for reliable downloads
     val debianRootfsUrl: String get() = when (arch) {
-        "aarch64" -> "https://github.com/AndronixApp/AndronixOrigin/raw/master/Rootfs/Alpine/arm64/alpine-rootfs-arm64.tar.xz"
-        "x86_64"  -> "https://github.com/AndronixApp/AndronixOrigin/raw/master/Rootfs/Alpine/x86_64/alpine-rootfs-x86_64.tar.xz"
-        else      -> "https://github.com/AndronixApp/AndronixOrigin/raw/master/Rootfs/Alpine/arm64/alpine-rootfs-arm64.tar.xz"
+        "aarch64" -> "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/aarch64/alpine-minirootfs-3.24.1-aarch64.tar.gz"
+        "x86_64"  -> "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/x86_64/alpine-minirootfs-3.24.1-x86_64.tar.gz"
+        else      -> "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/aarch64/alpine-minirootfs-3.24.1-aarch64.tar.gz"
     }
 
     // ── Paths ─────────────────────────────────────────────────────────────────
