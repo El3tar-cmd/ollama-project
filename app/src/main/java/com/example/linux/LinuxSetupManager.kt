@@ -168,6 +168,8 @@ class LinuxSetupManager(private val context: Context) {
         try {
             destDir.mkdirs()
             var count = 0
+            var lastUpdateTime = System.currentTimeMillis()
+            
             BufferedInputStream(archive.inputStream()).use { bis ->
                 val decompressionStream = when {
                     archive.name.endsWith(".xz") -> XZCompressorInputStream(bis)
@@ -177,40 +179,46 @@ class LinuxSetupManager(private val context: Context) {
                 decompressionStream.use { dis ->
                     val tar = TarArchiveInputStream(dis)
                     var entry = tar.nextTarEntry
-                    var entryCount = 0
+                    
                     while (entry != null) {
-                        entryCount++
                         val outFile = File(destDir, entry.name)
                         val safePath = outFile.canonicalPath
                         val destPath = destDir.canonicalPath
+                        
                         if (!safePath.startsWith(destPath)) {
                             entry = tar.nextTarEntry
                             continue
                         }
+                        
                         try {
-                            when {
-                                entry.isDirectory -> outFile.mkdirs()
-                                entry.isSymbolicLink -> {}
-                                else -> {
-                                    outFile.parentFile?.mkdirs()
-                                    FileOutputStream(outFile).use { fos ->
-                                        val buffer = ByteArray(8192)
-                                        var len: Int
-                                        while (tar.read(buffer).also { len = it } != -1) {
-                                            fos.write(buffer, 0, len)
-                                        }
+                            if (entry.isDirectory) {
+                                outFile.mkdirs()
+                            } else if (!entry.isSymbolicLink) {
+                                outFile.parentFile?.mkdirs()
+                                // Use a larger buffer for writing to reduce I/O overhead
+                                FileOutputStream(outFile).use { fos ->
+                                    val buffer = ByteArray(32768) 
+                                    var len: Int
+                                    while (tar.read(buffer).also { len = it } != -1) {
+                                        fos.write(buffer, 0, len)
                                     }
-                                    val mode = entry.mode
-                                    if (mode and 0b001_000_000 != 0) outFile.setExecutable(true, false)
-                                    if (mode and 0b000_001_000 != 0) outFile.setExecutable(true, true)
                                 }
+                                
+                                val mode = entry.mode
+                                if (mode and 0b001_000_000 != 0) outFile.setExecutable(true, false)
+                                if (mode and 0b000_001_000 != 0) outFile.setExecutable(true, true)
                             }
                         } catch (e: Exception) {
-                            entry = tar.nextTarEntry
-                            continue
+                            Log.e("LinuxSetupManager", "Error extracting ${entry.name}: ${e.message}")
                         }
+                        
                         count++
-                        if (count % 500 == 0) onProgress("Extracting… $count files")
+                        // Throttling UI updates to avoid saturating the main thread
+                        val currentTime = System.currentTimeMillis()
+                        if (currentTime - lastUpdateTime > 500 && count % 100 == 0) {
+                            onProgress("Extracting… $count files")
+                            lastUpdateTime = currentTime
+                        }
                         entry = tar.nextTarEntry
                     }
                 }
@@ -218,7 +226,8 @@ class LinuxSetupManager(private val context: Context) {
             onProgress("Extracted $count files total ✓")
             true
         } catch (e: Exception) {
-            onProgress("Extraction failed: ${e.message}")
+            Log.e("LinuxSetupManager", "Critical extraction failure", e)
+            onProgress("Extraction failed: ${e.localizedMessage ?: "Unknown error"}")
             false
         }
     }
