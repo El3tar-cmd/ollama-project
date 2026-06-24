@@ -226,7 +226,7 @@ class LinuxSetupManager(private val context: Context) {
             true
         } catch (e: Exception) {
             Log.e("LinuxSetupManager", "Critical extraction failure", e)
-            onProgress("Extraction failed: ${e.localizedMessage ?: \"Unknown error\"}")
+            onProgress("Extraction failed: ${e.localizedMessage ?: "Unknown error"}")
             false
         }
     }
