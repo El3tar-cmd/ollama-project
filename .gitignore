@@ -1,7 +1,45 @@
+# Local scratch/work files
 scratch/
-scratch/
-scratch/
-*.tar.gz
-*.bin
-.local
 .local/
+test_server.py
+
+# Android/Gradle build output
+.gradle/
+build/
+app/build/
+**/build/
+
+# Generated native binaries and model assets
+app/src/main/jniLibs/**/*.so
+*.so
+*.a
+*.o
+*.bin
+*.gguf
+*.ggml
+*.safetensors
+*.onnx
+*.pt
+*.pth
+*.tar
+*.tar.gz
+*.zip
+
+# IDE and local Android configuration
+.idea/
+*.iml
+local.properties
+
+# APK/AAB artifacts
+*.apk
+*.apks
+*.aab
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

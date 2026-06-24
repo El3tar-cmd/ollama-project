@@ -12,6 +12,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 import com.example.agent.AgentEngine
 import com.example.data.api.LlamaCppApi
@@ -245,7 +246,6 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     )
     val shellHistory  = mutableListOf<String>()
     var shellHistIdx  by mutableStateOf(-1)
-    var shellRuntime  by mutableStateOf("BASH") // "BASH" | "PYTHON" | "NODE"
     var shellInput    by mutableStateOf("")
 
     // Cloud auth
@@ -303,6 +303,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         }
         agentWorkingDir = workDir.absolutePath
         agentEngine.workingDir = agentWorkingDir
+        shellCwd = agentWorkingDir
         refreshFileTree()
         llamaBinaryInstalled = llamaServer.isBinaryInstalled
         scanGGUFs()
@@ -646,22 +647,33 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         chatHistory.add(ChatMessage("assistant", "Hello! I'm ready. Selected model: **$modelDisplay**"))
     }
 
+    private fun shouldUseCloudRoute(modelName: String): Boolean {
+        if (activeBackend != "ollama") return false
+        val normalized = modelName.lowercase(Locale.US)
+        return normalized.startsWith("cloud/") ||
+            normalized.startsWith("ollama.com/") ||
+            (!apiOnline && normalized.endsWith(":cloud"))
+    }
+
+    private fun cloudRouteModelName(modelName: String): String =
+        modelName.removePrefix("cloud/").removePrefix("ollama.com/")
+
     fun sendChatMessage(context: Context) {
         val text = chatMessageInput.trim()
         val isLlama = activeBackend == "llamacpp"
         if (text.isEmpty()) return
         if (!isLlama && selectedModelChat.isEmpty()) return
         if (isLlama && llamaSelectedModel == null) return
-        val isCloud = !isLlama && selectedModelChat.endsWith(":cloud")
+        val useCloudRoute = !isLlama && shouldUseCloudRoute(selectedModelChat)
         when {
-            isCloud && cloudApiKey.isBlank() -> {
-                Toast.makeText(context, "Cloud model needs an API key — add it in Settings → Cloud Auth", Toast.LENGTH_LONG).show()
+            useCloudRoute && cloudApiKey.isBlank() -> {
+                Toast.makeText(context, "Cloud route needs an API key. Start/connect Ollama locally to use locally listed models, or add a key in Cloud Auth.", Toast.LENGTH_LONG).show()
                 return
             }
-            !isCloud && isLlama && !llamaApiOnline -> {
+            !useCloudRoute && isLlama && !llamaApiOnline -> {
                 Toast.makeText(context, "llama.cpp server offline", Toast.LENGTH_SHORT).show(); return
             }
-            !isCloud && !isLlama && !apiOnline -> {
+            !useCloudRoute && !isLlama && !apiOnline -> {
                 Toast.makeText(context, "Server offline", Toast.LENGTH_SHORT).show(); return
             }
         }
@@ -708,7 +720,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
             }
         }
         when {
-            isCloud       -> api.cloudChatStream(cloudApiKey, selectedModelChat, apiMessages, onToken, onDone)
+            useCloudRoute -> api.cloudChatStream(cloudApiKey, cloudRouteModelName(selectedModelChat), apiMessages, onToken, onDone)
             activeBackend == "llamacpp" -> LlamaCppApi().chatStream(
                 "http://127.0.0.1:$llamaPort", apiMessages,
                 temperature = llamaTemperature, maxTokens = 2048, onToken = onToken, onComplete = onDone
@@ -784,7 +796,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         if (activeBackend == "llamacpp" && agentModel.isEmpty() && llamaSelectedModel != null)
             agentModel = llamaSelectedModel!!.name
         if (task.isEmpty() || agentModel.isEmpty()) return
-        val isCloudModel = agentModel.endsWith(":cloud")
+        val isCloudModel = shouldUseCloudRoute(agentModel)
         val needsServer = !isCloudModel && activeBackend == "ollama"
         if (needsServer && !apiOnline) {
             Toast.makeText(context, "Ollama server must be running for local agent", Toast.LENGTH_SHORT).show(); return
@@ -798,7 +810,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         agentJob = viewModelScope.launch(Dispatchers.IO) {
             agentEngine.runAgentLoop(
                 userTask    = task,
-                model       = agentModel,
+                model       = if (isCloudModel) cloudRouteModelName(agentModel) else agentModel,
                 baseUrl     = if (activeBackend == "llamacpp") "http://127.0.0.1:$llamaPort" else "http://$hostUrlState",
                 cloudApiKey = cloudApiKey,
                 backend     = activeBackend,
@@ -848,11 +860,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         val cmd = shellInput.trim()
         shellInput = ""; if (cmd.isEmpty()) return
         shellHistory.remove(cmd); shellHistory.add(0, cmd); shellHistIdx = -1
-        when (shellRuntime) {
-            "PYTHON" -> dispatchPython(cmd)
-            "NODE"   -> dispatchNode(cmd)
-            else     -> dispatchBash(cmd)
-        }
+        dispatchBash(cmd)
     }
 
     private fun dispatchBash(cmd: String) {
@@ -867,72 +875,44 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
             }
             val dir = java.io.File(target)
             if (dir.exists() && dir.isDirectory) {
-                shellCwd = dir.canonicalPath
-                shellLines.add(ShellLine("📁 $shellCwd", ShellLineType.INFO))
+                val workspaceRoot = File(agentWorkingDir.ifBlank { shellCwd }).canonicalFile
+                val canonicalDir = dir.canonicalFile
+                val insideWorkspace = canonicalDir.path == workspaceRoot.path ||
+                    canonicalDir.path.startsWith(workspaceRoot.path + File.separator)
+                if (!insideWorkspace) {
+                    shellCwd = workspaceRoot.path
+                    shellLines.add(ShellLine("cd: blocked outside workspace; cwd reset to $shellCwd", ShellLineType.ERROR))
+                    return
+                }
+                shellCwd = canonicalDir.path
+                shellLines.add(ShellLine("cwd: $shellCwd", ShellLineType.INFO))
             } else {
                 shellLines.add(ShellLine("cd: no such directory: $arg", ShellLineType.ERROR))
             }
             return
         }
-        viewModelScope.launch(Dispatchers.IO) { execRuntimeCmd("sh", listOf("-c", cmd), emptyMap()) }
-    }
-
-    private fun dispatchPython(cmd: String) {
-        shellLines.add(ShellLine(">>> $cmd", ShellLineType.COMMAND))
-        if (cmd == "clear") { shellLines.clear(); return }
         viewModelScope.launch(Dispatchers.IO) {
-            val py = com.example.terminal.RuntimeManager.findPython(ctx)
-            if (py == null) {
+            if (EmbeddedLinux.isReady(ctx)) {
+                val result = EmbeddedLinux.exec(ctx, cmd, shellCwd, timeoutSec = 120L)
                 withContext(Dispatchers.Main) {
-                    shellLines.add(ShellLine("❌ Python not found", ShellLineType.ERROR))
-                    shellLines.add(ShellLine("💡 Install Termux → pkg install python", ShellLineType.INFO))
+                    if (result.output.isNotBlank()) {
+                        result.output.lines().forEach { shellLines.add(ShellLine(it, ShellLineType.OUTPUT)) }
+                    }
+                    if (result.exitCode != 0) {
+                        shellLines.add(ShellLine("exit ${result.exitCode}", ShellLineType.ERROR))
+                    }
                 }
-                return@launch
+            } else {
+                execRuntimeCmd("/system/bin/sh", listOf("-c", cmd), emptyMap())
             }
-            val (bin, args) = when {
-                cmd.trimStart().startsWith("python") -> Pair("sh", listOf("-c", cmd))
-                cmd.endsWith(".py")                  -> Pair(py, listOf(cmd))
-                else                                 -> Pair(py, listOf("-c", cmd))
-            }
-            execRuntimeCmd(bin, args, mapOf(
-                "PYTHONIOENCODING"        to "utf-8",
-                "PYTHONDONTWRITEBYTECODE" to "1",
-                "PATH" to buildRuntimePath(java.io.File(py).parent)
-            ))
-        }
-    }
-
-    private fun dispatchNode(cmd: String) {
-        shellLines.add(ShellLine("> $cmd", ShellLineType.COMMAND))
-        if (cmd == "clear") { shellLines.clear(); return }
-        viewModelScope.launch(Dispatchers.IO) {
-            val node = com.example.terminal.RuntimeManager.findNode(ctx)
-            if (node == null) {
-                withContext(Dispatchers.Main) {
-                    shellLines.add(ShellLine("❌ Node.js not found", ShellLineType.ERROR))
-                    shellLines.add(ShellLine("💡 Install Termux → pkg install nodejs", ShellLineType.INFO))
-                }
-                return@launch
-            }
-            val (bin, args) = when {
-                cmd.trimStart().startsWith("node") -> Pair("sh", listOf("-c", cmd))
-                cmd.endsWith(".js")                -> Pair(node, listOf(cmd))
-                else                               -> Pair(node, listOf("-e", cmd))
-            }
-            execRuntimeCmd(bin, args, mapOf(
-                "NODE_PATH" to "/data/data/com.termux/files/usr/lib/node_modules",
-                "PATH" to buildRuntimePath(java.io.File(node).parent)
-            ))
         }
     }
 
     private fun buildRuntimePath(extraBin: String? = null): String =
         listOfNotNull(
-            "/data/data/com.termux/files/usr/bin",
             extraBin,
             "/system/bin",
-            "/system/usr/bin",
-            "/usr/bin"
+            "/system/usr/bin"
         ).distinct().joinToString(":")
 
     private suspend fun execRuntimeCmd(bin: String, args: List<String>, extraEnv: Map<String, String>) {
@@ -945,8 +925,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
                 put("TMPDIR", ctx.cacheDir.absolutePath)
                 put("PATH",   buildRuntimePath())
                 put("LD_LIBRARY_PATH", listOfNotNull(
-                    ctx.applicationInfo.nativeLibraryDir,
-                    "/data/data/com.termux/files/usr/lib".takeIf { java.io.File(it).exists() }
+                    ctx.applicationInfo.nativeLibraryDir
                 ).joinToString(":"))
                 putAll(extraEnv)
             }
