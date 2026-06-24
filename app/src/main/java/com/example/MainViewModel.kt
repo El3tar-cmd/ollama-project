@@ -981,15 +981,39 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
 
     fun clearLogs() { synchronized(OllamaService.logBuffer) { OllamaService.logBuffer.clear() }; liveLogs.clear() }
 
+    var terminalMode by mutableStateOf("alpine") // "ollama" or "alpine"
+
     fun runTerminalCommand(context: Context) {
         val cmds = terminalInput.trim().split("\\s+".toRegex()).filter { it.isNotBlank() }
         terminalInput = ""; if (cmds.isEmpty()) return
-        liveLogs.add("> ollama ${cmds.joinToString(" ")}"); authLoginUrl = null
-        executor.execOllamaCommand(*cmds.toTypedArray()) { line ->
-            viewModelScope.launch(Dispatchers.Main) {
-                liveLogs.add(line)
-                val match = "(https://ollama\\.com/connect\\S+)".toRegex().find(line)
-                if (match != null) authLoginUrl = match.value
+
+        if (terminalMode == "alpine") {
+            // Run command inside Alpine Linux via PRoot
+            if (!EmbeddedLinux.isReady(context)) {
+                liveLogs.add("❌ Alpine Linux not installed. Set it up first.")
+                return
+            }
+            val fullCmd = cmds.joinToString(" ")
+            liveLogs.add("> alpine: $fullCmd")
+            viewModelScope.launch(Dispatchers.IO) {
+                val result = EmbeddedLinux.exec(context, fullCmd, timeoutSec = 120L)
+                withContext(Dispatchers.Main) {
+                    if (result.success) {
+                        liveLogs.add("✅ ${result.output.take(5000)}")
+                    } else {
+                        liveLogs.add("❌ Exit ${result.exitCode}: ${result.output.take(5000)}")
+                    }
+                }
+            }
+        } else {
+            // Run Ollama command
+            liveLogs.add("> ollama ${cmds.joinToString(" ")}"); authLoginUrl = null
+            executor.execOllamaCommand(*cmds.toTypedArray()) { line ->
+                viewModelScope.launch(Dispatchers.Main) {
+                    liveLogs.add(line)
+                    val match = "(https://ollama\\.com/connect\\S+)".toRegex().find(line)
+                    if (match != null) authLoginUrl = match.value
+                }
             }
         }
     }
