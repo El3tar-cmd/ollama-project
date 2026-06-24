@@ -50,11 +50,22 @@ object EmbeddedLinux {
     fun runtimesFile(context: Context) = File(baseDir(context), ".runtimes_installed")
 
     // ── State checks ──────────────────────────────────────────────────────────
-    fun isReady(context: Context): Boolean =
-        prootBin(context).exists() &&
-        prootBin(context).canExecute() &&
-        rootfsDir(context).exists() &&
-        setupDone(context).exists()
+    fun isReady(context: Context): Boolean {
+        val proot = prootBin(context)
+        val rootfs = rootfsDir(context)
+        val done = setupDone(context)
+        
+        Log.d("EmbeddedLinux", ">>> isReady() check:")
+        Log.d("EmbeddedLinux", "    proot exists: ${proot.exists()} (${proot.absolutePath})")
+        Log.d("EmbeddedLinux", "    proot canExecute: ${proot.canExecute()}")
+        Log.d("EmbeddedLinux", "    rootfs exists: ${rootfs.exists()} (${rootfs.absolutePath})")
+        Log.d("EmbeddedLinux", "    setupDone exists: ${done.exists()} (${done.absolutePath})")
+        
+        return proot.exists() &&
+        proot.canExecute() &&
+        rootfs.exists() &&
+        done.exists()
+    }
 
     fun runtimesInstalled(context: Context): Boolean = runtimesFile(context).exists()
 
@@ -101,10 +112,16 @@ object EmbeddedLinux {
         hostCwd: String? = null,
         timeoutSec: Long = 120L
     ): ExecResult {
-        if (!isReady(context)) return ExecResult(-1, "Embedded Linux not ready. Please set it up first.")
+        Log.d("EmbeddedLinux", ">>> exec() called with cmd: $cmd")
+        Log.d("EmbeddedLinux", ">>> isReady check: ${isReady(context)}")
+        if (!isReady(context)) {
+            Log.e("EmbeddedLinux", ">>> isReady returned false!")
+            return ExecResult(-1, "Embedded Linux not ready. Please set it up first.")
+        }
         return try {
             val fullCmd = if (hostCwd != null) "cd /workspace && $cmd" else cmd
             val prootCmd = buildProotCommand(context, fullCmd).toMutableList()
+            Log.d("EmbeddedLinux", ">>> prootCmd: $prootCmd")
 
             // Bind host working dir into container if provided
             if (hostCwd != null && File(hostCwd).exists()) {
@@ -123,12 +140,17 @@ object EmbeddedLinux {
                 put("TMPDIR", context.cacheDir.absolutePath)
             }
             pb.redirectErrorStream(true)
+            Log.d("EmbeddedLinux", ">>> Starting process...")
             val proc    = pb.start()
             val output  = proc.inputStream.bufferedReader().readText()
             val timeout = !proc.waitFor(timeoutSec, TimeUnit.SECONDS)
+            Log.d("EmbeddedLinux", ">>> Process finished, exitCode: ${proc.exitValue()}")
             if (timeout) { proc.destroy(); return ExecResult(-1, "Command timed out after ${timeoutSec}s\n${output.take(300)}") }
             ExecResult(proc.exitValue(), output.take(8000).trimEnd())
-        } catch (e: Exception) { ExecResult(-1, "PRoot exec error: ${e.message}") }
+        } catch (e: Exception) { 
+            Log.e("EmbeddedLinux", ">>> exec() exception: ${e.message}", e)
+            ExecResult(-1, "PRoot exec error: ${e.message}") 
+        }
     }
 
     /**
@@ -146,17 +168,32 @@ object EmbeddedLinux {
      * Run the post-setup DNS and hostname configuration.
      */
     fun configureSystem(context: Context) {
+        Log.d("EmbeddedLinux", ">>> configureSystem() called")
+        
+        val rootfs = rootfsDir(context)
+        Log.d("EmbeddedLinux", ">>> rootfsDir: ${rootfs.absolutePath}")
+        Log.d("EmbeddedLinux", ">>> rootfs exists: ${rootfs.exists()}")
+        
         // DNS
-        val resolvConf = File(rootfsDir(context), "etc/resolv.conf")
+        val resolvConf = File(rootfs, "etc/resolv.conf")
+        Log.d("EmbeddedLinux", ">>> resolvConf: ${resolvConf.absolutePath}")
         if (!resolvConf.exists() || resolvConf.readText().isBlank()) {
+            Log.d("EmbeddedLinux", ">>> Creating resolv.conf...")
             resolvConf.parentFile?.mkdirs()
             resolvConf.writeText("nameserver 8.8.8.8\nnameserver 1.1.1.1\n")
+            Log.d("EmbeddedLinux", ">>> resolv.conf created")
         }
+        
         // Hostname
-        val hostsFile = File(rootfsDir(context), "etc/hosts")
+        val hostsFile = File(rootfs, "etc/hosts")
+        Log.d("EmbeddedLinux", ">>> hostsFile: ${hostsFile.absolutePath}")
         if (!hostsFile.exists()) {
+            Log.d("EmbeddedLinux", ">>> Creating hosts file...")
             hostsFile.writeText("127.0.0.1 localhost\n::1 localhost\n")
+            Log.d("EmbeddedLinux", ">>> hosts file created")
         }
+        
+        Log.d("EmbeddedLinux", ">>> configureSystem() finished")
     }
 
     data class ExecResult(val exitCode: Int, val output: String) {

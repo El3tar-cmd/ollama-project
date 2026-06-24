@@ -126,35 +126,57 @@ class LinuxSetupManager(private val context: Context) {
 
             // ── 5. Configure system ───────────────────────────────────────────
             emit(Stage.CONFIGURING, "Configuring DNS and system…")
-            EmbeddedLinux.configureSystem(context)
+            try {
+                Log.d("LinuxSetupManager", ">>> Starting configureSystem()")
+                EmbeddedLinux.configureSystem(context)
+                Log.d("LinuxSetupManager", ">>> configureSystem() completed")
+            } catch (e: Exception) {
+                Log.e("LinuxSetupManager", ">>> configureSystem() failed: ${e.message}", e)
+                emit(Stage.CONFIGURING, "Warning: ${e.message}")
+            }
 
             // ── 6. Update apt and install runtimes ────────────────────────────
             if (!EmbeddedLinux.runtimesInstalled(context)) {
                 emit(Stage.INSTALLING_RUNTIMES, "Updating package list… (first run only)")
-                val updateResult = EmbeddedLinux.exec(context,
-                    "apt-get update -y 2>&1", timeoutSec = 300)
+                try {
+                    Log.d("LinuxSetupManager", ">>> Running apt-get update...")
+                    val updateResult = EmbeddedLinux.exec(context,
+                        "apt-get update -y 2>&1", timeoutSec = 300)
+                    Log.d("LinuxSetupManager", ">>> apt-get update exitCode: ${updateResult.exitCode}")
                 if (!updateResult.success) {
                     emit(Stage.INSTALLING_RUNTIMES,
                         "apt-get update warning (may still work): ${updateResult.output.take(200)}")
                 }
 
                 emit(Stage.INSTALLING_RUNTIMES, "Installing Python 3, Node.js, git, curl…")
+                Log.d("LinuxSetupManager", ">>> Running apt-get install...")
                 val installResult = EmbeddedLinux.install(context,
                     "python3", "python3-pip", "nodejs", "npm", "git", "curl", "wget",
                     "nano", "vim-tiny", "build-essential"
                 )
+                Log.d("LinuxSetupManager", ">>> apt-get install exitCode: ${installResult.exitCode}")
                 if (!installResult.success) {
                     emit(Stage.INSTALLING_RUNTIMES,
                         "Install warning: ${installResult.output.takeLast(300)}")
                 }
 
                 // Mark runtimes as installed even if some failed (partial install still useful)
-                EmbeddedLinux.runtimesFile(context).writeText("installed")
+                try {
+                    Log.d("LinuxSetupManager", ">>> Writing .runtimes_installed file")
+                    EmbeddedLinux.runtimesFile(context).writeText("installed")
+                } catch (e: Exception) {
+                    Log.e("LinuxSetupManager", ">>> Failed to write .runtimes_installed: ${e.message}")
+                }
                 emit(Stage.INSTALLING_RUNTIMES, "Runtimes installed ✓")
             }
 
             // ── 7. Mark complete ──────────────────────────────────────────────
-            EmbeddedLinux.setupDone(context).writeText("ok")
+            try {
+                Log.d("LinuxSetupManager", ">>> Writing .setup_done file")
+                EmbeddedLinux.setupDone(context).writeText("ok")
+            } catch (e: Exception) {
+                Log.e("LinuxSetupManager", ">>> Failed to write .setup_done: ${e.message}")
+            }
             emit(Stage.DONE, "✅ Embedded Linux ready! Python, Node.js, and git available.", 100)
 
         } catch (e: Exception) {
