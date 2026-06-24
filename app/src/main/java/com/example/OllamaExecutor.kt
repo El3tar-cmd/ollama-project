@@ -3,7 +3,7 @@ package com.example
 import android.content.Context
 import android.util.Log
 import java.io.BufferedInputStream
-import java.io.File
+import java.util.concurrent.TimeUnit
 import java.io.FileOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
