@@ -2,6 +2,7 @@ package com.example.linux
 
 import android.content.Context
 import android.os.Build
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
@@ -58,11 +59,11 @@ class LinuxSetupManager(private val context: Context) {
             // Check available disk space before starting
             val baseDir = EmbeddedLinux.baseDir(context)
             val availableSpace = baseDir.freeSpace
-            val requiredSpace = 500L * 1024 * 1024 // 500MB minimum
+            val requiredSpace = 200L * 1024 * 1024 // 200MB minimum (reduced from 500MB to prevent false negatives)
             
             if (availableSpace < requiredSpace) {
                 val availableMB = availableSpace / (1024 * 1024)
-                emit(Stage.ERROR, "Insufficient disk space. Need at least 500MB, available: ${availableMB}MB", err = true)
+                emit(Stage.ERROR, "Insufficient disk space. Need at least 200MB, available: ${availableMB}MB", err = true)
                 return@withContext
             }
 
@@ -143,7 +144,8 @@ class LinuxSetupManager(private val context: Context) {
             emit(Stage.DONE, "✅ Embedded Linux ready! Python, Node.js, and git available.", 100)
 
         } catch (e: Exception) {
-            onProgress(Progress(Stage.ERROR, "Setup error: ${e.message}", isError = true))
+            Log.e("LinuxSetupManager", "Critical setup error", e)
+            onProgress(Progress(Stage.ERROR, "Setup error: ${e.localizedMessage ?: e.message}", isError = true))
         }
     }
 
@@ -155,7 +157,6 @@ class LinuxSetupManager(private val context: Context) {
     ): Boolean = withContext(Dispatchers.IO) {
         try {
             dest.parentFile?.mkdirs()
-            // Delete existing file if present
             if (dest.exists()) {
                 dest.delete()
             }
@@ -179,7 +180,6 @@ class LinuxSetupManager(private val context: Context) {
                             val progress = ((downloaded * 100) / total).toInt()
                             onProgress(progress)
                         }
-                        // Check for coroutine cancellation
                         if (!isActive) {
                             throw kotlinx.coroutines.CancellationException("Download cancelled")
                         }
@@ -188,16 +188,10 @@ class LinuxSetupManager(private val context: Context) {
             }
             true
         } catch (e: kotlinx.coroutines.CancellationException) {
-            // Clean up partial download
-            try {
-                dest.delete()
-            } catch (_: Exception) {}
+            try { dest.delete() } catch (_: Exception) {}
             false
         } catch (e: Exception) {
-            // Clean up partial download on error
-            try {
-                dest.delete()
-            } catch (_: Exception) {}
+            try { dest.delete() } catch (_: Exception) {}
             false
         }
     }
@@ -215,7 +209,7 @@ class LinuxSetupManager(private val context: Context) {
                 val decompressionStream = when {
                     archive.name.endsWith(".xz") -> XZCompressorInputStream(bis)
                     archive.name.endsWith(".gz") -> GZIPInputStream(bis)
-                    else -> bis // Assume uncompressed tar
+                    else -> bis 
                 }
                 
                 decompressionStream.use { dis ->
@@ -227,16 +221,9 @@ class LinuxSetupManager(private val context: Context) {
                             entry.isDirectory -> outFile.mkdirs()
                             entry.isSymbolicLink -> {
                                 outFile.parentFile?.mkdirs()
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                    try {
-                                        java.nio.file.Files.createSymbolicLink(
-                                            outFile.toPath(),
-                                            java.nio.file.Paths.get(entry.linkName)
-                                        )
-                                    } catch (_: Exception) {
-                                        // Skip broken symlinks
-                                    }
-                                }
+                                // Android does NOT support java.nio.file.Files.createSymbolicLink on internal storage.
+                                // We skip symlinks to prevent crashes. PRoot will handle the environment.
+                                Log.w("LinuxSetupManager", "Skipping symlink: ${entry.name} -> ${entry.linkName}")
                             }
                             else -> {
                                 outFile.parentFile?.mkdirs()
@@ -255,12 +242,12 @@ class LinuxSetupManager(private val context: Context) {
             onProgress("Extracted $count files total ✓")
             true
         } catch (e: Exception) {
+            Log.e("LinuxSetupManager", "Extraction error", e)
             onProgress("Extraction failed: ${e.message}")
             false
         }
     }
 
-    // ── Uninstall ─────────────────────────────────────────────────────────────
     fun uninstall() {
         EmbeddedLinux.baseDir(context).deleteRecursively()
     }

@@ -76,17 +76,24 @@ class OllamaExecutor(private val context: Context) {
             val total = connection.contentLengthLong
             var downloaded = 0L
             val tmpFile = File(binDir, "ollama.tmp")
-            val input  = BufferedInputStream(connection.inputStream)
-            val output = FileOutputStream(tmpFile)
-            val buffer = ByteArray(32_768)
-            var n: Int
-            while (input.read(buffer).also { n = it } != -1) {
-                output.write(buffer, 0, n)
-                downloaded += n
-                if (total > 0) onProgress((downloaded * 100 / total).toInt())
+            connection.inputStream.use { inputStream ->
+                BufferedInputStream(inputStream).use { input ->
+                    FileOutputStream(tmpFile).use { output ->
+                        val buffer = ByteArray(32_768)
+                        var n: Int
+                        while (input.read(buffer).also { n = it } != -1) {
+                            output.write(buffer, 0, n)
+                            downloaded += n
+                            if (total > 0) onProgress((downloaded * 100 / total).toInt())
+                        }
+                        output.flush()
+                    }
+                }
             }
-            output.flush(); output.close(); input.close(); connection.disconnect()
-            tmpFile.renameTo(ollamaFile)
+            connection.disconnect()
+            if (!tmpFile.renameTo(ollamaFile)) {
+                throw IOException("Failed to rename temporary file to ${ollamaFile.absolutePath}")
+            }
             ollamaFile.setExecutable(true, false)
             onLog("Download complete: ${ollamaFile.absolutePath}")
             true
@@ -143,9 +150,10 @@ class OllamaExecutor(private val context: Context) {
         
         val thread = Thread {
             try {
-                val reader = proc.inputStream.bufferedReader()
-                var line: String?
-                while (reader.readLine().also { line = it } != null) onLog(line ?: "")
+                proc.inputStream.bufferedReader().use { reader ->
+                    var line: String?
+                    while (reader.readLine().also { line = it } != null) onLog(line ?: "")
+                }
             } catch (e: Exception) { onLog("Log pipe closed: ${e.message}") }
             finally {
                 synchronized(activeProcesses) { activeProcesses.remove(proc) }
@@ -296,9 +304,10 @@ class OllamaExecutor(private val context: Context) {
                 synchronized(activeProcesses) { activeProcesses.add(proc) }
                 
                 try {
-                    val reader = proc.inputStream.bufferedReader()
-                    var line: String?
-                    while (reader.readLine().also { line = it } != null) onLog(line ?: "")
+                    proc.inputStream.bufferedReader().use { reader ->
+                        var line: String?
+                        while (reader.readLine().also { line = it } != null) onLog(line ?: "")
+                    }
                     proc.waitFor()
                 } finally {
                     synchronized(activeProcesses) { activeProcesses.remove(proc) }
@@ -334,29 +343,30 @@ class OllamaExecutor(private val context: Context) {
             
             val thread = Thread {
                 try {
-                    val stream = proc.inputStream
-                    val sb     = StringBuilder()
-                    val buf    = ByteArray(1)
-                    while (stream.read(buf) != -1) {
-                        val ch = buf[0].toInt().toChar()
-                        if (ch == '\n' || ch == '\r') {
-                            val line = sb.toString().trim()
-                            if (line.isNotBlank()) onLog(line)
-                            sb.clear()
-                        } else {
-                            sb.append(ch)
-                            // Emit immediately when we see a full connect URL
-                            // (binary may not print a trailing newline)
-                            val partial = sb.toString()
-                            if (partial.contains("https://ollama.com/connect") &&
-                                partial.length > 40 &&
-                                !partial.endsWith("connect")) {
-                                onLog(partial.trim())
+                    proc.inputStream.use { stream ->
+                        val sb     = StringBuilder()
+                        val buf    = ByteArray(1)
+                        while (stream.read(buf) != -1) {
+                            val ch = buf[0].toInt().toChar()
+                            if (ch == '\n' || ch == '\r') {
+                                val line = sb.toString().trim()
+                                if (line.isNotBlank()) onLog(line)
                                 sb.clear()
+                            } else {
+                                sb.append(ch)
+                                // Emit immediately when we see a full connect URL
+                                // (binary may not print a trailing newline)
+                                val partial = sb.toString()
+                                if (partial.contains("https://ollama.com/connect") &&
+                                    partial.length > 40 &&
+                                    !partial.endsWith("connect")) {
+                                    onLog(partial.trim())
+                                    sb.clear()
+                                }
                             }
                         }
+                        if (sb.toString().isNotBlank()) onLog(sb.toString().trim())
                     }
-                    if (sb.isNotBlank()) onLog(sb.toString().trim())
                 } catch (e: Exception) { onLog("Login stream: ${e.message}") }
                 finally {
                     synchronized(activeProcesses) { activeProcesses.remove(proc) }
