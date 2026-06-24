@@ -68,14 +68,8 @@ android {
         buildConfig = true
     }
 
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-        }
-    }
-
-    // Disable NDK build since we bundle prebuilt binaries
-    ndkVersion = "27.0.12077973"
+    // externalNativeBuild disabled — we bundle prebuilt native binaries
+    // ndkVersion not required since we don't compile native code locally
 
     testOptions {
         unitTests { isIncludeAndroidResources = true }

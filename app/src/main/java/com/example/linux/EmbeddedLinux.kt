@@ -3,7 +3,7 @@ package com.example.linux
 import android.content.Context
 import android.os.Build
 import java.io.File
-import android.util.Log
+import android.util.Log\nimport java.util.concurrent.TimeUnit
 
 /**
  * Manages the embedded Debian Linux environment running inside the app via PRoot.
