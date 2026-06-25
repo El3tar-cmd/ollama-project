@@ -9,7 +9,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Manages the embedded Debian Linux environment running inside the app via PRoot.
+ * Manages the embedded Alpine Linux environment running inside the app via PRoot.
  *
  * Directory layout (inside context.filesDir):
  *   embedded_linux/
@@ -250,14 +250,14 @@ object EmbeddedLinux {
             Log.e("EmbeddedLinux", ">>> exec() exception: ${e.message}", e)
             val proot = executableProotBin(context)
             val hint = if ((e.message ?: "").contains("Permission denied", ignoreCase = true)) {
-                " Android denied execution for ${proot.absolutePath}. Rebuild/reinstall the APK so PRoot is packaged as app/src/main/jniLibs/arm64-v8a/libproot.so, then reinstall Embedded Linux from the Server tab if needed."
+                " Android denied execution for ${proot.absolutePath}. Reinstall Embedded Linux from the Server tab so the Termux PRoot files are downloaded again with executable permissions."
             } else ""
             ExecResult(-1, "PRoot exec error: ${e.message}$hint")
         }
     }
 
     /**
-     * Install packages inside Debian via apt-get.
+     * Install packages inside Alpine via apk.
      */
     fun install(context: Context, vararg packages: String): ExecResult {
         val pkgList = packages.joinToString(" ")

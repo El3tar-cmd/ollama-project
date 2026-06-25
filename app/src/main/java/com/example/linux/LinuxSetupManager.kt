@@ -97,9 +97,13 @@ class LinuxSetupManager(private val context: Context) {
                 // Extract the actual versioned file (.so.2.4.3) — libtalloc.so.2 in the deb is a
                 // symlink (0 bytes). The real ELF binary is .so.2.4.3; we copy it as libtalloc.so.2
                 // so proot's dynamic linker finds it by the SONAME it expects.
-                extractFromDeb(tallocDeb, mapOf("usr/lib/libtalloc.so.2.4.3" to File(libsDir, "libtalloc.so.2")))
-                extractFromDeb(shmemDeb,  mapOf("usr/lib/libandroid-shmem.so" to File(libsDir, "libandroid-shmem.so")))
+                val tallocOk = extractFromDeb(tallocDeb, mapOf("usr/lib/libtalloc.so.2.4.3" to File(libsDir, "libtalloc.so.2")))
+                val shmemOk = extractFromDeb(shmemDeb, mapOf("usr/lib/libandroid-shmem.so" to File(libsDir, "libandroid-shmem.so")))
                 try { tallocDeb.delete(); shmemDeb.delete() } catch (_: Exception) {}
+                if (!tallocOk || !shmemOk) {
+                    emit(Stage.ERROR, "Failed to extract PRoot libraries.", err = true)
+                    return@withContext
+                }
 
                 EmbeddedLinux.repairProotPermissions(context)
                 loaderBin.setExecutable(true, false)
@@ -242,7 +246,10 @@ class LinuxSetupManager(private val context: Context) {
                     arEntry = ar.nextEntry
                 }
             }
-            true
+            if (remaining.isNotEmpty()) {
+                Log.e("LinuxSetupManager", "extractFromDeb missing entries: ${remaining.keys.joinToString()}")
+            }
+            remaining.isEmpty()
         } catch (e: Exception) {
             Log.e("LinuxSetupManager", "extractFromDeb failed: ${e.message}", e)
             false

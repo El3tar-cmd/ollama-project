@@ -105,6 +105,7 @@ dependencies {
 
     // ── Embedded Linux (TAR extraction) ────────────────
     implementation("org.apache.commons:commons-compress:1.26.1")
+    implementation("org.tukaani:xz:1.9")
 
     // ── Tests ──────────────────────────────────────────
     testImplementation(libs.androidx.compose.ui.test.junit4)
@@ -311,38 +312,6 @@ val downloadLlamaServer by tasks.registering {
     }
 }
 
-val downloadProotBinary by tasks.registering {
-    val jniDir    = layout.projectDirectory.dir("src/main/jniLibs/arm64-v8a")
-    val prootFile = jniDir.file("libproot.so").asFile
-    outputs.file(prootFile)
-
-    doFirst {
-        jniDir.asFile.mkdirs()
-
-        if (!prootFile.exists()) {
-            println("[Devhive] Downloading PRoot ARM64 binary...")
-            val conn = URL(
-                "https://github.com/proot-me/proot/releases/download/v5.2.0/proot-v5.2.0-aarch64-static"
-            ).openConnection() as HttpURLConnection
-            conn.instanceFollowRedirects = true
-            conn.connectTimeout = 30_000
-            conn.readTimeout    = 120_000
-            conn.connect()
-            if (conn.responseCode !in 200..299) {
-                throw GradleException("Failed to download PRoot: HTTP ${conn.responseCode}")
-            }
-            conn.inputStream.use { input ->
-                prootFile.outputStream().use { output -> input.copyTo(output) }
-            }
-            conn.disconnect()
-            prootFile.setExecutable(true, false)
-            println("[Devhive] PRoot installed as ${prootFile.name}: ${prootFile.length()} bytes")
-        } else {
-            println("[Devhive] libproot.so already present (${prootFile.length()} bytes), skipping.")
-        }
-    }
-}
-
 afterEvaluate {
-    tasks.named("preBuild") { dependsOn(downloadOllamaBinary, downloadLlamaServer, downloadProotBinary) }
+    tasks.named("preBuild") { dependsOn(downloadOllamaBinary, downloadLlamaServer) }
 }
