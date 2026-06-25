@@ -38,13 +38,11 @@ object EmbeddedLinux {
         else      -> "https://github.com/proot-me/proot/releases/download/v5.2.0/proot-v5.2.0-aarch64-static"
     }
 
-    // Lightweight Alpine Linux rootfs. Keep this on Alpine 3.18 because the
-    // upstream PRoot 5.2.0 static binary crashes with newer Alpine/musl builds
-    // on some Android kernels ("vpid 1: terminated with signal 7").
+    // Lightweight Alpine Linux rootfs — ~3.8MB compressed, ideal for mobile.
     val debianRootfsUrl: String get() = when (arch) {
-        "aarch64" -> "https://github.com/termux/proot-distro/releases/download/debian-12/debian-12-aarch64.tar.xz"
-        "x86_64"  -> "https://github.com/termux/proot-distro/releases/download/debian-12/debian-12-x86_64.tar.xz"
-        else      -> "https://github.com/termux/proot-distro/releases/download/debian-12/debian-12-aarch64.tar.xz"
+        "aarch64" -> "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/aarch64/alpine-minirootfs-3.20.3-aarch64.tar.gz"
+        "x86_64"  -> "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-minirootfs-3.20.3-x86_64.tar.gz"
+        else      -> "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/aarch64/alpine-minirootfs-3.20.3-aarch64.tar.gz"
     }
 
     // ── Paths ─────────────────────────────────────────────────────────────────
@@ -61,7 +59,7 @@ object EmbeddedLinux {
     fun setupDone(context: Context)  = File(baseDir(context), ".setup_complete")
     fun runtimesFile(context: Context) = File(baseDir(context), ".runtimes_installed")
     fun rootfsVersionFile(context: Context) = File(baseDir(context), ".rootfs_version")
-    const val ROOTFS_VERSION = "debian-12-minimal"
+    const val ROOTFS_VERSION = "alpine-3.20-minimal"
 
     fun rootfsHealthy(context: Context): Boolean {
         val rootfs = rootfsDir(context)
