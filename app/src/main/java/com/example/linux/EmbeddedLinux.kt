@@ -38,11 +38,13 @@ object EmbeddedLinux {
         else      -> "https://github.com/proot-me/proot/releases/download/v5.2.0/proot-v5.2.0-aarch64-static"
     }
 
-    // Lightweight Alpine Linux rootfs — ~3.8MB compressed, ideal for mobile.
+    // Alpine 3.18 rootfs — ~3.1MB. v3.18 is the last version confirmed stable
+    // with PRoot 5.2.0 on Android kernels (newer musl builds cause SIGBUS/signal 7).
     val debianRootfsUrl: String get() = when (arch) {
-        "aarch64" -> "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/aarch64/alpine-minirootfs-3.20.3-aarch64.tar.gz"
-        "x86_64"  -> "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-minirootfs-3.20.3-x86_64.tar.gz"
-        else      -> "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/aarch64/alpine-minirootfs-3.20.3-aarch64.tar.gz"
+        "aarch64" -> "https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/aarch64/alpine-minirootfs-3.18.9-aarch64.tar.gz"
+        "x86_64"  -> "https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/alpine-minirootfs-3.18.9-x86_64.tar.gz"
+        "arm"     -> "https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/armv7/alpine-minirootfs-3.18.9-armv7.tar.gz"
+        else      -> "https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/aarch64/alpine-minirootfs-3.18.9-aarch64.tar.gz"
     }
 
     // ── Paths ─────────────────────────────────────────────────────────────────
@@ -59,7 +61,7 @@ object EmbeddedLinux {
     fun setupDone(context: Context)  = File(baseDir(context), ".setup_complete")
     fun runtimesFile(context: Context) = File(baseDir(context), ".runtimes_installed")
     fun rootfsVersionFile(context: Context) = File(baseDir(context), ".rootfs_version")
-    const val ROOTFS_VERSION = "alpine-3.20-minimal"
+    const val ROOTFS_VERSION = "alpine-3.18-minimal"
 
     fun rootfsHealthy(context: Context): Boolean {
         val rootfs = rootfsDir(context)
@@ -150,6 +152,9 @@ object EmbeddedLinux {
         val rootfs = rootfsDir(context).absolutePath
         return listOf(
             proot,
+            "--kill-on-exit",      // Clean up child processes on exit
+            "--link2symlink",      // Emulate hard links via symlinks (required for Alpine)
+            "-0",                  // Fake root uid=0 (Alpine's apk requires it)
             "-r", rootfs,
             "-b", "/dev:/dev",
             "-b", "/sys:/sys",
