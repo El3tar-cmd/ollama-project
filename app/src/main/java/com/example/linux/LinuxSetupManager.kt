@@ -94,7 +94,10 @@ class LinuxSetupManager(private val context: Context) {
                              downloadFile(EmbeddedLinux.shmemDebUrl, shmemDeb)  { _ -> }
                 if (!libsOk) { emit(Stage.ERROR, "Failed to download PRoot libraries.", err = true); return@withContext }
 
-                extractFromDeb(tallocDeb, mapOf("usr/lib/libtalloc.so.2" to File(libsDir, "libtalloc.so.2")))
+                // Extract the actual versioned file (.so.2.4.3) — libtalloc.so.2 in the deb is a
+                // symlink (0 bytes). The real ELF binary is .so.2.4.3; we copy it as libtalloc.so.2
+                // so proot's dynamic linker finds it by the SONAME it expects.
+                extractFromDeb(tallocDeb, mapOf("usr/lib/libtalloc.so.2.4.3" to File(libsDir, "libtalloc.so.2")))
                 extractFromDeb(shmemDeb,  mapOf("usr/lib/libandroid-shmem.so" to File(libsDir, "libandroid-shmem.so")))
                 try { tallocDeb.delete(); shmemDeb.delete() } catch (_: Exception) {}
 
@@ -223,7 +226,7 @@ class LinuxSetupManager(private val context: Context) {
                             val destFile = remaining.entries.find { (k, _) ->
                                 tarName == k || tarName.endsWith("/$k")
                             }
-                            if (destFile != null && !tarEntry.isDirectory) {
+                            if (destFile != null && !tarEntry.isDirectory && !tarEntry.isSymbolicLink) {
                                 destFile.value.parentFile?.mkdirs()
                                 FileOutputStream(destFile.value).use { fos ->
                                     val buf = ByteArray(32768)
