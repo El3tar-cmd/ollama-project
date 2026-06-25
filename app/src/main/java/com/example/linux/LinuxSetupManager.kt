@@ -52,10 +52,10 @@ class LinuxSetupManager(private val context: Context) {
             val storageDir = if (baseDir.exists()) baseDir else baseDir.parentFile ?: context.filesDir
             val availableSpace = storageDir.usableSpace
             val availableMB = availableSpace / (1024 * 1024)
-            val requiredSpace = 500L * 1024 * 1024 // Debian is larger than Alpine
+            val requiredSpace = 80L * 1024 * 1024 // Alpine is very lightweight (~3.8MB compressed)
 
             if (availableSpace < requiredSpace) {
-                emit(Stage.ERROR, "Insufficient disk space. Need at least 500MB, available: ${availableMB}MB", err = true)
+                emit(Stage.ERROR, "Insufficient disk space. Need at least 80MB, available: ${availableMB}MB", err = true)
                 return@withContext
             }
 
@@ -78,7 +78,7 @@ class LinuxSetupManager(private val context: Context) {
                 emit(Stage.DOWNLOADING_PROOT, "PRoot ready ✓", 100)
             }
 
-            val rootfsArchive = File(base, "debian-rootfs.tar.xz")
+            val rootfsArchive = File(base, "alpine-rootfs.tar.gz")
             val rootfsNeedsReinstall = rootfs.exists() &&
                 (!EmbeddedLinux.rootfsHealthy(context) ||
                     EmbeddedLinux.installedRootfsVersion(context) != EmbeddedLinux.ROOTFS_VERSION)
@@ -92,13 +92,13 @@ class LinuxSetupManager(private val context: Context) {
             }
 
             if (!EmbeddedLinux.rootfsHealthy(context)) {
-                emit(Stage.DOWNLOADING_ROOTFS, "Downloading Debian minimal rootfs…", 0)
+                emit(Stage.DOWNLOADING_ROOTFS, "Downloading Alpine Linux rootfs…", 0)
                 val ok = downloadFile(EmbeddedLinux.debianRootfsUrl, rootfsArchive) { pct ->
-                    emit(Stage.DOWNLOADING_ROOTFS, "Downloading Debian… $pct%", pct)
+                    emit(Stage.DOWNLOADING_ROOTFS, "Downloading Alpine… $pct%", pct)
                 }
-                if (!ok) { emit(Stage.ERROR, "Failed to download Debian rootfs.", err = true); return@withContext }
+                if (!ok) { emit(Stage.ERROR, "Failed to download Alpine rootfs.", err = true); return@withContext }
 
-                emit(Stage.EXTRACTING, "Extracting Debian rootfs…")
+                emit(Stage.EXTRACTING, "Extracting Alpine rootfs…")
                 val extracted = extractTar(rootfsArchive, rootfs) { msg ->
                     emit(Stage.EXTRACTING, msg)
                 }
@@ -116,34 +116,34 @@ class LinuxSetupManager(private val context: Context) {
                 emit(Stage.CONFIGURING, "Warning: ${e.message}")
             }
 
-            emit(Stage.CONFIGURING, "Testing Debian shell under PRoot…")
+            emit(Stage.CONFIGURING, "Testing Alpine shell under PRoot…")
             val smokeTest = EmbeddedLinux.exec(
                 context,
-                "echo debian-ready",
+                "echo alpine-ready",
                 timeoutSec = 30,
                 allowIncompleteSetup = true
             )
-            if (!smokeTest.success || !smokeTest.output.contains("debian-ready")) {
+            if (!smokeTest.success || !smokeTest.output.contains("alpine-ready")) {
                 EmbeddedLinux.setupDone(context).delete()
                 EmbeddedLinux.runtimesFile(context).delete()
                 emit(
                     Stage.ERROR,
-                    "PRoot failed to start Debian: ${smokeTest.output.ifBlank { "exit ${smokeTest.exitCode}" }.take(300)}",
+                    "PRoot failed to start Alpine: ${smokeTest.output.ifBlank { "exit ${smokeTest.exitCode}" }.take(300)}",
                     err = true
                 )
                 return@withContext
             }
 
             if (!EmbeddedLinux.runtimesInstalled(context)) {
-                emit(Stage.INSTALLING_RUNTIMES, "Updating package list (apt-get)… (first run only)")
+                emit(Stage.INSTALLING_RUNTIMES, "Updating package list (apk)… (first run only)")
                 try {
-                    val updateResult = EmbeddedLinux.exec(context, "apt-get update 2>&1", timeoutSec = 300)
+                    val updateResult = EmbeddedLinux.exec(context, "apk update 2>&1", timeoutSec = 120)
                     if (!updateResult.success) {
-                        emit(Stage.INSTALLING_RUNTIMES, "apt-get update warning: ${updateResult.output.take(200)}")
+                        emit(Stage.INSTALLING_RUNTIMES, "apk update warning: ${updateResult.output.take(200)}")
                     }
 
                     emit(Stage.INSTALLING_RUNTIMES, "Installing Python 3, Node.js, git, curl…")
-                    val installResult = EmbeddedLinux.exec(context, "apt-get install -y python3 python3-pip nodejs npm git curl wget nano vim build-essential 2>&1", timeoutSec = 600)
+                    val installResult = EmbeddedLinux.exec(context, "apk add --no-cache python3 py3-pip nodejs npm git curl wget nano vim build-base 2>&1", timeoutSec = 300)
                     if (!installResult.success) {
                         emit(Stage.INSTALLING_RUNTIMES, "Install warning: ${installResult.output.takeLast(300)}")
                     }
