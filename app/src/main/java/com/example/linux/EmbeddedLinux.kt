@@ -31,15 +31,29 @@ object EmbeddedLinux {
     }
 
     // ── Download URLs ─────────────────────────────────────────────────────────
-    // PRoot static binary — from proot-me/proot official GitHub releases
-    val prootUrl: String get() = when (arch) {
-        "aarch64" -> "https://github.com/proot-me/proot/releases/download/v5.2.0/proot-v5.2.0-aarch64-static"
-        "x86_64"  -> "https://github.com/proot-me/proot/releases/download/v5.2.0/proot-v5.2.0-x86_64-static"
-        else      -> "https://github.com/proot-me/proot/releases/download/v5.2.0/proot-v5.2.0-aarch64-static"
+    // Termux-patched PRoot — uses a loader binary instead of ptrace,
+    // which bypasses Android 14's ptrace restrictions entirely.
+    val prootDebUrl: String get() = when (arch) {
+        "aarch64" -> "https://packages.termux.dev/apt/termux-main/pool/main/p/proot/proot_5.1.107.81_aarch64.deb"
+        "x86_64"  -> "https://packages.termux.dev/apt/termux-main/pool/main/p/proot/proot_5.1.107.81_x86_64.deb"
+        "arm"     -> "https://packages.termux.dev/apt/termux-main/pool/main/p/proot/proot_5.1.107.81_arm.deb"
+        else      -> "https://packages.termux.dev/apt/termux-main/pool/main/p/proot/proot_5.1.107.81_aarch64.deb"
+    }
+    val tallocDebUrl: String get() = when (arch) {
+        "aarch64" -> "https://packages.termux.dev/apt/termux-main/pool/main/libt/libtalloc/libtalloc_2.4.3_aarch64.deb"
+        "x86_64"  -> "https://packages.termux.dev/apt/termux-main/pool/main/libt/libtalloc/libtalloc_2.4.3_x86_64.deb"
+        "arm"     -> "https://packages.termux.dev/apt/termux-main/pool/main/libt/libtalloc/libtalloc_2.4.3_arm.deb"
+        else      -> "https://packages.termux.dev/apt/termux-main/pool/main/libt/libtalloc/libtalloc_2.4.3_aarch64.deb"
+    }
+    val shmemDebUrl: String get() = when (arch) {
+        "aarch64" -> "https://packages.termux.dev/apt/termux-main/pool/main/liba/libandroid-shmem/libandroid-shmem_0.7_aarch64.deb"
+        "x86_64"  -> "https://packages.termux.dev/apt/termux-main/pool/main/liba/libandroid-shmem/libandroid-shmem_0.7_x86_64.deb"
+        "arm"     -> "https://packages.termux.dev/apt/termux-main/pool/main/liba/libandroid-shmem/libandroid-shmem_0.7_arm.deb"
+        else      -> "https://packages.termux.dev/apt/termux-main/pool/main/liba/libandroid-shmem/libandroid-shmem_0.7_aarch64.deb"
     }
 
     // Alpine 3.18 rootfs — ~3.1MB. v3.18 is the last version confirmed stable
-    // with PRoot 5.2.0 on Android kernels (newer musl builds cause SIGBUS/signal 7).
+    // with PRoot on Android kernels (newer musl builds cause SIGBUS/signal 7).
     val debianRootfsUrl: String get() = when (arch) {
         "aarch64" -> "https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/aarch64/alpine-minirootfs-3.18.9-aarch64.tar.gz"
         "x86_64"  -> "https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/alpine-minirootfs-3.18.9-x86_64.tar.gz"
@@ -50,6 +64,9 @@ object EmbeddedLinux {
     // ── Paths ─────────────────────────────────────────────────────────────────
     fun baseDir(context: Context)    = File(context.filesDir, "embedded_linux")
     fun prootBin(context: Context)   = File(baseDir(context), "bin/proot")
+    fun loaderBin(context: Context)  = File(baseDir(context), "bin/loader")
+    fun loader32Bin(context: Context)= File(baseDir(context), "bin/loader32")
+    fun libsDir(context: Context)    = File(baseDir(context), "libs")
     fun packagedProotBin(context: Context): File? {
         // PRoot release binaries are standalone ELF executables, not Android
         // shared libraries. Bundling them as lib*.so can make Android's linker
@@ -102,6 +119,7 @@ object EmbeddedLinux {
         
         return proot.exists() &&
         proot.canExecute() &&
+        loaderBin(context).exists() &&
         rootfs.exists() &&
         rootfsHealthy(context) &&
         (!requireSetupDone || done.exists())
@@ -152,15 +170,13 @@ object EmbeddedLinux {
         val rootfs = rootfsDir(context).absolutePath
         return listOf(
             proot,
-            "--kill-on-exit",      // Clean up child processes on exit
-            "--link2symlink",      // Emulate hard links via symlinks (required for Alpine)
-            "-0",                  // Fake root uid=0 (Alpine's apk requires it)
+            "--kill-on-exit",
+            "-0",                  // Fake root uid=0 (required for apk)
             "-r", rootfs,
             "-b", "/dev:/dev",
             "-b", "/sys:/sys",
             "-b", "/proc:/proc",
             "-b", "/dev/urandom:/dev/random",
-            // Bind app working dir so agent files are accessible
             "-w", "/root",
             "/bin/sh", "-c", innerCmd
         )
@@ -201,8 +217,13 @@ object EmbeddedLinux {
             val pb = ProcessBuilder(prootCmd)
             pb.directory(context.filesDir)
             pb.environment().apply {
-                put("PROOT_NO_SECCOMP", "1")  // Required on some Android kernels
+                put("PROOT_NO_SECCOMP", "1")
                 put("PROOT_TMP_DIR", prootTmpDir(context).absolutePath)
+                // Termux proot loader — intercepts syscalls without ptrace (Android 14 safe)
+                put("PROOT_LOADER", loaderBin(context).absolutePath)
+                put("PROOT_LOADER_32", loader32Bin(context).absolutePath)
+                // Let proot binary find its shared libs (libtalloc, libandroid-shmem)
+                put("LD_LIBRARY_PATH", libsDir(context).absolutePath)
                 put("TMPDIR", context.cacheDir.absolutePath)
                 put("HOME", "/root")
                 put("USER", "root")
