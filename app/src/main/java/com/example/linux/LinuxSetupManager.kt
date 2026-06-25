@@ -79,12 +79,16 @@ class LinuxSetupManager(private val context: Context) {
             }
 
             val rootfsArchive = File(base, "alpine-rootfs.tar.gz")
-            if (rootfs.exists() && !EmbeddedLinux.rootfsHealthy(context)) {
-                emit(Stage.PREPARING, "Existing Alpine rootfs is incomplete; reinstalling…")
+            val rootfsNeedsReinstall = rootfs.exists() &&
+                (!EmbeddedLinux.rootfsHealthy(context) ||
+                    EmbeddedLinux.installedRootfsVersion(context) != EmbeddedLinux.ROOTFS_VERSION)
+            if (rootfsNeedsReinstall) {
+                emit(Stage.PREPARING, "Existing Alpine rootfs is incompatible; reinstalling…")
                 rootfs.deleteRecursively()
                 rootfs.mkdirs()
                 EmbeddedLinux.setupDone(context).delete()
                 EmbeddedLinux.runtimesFile(context).delete()
+                EmbeddedLinux.rootfsVersionFile(context).delete()
             }
 
             if (!EmbeddedLinux.rootfsHealthy(context)) {
@@ -101,6 +105,7 @@ class LinuxSetupManager(private val context: Context) {
                 if (!extracted) { emit(Stage.ERROR, "Extraction failed.", err = true); return@withContext }
                 
                 try { rootfsArchive.delete() } catch (e: Exception) {}
+                try { EmbeddedLinux.rootfsVersionFile(context).writeText(EmbeddedLinux.ROOTFS_VERSION) } catch (_: Exception) {}
                 emit(Stage.EXTRACTING, "Extraction complete ✓")
             }
 
@@ -109,6 +114,24 @@ class LinuxSetupManager(private val context: Context) {
                 EmbeddedLinux.configureSystem(context)
             } catch (e: Exception) {
                 emit(Stage.CONFIGURING, "Warning: ${e.message}")
+            }
+
+            emit(Stage.CONFIGURING, "Testing Alpine shell under PRoot…")
+            val smokeTest = EmbeddedLinux.exec(
+                context,
+                "echo alpine-ready",
+                timeoutSec = 30,
+                allowIncompleteSetup = true
+            )
+            if (!smokeTest.success || !smokeTest.output.contains("alpine-ready")) {
+                EmbeddedLinux.setupDone(context).delete()
+                EmbeddedLinux.runtimesFile(context).delete()
+                emit(
+                    Stage.ERROR,
+                    "PRoot failed to start Alpine: ${smokeTest.output.ifBlank { "exit ${smokeTest.exitCode}" }.take(300)}",
+                    err = true
+                )
+                return@withContext
             }
 
             if (!EmbeddedLinux.runtimesInstalled(context)) {

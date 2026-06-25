@@ -38,12 +38,13 @@ object EmbeddedLinux {
         else      -> "https://github.com/proot-me/proot/releases/download/v5.2.0/proot-v5.2.0-aarch64-static"
     }
 
-    // Lightweight Alpine Linux rootfs — significantly smaller to prevent crashes during extraction
-    // Using official Alpine Linux CDN for reliable downloads
+    // Lightweight Alpine Linux rootfs. Keep this on Alpine 3.18 because the
+    // upstream PRoot 5.2.0 static binary crashes with newer Alpine/musl builds
+    // on some Android kernels ("vpid 1: terminated with signal 7").
     val debianRootfsUrl: String get() = when (arch) {
-        "aarch64" -> "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/aarch64/alpine-minirootfs-3.24.1-aarch64.tar.gz"
-        "x86_64"  -> "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/x86_64/alpine-minirootfs-3.24.1-x86_64.tar.gz"
-        else      -> "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/aarch64/alpine-minirootfs-3.24.1-aarch64.tar.gz"
+        "aarch64" -> "https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/aarch64/alpine-minirootfs-3.18.9-aarch64.tar.gz"
+        "x86_64"  -> "https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/alpine-minirootfs-3.18.9-x86_64.tar.gz"
+        else      -> "https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/aarch64/alpine-minirootfs-3.18.9-aarch64.tar.gz"
     }
 
     // ── Paths ─────────────────────────────────────────────────────────────────
@@ -59,6 +60,8 @@ object EmbeddedLinux {
     fun rootfsDir(context: Context)  = File(baseDir(context), "rootfs")
     fun setupDone(context: Context)  = File(baseDir(context), ".setup_complete")
     fun runtimesFile(context: Context) = File(baseDir(context), ".runtimes_installed")
+    fun rootfsVersionFile(context: Context) = File(baseDir(context), ".rootfs_version")
+    const val ROOTFS_VERSION = "alpine-3.18.9"
 
     fun rootfsHealthy(context: Context): Boolean {
         val rootfs = rootfsDir(context)
@@ -83,7 +86,7 @@ object EmbeddedLinux {
     }
 
     // ── State checks ──────────────────────────────────────────────────────────
-    fun isReady(context: Context): Boolean {
+    fun isReady(context: Context, requireSetupDone: Boolean = true): Boolean {
         repairProotPermissions(context)
         val proot = executableProotBin(context)
         val rootfs = rootfsDir(context)
@@ -101,10 +104,13 @@ object EmbeddedLinux {
         proot.canExecute() &&
         rootfs.exists() &&
         rootfsHealthy(context) &&
-        done.exists()
+        (!requireSetupDone || done.exists())
     }
 
     fun runtimesInstalled(context: Context): Boolean = runtimesFile(context).exists()
+
+    fun installedRootfsVersion(context: Context): String =
+        rootfsVersionFile(context).takeIf { it.exists() }?.readText()?.trim().orEmpty()
 
     private fun prootTmpDir(context: Context): File =
         File(context.cacheDir, "proot-tmp").also { it.mkdirs() }
@@ -165,11 +171,12 @@ object EmbeddedLinux {
         context: Context,
         cmd: String,
         hostCwd: String? = null,
-        timeoutSec: Long = 120L
+        timeoutSec: Long = 120L,
+        allowIncompleteSetup: Boolean = false
     ): ExecResult {
         Log.d("EmbeddedLinux", ">>> exec() called with cmd: $cmd")
-        Log.d("EmbeddedLinux", ">>> isReady check: ${isReady(context)}")
-        if (!isReady(context)) {
+        Log.d("EmbeddedLinux", ">>> isReady check: ${isReady(context, requireSetupDone = !allowIncompleteSetup)}")
+        if (!isReady(context, requireSetupDone = !allowIncompleteSetup)) {
             Log.e("EmbeddedLinux", ">>> isReady returned false!")
             return ExecResult(-1, "Embedded Linux not ready. Please set it up first.")
         }
