@@ -177,6 +177,8 @@ class BashTool(private val context: Context, private val getWorkingDir: () -> St
         contains("can't create glue rootfs", ignoreCase = true) ||
         contains("PROOT_TMP_DIR", ignoreCase = true) ||
         contains("can't sanitize binding", ignoreCase = true) ||
+        contains("can't cd to /workspace", ignoreCase = true) ||
+        contains("Function not implemented", ignoreCase = true) ||
         contains("PRoot exec error", ignoreCase = true)
 
     private fun shellEscape(s: String): String = "'${s.replace("'", "'\\''")}'"

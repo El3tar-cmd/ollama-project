@@ -159,6 +159,10 @@ object EmbeddedLinux {
             try { Os.chmod(it.absolutePath, 0b111_111_111) } catch (_: Exception) {}
         }
         File(rootfsDir(context), "root").mkdirs()
+        File(rootfsDir(context), "workspace").also {
+            it.mkdirs()
+            try { Os.chmod(it.absolutePath, 0b111_111_111) } catch (_: Exception) {}
+        }
         File(rootfsDir(context), "proc").mkdirs()
         File(rootfsDir(context), "dev").mkdirs()
         File(rootfsDir(context), "sys").mkdirs()

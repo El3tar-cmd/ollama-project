@@ -905,6 +905,10 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             if (EmbeddedLinux.isReady(ctx)) {
                 val result = EmbeddedLinux.exec(ctx, cmd, shellCwd, timeoutSec = 120L)
+                if (!result.success && result.output.isProotWorkspaceBindError()) {
+                    execRuntimeCmd("/system/bin/sh", listOf("-c", cmd), emptyMap())
+                    return@launch
+                }
                 withContext(Dispatchers.Main) {
                     if (result.output.isNotBlank()) {
                         result.output.lines().forEach { shellLines.add(ShellLine(it, ShellLineType.OUTPUT)) }
@@ -918,6 +922,10 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
             }
         }
     }
+
+    private fun String.isProotWorkspaceBindError(): Boolean =
+        contains("can't cd to /workspace", ignoreCase = true) ||
+        (contains("/workspace", ignoreCase = true) && contains("Function not implemented", ignoreCase = true))
 
     private fun buildRuntimePath(extraBin: String? = null): String =
         listOfNotNull(
