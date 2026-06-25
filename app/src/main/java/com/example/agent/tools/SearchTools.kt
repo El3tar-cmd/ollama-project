@@ -7,6 +7,71 @@ class SearchTools(private val getWorkingDir: () -> String) {
 
     private fun ok(msg: String)  = AgentStep("tool_result", msg)
     private fun err(msg: String) = AgentStep("tool_result", "❌ $msg", isError = true)
+    private fun sz(b: Long) = when {
+        b < 1024      -> "${b}B"
+        b < 1024*1024 -> "${b/1024}KB"
+        else          -> "%.1fMB".format(b/1024.0/1024.0)
+    }
+
+    fun toolProjectOverview(dir: String): AgentStep {
+        val root = File(dir.ifBlank { getWorkingDir() })
+        if (!root.exists()) return err("Dir not found: $dir")
+        val files = root.walkTopDown()
+            .onEnter { it.name !in setOf(".git", ".gradle", "build", "node_modules") }
+            .filter { it.isFile }
+            .take(1500)
+            .toList()
+        val dirs = root.listFiles()?.filter { it.isDirectory }?.map { it.name }?.sorted().orEmpty()
+        val extCounts = files
+            .mapNotNull { it.extension.takeIf { ext -> ext.isNotBlank() }?.lowercase() }
+            .groupingBy { it }
+            .eachCount()
+            .entries
+            .sortedByDescending { it.value }
+            .take(10)
+        val important = listOf(
+            "settings.gradle.kts", "build.gradle.kts", "app/build.gradle.kts",
+            "README.md", "package.json", "Cargo.toml", "pyproject.toml",
+            "AndroidManifest.xml"
+        ).mapNotNull { name ->
+            files.firstOrNull { it.name == name || it.path.endsWith("/$name") }
+        }.distinctBy { it.absolutePath }.take(20)
+
+        return ok(buildString {
+            appendLine("🧭 project_overview: ${root.absolutePath}")
+            appendLine("Top dirs: ${dirs.take(20).joinToString(", ").ifBlank { "(none)" }}")
+            appendLine("Files scanned: ${files.size}")
+            appendLine("Languages/files: ${extCounts.joinToString(", ") { "${it.key}:${it.value}" }.ifBlank { "(none)" }}")
+            if (important.isNotEmpty()) {
+                appendLine("Important files:")
+                important.forEach { appendLine("  ${it.absolutePath} (${sz(it.length())})") }
+            }
+        }.trimEnd())
+    }
+
+    fun toolTodoScan(dir: String, maxResults: Int): AgentStep {
+        val root = File(dir.ifBlank { getWorkingDir() })
+        if (!root.exists()) return err("Dir not found: $dir")
+        val regex = Regex("""\b(TODO|FIXME|HACK|BUG|XXX)\b[:\s-]*(.*)""", RegexOption.IGNORE_CASE)
+        val limit = maxResults.coerceIn(1, 200)
+        val hits = mutableListOf<String>()
+        root.walkTopDown()
+            .onEnter { it.name !in setOf(".git", ".gradle", "build", "node_modules") }
+            .filter { it.isFile && it.length() < 1_000_000L }
+            .take(1000)
+            .forEach { f ->
+                try {
+                    f.readLines().forEachIndexed { i, line ->
+                        if (regex.containsMatchIn(line)) {
+                            hits.add("${f.absolutePath}:${i + 1}: ${line.trim().take(140)}")
+                            if (hits.size >= limit) return@forEach
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+        return if (hits.isEmpty()) ok("✅ todo_scan: no TODO/FIXME/HACK/BUG markers found")
+        else ok("📝 todo_scan: ${hits.size} marker(s)\n${hits.joinToString("\n")}")
+    }
 
     // ── Project Search (filename + content) ───────────────────────────────────
     fun toolSearchFiles(dir: String, query: String): AgentStep {

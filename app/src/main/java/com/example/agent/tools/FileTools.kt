@@ -83,6 +83,12 @@ class FileTools(private val getWorkingDir: () -> String) {
         return ok("📄 $path lines $start–${s + slice.size}/$total\n$out")
     }
 
+    fun toolReadLine(path: String, line: Int): AgentStep {
+        if (path.isBlank()) return err("read_line: path required")
+        val n = line.coerceAtLeast(1)
+        return toolReadLines(path, n, n)
+    }
+
     // ── Head (first N lines) ──────────────────────────────────────────────────
     fun toolHeadFile(path: String, lines: Int): AgentStep {
         if (path.isBlank()) return err("head_file: path required")
@@ -175,6 +181,74 @@ class FileTools(private val getWorkingDir: () -> String) {
             f.writeText(text.replace(old, new))
             ok("✅ replace_all: replaced $count occurrence(s) in ${f.name}")
         } catch (e: Exception) { err("replace_all: ${e.message}") }
+    }
+
+    fun toolReplaceLines(path: String, start: Int, end: Int, content: String): AgentStep {
+        if (path.isBlank()) return err("replace_lines: path required")
+        if (start < 1 || end < start) return err("replace_lines: invalid start/end")
+        return try {
+            val f = File(path)
+            if (!f.exists()) return err("Not found: $path")
+            val lines = f.readLines().toMutableList()
+            if (start > lines.size) return err("replace_lines: start line $start beyond file length ${lines.size}")
+            val from = start - 1
+            val toExclusive = end.coerceAtMost(lines.size)
+            val replacement = content.trimEnd('\n').split('\n')
+            repeat(toExclusive - from) { lines.removeAt(from) }
+            lines.addAll(from, replacement)
+            f.writeText(lines.joinToString("\n") + "\n")
+            ok("✅ replace_lines: replaced $start-${toExclusive} in $path with ${replacement.size} line(s)")
+        } catch (e: Exception) { err("replace_lines: ${e.message}") }
+    }
+
+    fun toolInsertBefore(path: String, marker: String, content: String): AgentStep =
+        insertNearMarker(path, marker, content, before = true)
+
+    fun toolInsertAfter(path: String, marker: String, content: String): AgentStep =
+        insertNearMarker(path, marker, content, before = false)
+
+    private fun insertNearMarker(path: String, marker: String, content: String, before: Boolean): AgentStep {
+        if (path.isBlank() || marker.isBlank()) return err("${if (before) "insert_before" else "insert_after"}: path and marker required")
+        return try {
+            val f = File(path)
+            if (!f.exists()) return err("Not found: $path")
+            val text = f.readText()
+            val idx = text.indexOf(marker)
+            if (idx < 0) return err("marker not found — read nearby lines and use an exact marker")
+            val insertAt = if (before) idx else idx + marker.length
+            val beforeText = text.substring(0, insertAt)
+            val afterText = text.substring(insertAt)
+            val insert = buildString {
+                if (beforeText.isNotEmpty() && !beforeText.endsWith('\n')) append('\n')
+                append(content.trimEnd('\n'))
+                if (afterText.isNotEmpty() && !afterText.startsWith('\n')) append('\n')
+            }
+            f.writeText(beforeText + insert + afterText)
+            ok("✅ ${if (before) "insert_before" else "insert_after"}: inserted ${content.lines().size} line(s) in $path")
+        } catch (e: Exception) { err("${if (before) "insert_before" else "insert_after"}: ${e.message}") }
+    }
+
+    fun toolFileOutline(path: String, maxLines: Int): AgentStep {
+        if (path.isBlank()) return err("file_outline: path required")
+        val f = File(path)
+        if (!f.exists()) return err("Not found: $path")
+        if (!f.isFile) return err("file_outline: not a file: $path")
+        val patterns = listOf(
+            Regex("""^\s*(class|interface|object|enum class|data class)\s+\w+"""),
+            Regex("""^\s*(public|private|protected|internal)?\s*(suspend\s+)?fun\s+\w+"""),
+            Regex("""^\s*(val|var)\s+\w+"""),
+            Regex("""^\s*(import|package)\s+""")
+        )
+        val limit = maxLines.coerceIn(20, 300)
+        val hits = mutableListOf<String>()
+        f.readLines().forEachIndexed { i, line ->
+            if (patterns.any { it.containsMatchIn(line) }) {
+                hits.add("${i + 1}: ${line.trim().take(140)}")
+                if (hits.size >= limit) return@forEachIndexed
+            }
+        }
+        return if (hits.isEmpty()) ok("🧭 file_outline: no outline symbols found in $path")
+        else ok("🧭 file_outline: ${hits.size} symbol/import line(s) in $path\n${hits.joinToString("\n")}")
     }
 
     // ── Delete File ───────────────────────────────────────────────────────────
