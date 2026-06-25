@@ -653,7 +653,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         val normalized = modelName.lowercase(Locale.US)
         return normalized.startsWith("cloud/") ||
             normalized.startsWith("ollama.com/") ||
-            (!apiOnline && normalized.endsWith(":cloud"))
+            normalized.endsWith(":cloud")
     }
 
     private fun cloudRouteModelName(modelName: String): String =
@@ -815,7 +815,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
                     model       = if (isCloudModel) cloudRouteModelName(agentModel) else agentModel,
                     baseUrl     = if (activeBackend == "llamacpp") "http://127.0.0.1:$llamaPort" else "http://$hostUrlState",
                     cloudApiKey = cloudApiKey,
-                    backend     = activeBackend,
+                    backend     = if (isCloudModel) "ollama-cloud" else activeBackend,
                     maxSteps    = agentMaxSteps,
                     onAskUser   = { question ->
                         withContext(Dispatchers.Main) { agentPendingQuestion = question }
@@ -843,12 +843,13 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     fun spawnSubAgent(context: Context, subTask: String) {
         agentSteps.add(AgentStep("spawn", "🌱 Spawning sub-agent: $subTask"))
         viewModelScope.launch(Dispatchers.IO) {
+            val isCloudModel = shouldUseCloudRoute(agentModel)
             agentEngine.runAgentLoop(
                 userTask    = subTask,
-                model       = agentModel,
+                model       = if (isCloudModel) cloudRouteModelName(agentModel) else agentModel,
                 baseUrl     = "http://$hostUrlState",
                 cloudApiKey = cloudApiKey,
-                backend     = activeBackend
+                backend     = if (isCloudModel) "ollama-cloud" else activeBackend
             ) { step -> withContext(Dispatchers.Main) { agentSteps.add(AgentStep(step.type, "  [sub] ${step.content}", step.isError)) } }
             withContext(Dispatchers.Main) { isAgentRunning = false; refreshFileTree() }
         }
@@ -973,8 +974,8 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     var terminalMode by mutableStateOf("alpine") // "ollama" or "alpine"
 
     fun runTerminalCommand(context: Context) {
-        val cmds = terminalInput.trim().split("\\s+".toRegex()).filter { it.isNotBlank() }
-        terminalInput = ""; if (cmds.isEmpty()) return
+        val rawCmd = terminalInput.trim()
+        terminalInput = ""; if (rawCmd.isEmpty()) return
 
         if (terminalMode == "alpine") {
             // Run command inside Alpine Linux via PRoot
@@ -982,10 +983,9 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
                 liveLogs.add("❌ Alpine Linux not installed. Set it up first.")
                 return
             }
-            val fullCmd = cmds.joinToString(" ")
-            liveLogs.add("> alpine: $fullCmd")
+            liveLogs.add("> alpine: $rawCmd")
             viewModelScope.launch(Dispatchers.IO) {
-                val result = EmbeddedLinux.exec(context, fullCmd, timeoutSec = 120L)
+                val result = EmbeddedLinux.exec(context, rawCmd, timeoutSec = 120L)
                 withContext(Dispatchers.Main) {
                     if (result.success) {
                         liveLogs.add("✅ ${result.output.take(5000)}")
@@ -996,6 +996,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
             }
         } else {
             // Run Ollama command
+            val cmds = rawCmd.split("\\s+".toRegex()).filter { it.isNotBlank() }
             liveLogs.add("> ollama ${cmds.joinToString(" ")}"); authLoginUrl = null
             executor.execOllamaCommand(*cmds.toTypedArray()) { line ->
                 viewModelScope.launch(Dispatchers.Main) {

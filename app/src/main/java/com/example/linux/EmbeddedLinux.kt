@@ -146,7 +146,6 @@ object EmbeddedLinux {
         val rootfs = rootfsDir(context).absolutePath
         return listOf(
             proot,
-            "--kill-on-exit",
             "-r", rootfs,
             "-b", "/dev:/dev",
             "-b", "/sys:/sys",
@@ -193,7 +192,6 @@ object EmbeddedLinux {
             pb.directory(context.filesDir)
             pb.environment().apply {
                 put("PROOT_NO_SECCOMP", "1")  // Required on some Android kernels
-                put("PROOT_LOADER", executableProotBin(context).absolutePath)
                 put("PROOT_TMP_DIR", prootTmpDir(context).absolutePath)
                 put("TMPDIR", context.cacheDir.absolutePath)
                 put("HOME", "/root")

@@ -44,7 +44,8 @@ class AgentEngine(private val context: android.content.Context) {
                     if (!cont.isCompleted) cont.resume(Unit)
                 }
                 val call = when {
-                    cloudApiKey.isNotBlank() && model.endsWith(":cloud") ->
+                    cloudApiKey.isNotBlank() &&
+                        (backend == "ollama-cloud" || model.endsWith(":cloud")) ->
                         api.cloudChatStream(cloudApiKey, model, messages,
                             onTokenGenerated = onTok, onComplete = onDone)
                     backend == "llamacpp" ->
