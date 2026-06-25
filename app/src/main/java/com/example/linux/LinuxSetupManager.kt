@@ -14,6 +14,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.TimeUnit
 import java.util.zip.GZIPInputStream
+import org.apache.commons.compress.archivers.ar.ArArchiveInputStream
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.xz.XZCompressorInputStream
 
@@ -65,13 +66,41 @@ class LinuxSetupManager(private val context: Context) {
             val rootfs = EmbeddedLinux.rootfsDir(context).also { it.mkdirs() }
             val proot = EmbeddedLinux.prootBin(context)
 
-            if (!proot.exists() || !proot.canExecute()) {
-                emit(Stage.DOWNLOADING_PROOT, "Downloading PRoot binary…", 0)
-                val ok = downloadFile(EmbeddedLinux.prootUrl, proot) { pct ->
+            val loaderBin  = EmbeddedLinux.loaderBin(context)
+            val loader32Bin = EmbeddedLinux.loader32Bin(context)
+            val libsDir    = EmbeddedLinux.libsDir(context).also { it.mkdirs() }
+
+            if (!proot.exists() || !proot.canExecute() || !loaderBin.exists()) {
+                emit(Stage.DOWNLOADING_PROOT, "Downloading Termux PRoot (Android 14 compatible)…", 0)
+                val prootDeb = File(base, "proot.deb")
+                val dlOk = downloadFile(EmbeddedLinux.prootDebUrl, prootDeb) { pct ->
                     emit(Stage.DOWNLOADING_PROOT, "Downloading PRoot… $pct%", pct)
                 }
-                if (!ok) { emit(Stage.ERROR, "Failed to download PRoot binary.", err = true); return@withContext }
+                if (!dlOk) { emit(Stage.ERROR, "Failed to download PRoot package.", err = true); return@withContext }
+
+                emit(Stage.DOWNLOADING_PROOT, "Extracting PRoot…")
+                val extracted = extractFromDeb(prootDeb, mapOf(
+                    "usr/bin/proot"          to proot,
+                    "usr/libexec/proot/loader"   to loaderBin,
+                    "usr/libexec/proot/loader32" to loader32Bin
+                ))
+                try { prootDeb.delete() } catch (_: Exception) {}
+                if (!extracted) { emit(Stage.ERROR, "Failed to extract PRoot.", err = true); return@withContext }
+
+                emit(Stage.DOWNLOADING_PROOT, "Downloading PRoot libraries…")
+                val tallocDeb = File(base, "talloc.deb")
+                val shmemDeb  = File(base, "shmem.deb")
+                val libsOk = downloadFile(EmbeddedLinux.tallocDebUrl, tallocDeb) { _ -> } &&
+                             downloadFile(EmbeddedLinux.shmemDebUrl, shmemDeb)  { _ -> }
+                if (!libsOk) { emit(Stage.ERROR, "Failed to download PRoot libraries.", err = true); return@withContext }
+
+                extractFromDeb(tallocDeb, mapOf("usr/lib/libtalloc.so.2" to File(libsDir, "libtalloc.so.2")))
+                extractFromDeb(shmemDeb,  mapOf("usr/lib/libandroid-shmem.so" to File(libsDir, "libandroid-shmem.so")))
+                try { tallocDeb.delete(); shmemDeb.delete() } catch (_: Exception) {}
+
                 EmbeddedLinux.repairProotPermissions(context)
+                loaderBin.setExecutable(true, false)
+                loader32Bin.setExecutable(true, false)
                 emit(Stage.DOWNLOADING_PROOT, "PRoot ready ✓", 100)
             } else {
                 EmbeddedLinux.repairProotPermissions(context)
@@ -165,6 +194,55 @@ class LinuxSetupManager(private val context: Context) {
         } catch (e: Exception) {
             Log.e("LinuxSetupManager", "Critical setup error", e)
             onProgress(Progress(Stage.ERROR, "Setup error: ${e.localizedMessage ?: e.message}", isError = true))
+        }
+    }
+
+    /**
+     * Extracts specific files from a Debian .deb package (AR archive containing data.tar.xz/gz).
+     * @param debFile  The downloaded .deb file
+     * @param targets  Map of "path/inside/tar" → destination File on disk
+     */
+    private suspend fun extractFromDeb(debFile: File, targets: Map<String, File>): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val remaining = targets.toMutableMap()
+            ArArchiveInputStream(java.io.BufferedInputStream(debFile.inputStream())).use { ar ->
+                var arEntry = ar.nextEntry
+                while (arEntry != null && remaining.isNotEmpty()) {
+                    val name = arEntry.name.trimEnd('/')
+                    if (name.startsWith("data.tar")) {
+                        val decompressed = when {
+                            name.endsWith(".xz") -> XZCompressorInputStream(ar)
+                            name.endsWith(".gz")  -> GZIPInputStream(ar)
+                            else -> ar
+                        }
+                        val tar = TarArchiveInputStream(decompressed)
+                        var tarEntry = tar.nextTarEntry
+                        while (tarEntry != null && remaining.isNotEmpty()) {
+                            // Normalize: strip leading "./" from tar entry names
+                            val tarName = tarEntry.name.removePrefix("./").trimEnd('/')
+                            val destFile = remaining.entries.find { (k, _) ->
+                                tarName == k || tarName.endsWith("/$k")
+                            }
+                            if (destFile != null && !tarEntry.isDirectory) {
+                                destFile.value.parentFile?.mkdirs()
+                                FileOutputStream(destFile.value).use { fos ->
+                                    val buf = ByteArray(32768)
+                                    var len: Int
+                                    while (tar.read(buf).also { len = it } != -1) fos.write(buf, 0, len)
+                                }
+                                remaining.remove(destFile.key)
+                            }
+                            tarEntry = tar.nextTarEntry
+                        }
+                        break
+                    }
+                    arEntry = ar.nextEntry
+                }
+            }
+            true
+        } catch (e: Exception) {
+            Log.e("LinuxSetupManager", "extractFromDeb failed: ${e.message}", e)
+            false
         }
     }
 
