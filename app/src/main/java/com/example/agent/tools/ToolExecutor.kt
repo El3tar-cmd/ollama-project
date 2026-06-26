@@ -60,12 +60,26 @@ class ToolExecutor(
             // ── File Reader ───────────────────────────────────────────────────
             "file_reader", "read_file", "read"
                 -> fileTools.toolReadFile(tool.optString("path", ""))
-            "line_reader", "read_file_lines", "read_lines"
-                -> fileTools.toolReadLines(
-                    tool.optString("path", ""),
-                    tool.optInt("start", 1),
-                    tool.optInt("end", 50)
-                )
+            "line_reader", "read_file_lines", "read_lines" -> {
+                // Handle both separate start/end and interval formats like "(5,10)" or "5-10"
+                val path = tool.optString("path", "")
+                val startStr = tool.optString("start", tool.optString("lines", "1"))
+                val endStr = tool.optString("end", tool.optString("lines", "50"))
+                
+                // Parse interval format if present (e.g., "(5,10)" or "5-10")
+                val intervalMatch = Regex("""^\(?(\d+)[-,:]?\s*(\d+)\)?$""").find(startStr)
+                val start: Int
+                val end: Int
+                if (intervalMatch != null) {
+                    start = intervalMatch.groupValues[1].toIntOrNull() ?: 1
+                    end = intervalMatch.groupValues[2].toIntOrNull() ?: 50
+                } else {
+                    start = startStr.toIntOrNull() ?: 1
+                    end = endStr.toIntOrNull() ?: 50
+                }
+                
+                fileTools.toolReadLines(path, start, end)
+            }
             "head_file"
                 -> fileTools.toolHeadFile(tool.optString("path", ""), tool.optInt("lines", 20))
             "tail_file"

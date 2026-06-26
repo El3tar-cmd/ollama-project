@@ -101,9 +101,21 @@ class FileTools(private val getWorkingDir: () -> String) {
         if (!f.exists()) return err("Not found: $path")
         val lines = f.readLines()
         val total = lines.size
-        val s     = (start - 1).coerceIn(0, total)
-        val e     = end.coerceIn(s, total)
-        val slice = lines.subList(s, e)
+        val s: Int
+        val e: Int
+        
+        // Handle interval formats like "(min,max)" or "min-max" in start parameter
+        val startStr = start.toString()
+        val intervalMatch = Regex("""^\(?(\d+)[-,:]?\s*(\d+)\)?$""").find(startStr)
+        if (intervalMatch != null) {
+            s = intervalMatch.groupValues[1].toIntOrNull()?.coerceIn(1, total) ?: 1
+            e = intervalMatch.groupValues[2].toIntOrNull()?.coerceIn(s, total) ?: total
+        } else {
+            s = (start - 1).coerceIn(0, total)
+            e = end.coerceIn(s, total)
+        }
+        
+        val slice = lines.subList(s, e.coerceAtLeast(s))
         val out   = slice.mapIndexed { i, l -> "${s + i + 1}: $l" }.joinToString("\n")
         return ok("📄 $path lines $start–${s + slice.size}/$total\n$out")
     }
