@@ -66,8 +66,8 @@ class ToolExecutor(
                 val startStr = tool.optString("start", tool.optString("lines", "1"))
                 val endStr = tool.optString("end", tool.optString("lines", "50"))
                 
-                // Parse interval format if present (e.g., "(5,10)" or "5-10")
-                val intervalMatch = Regex("""^\(?(\d+)[-,:]?\s*(\d+)\)?$""").find(startStr)
+                // Parse interval format if present (e.g., "(5,10)", "{5,10}", or "5-10")
+                val intervalMatch = Regex("""^[\{\(]?(\d+)[-,:]?\s*(\d+)[\)\}]?$""").find(startStr)
                 val start: Int
                 val end: Int
                 if (intervalMatch != null) {

@@ -104,9 +104,9 @@ class FileTools(private val getWorkingDir: () -> String) {
         val s: Int
         val e: Int
         
-        // Handle interval formats like "(min,max)" or "min-max" in start parameter
+        // Handle interval formats like "{min,max}", "(min,max)" or "min-max" in start parameter
         val startStr = start.toString()
-        val intervalMatch = Regex("""^\(?(\d+)[-,:]?\s*(\d+)\)?$""").find(startStr)
+        val intervalMatch = Regex("""^[\{\(]?(\d+)[-,:]?\s*(\d+)[\)\}]?$""").find(startStr)
         if (intervalMatch != null) {
             s = intervalMatch.groupValues[1].toIntOrNull()?.coerceIn(1, total) ?: 1
             e = intervalMatch.groupValues[2].toIntOrNull()?.coerceIn(s, total) ?: total
