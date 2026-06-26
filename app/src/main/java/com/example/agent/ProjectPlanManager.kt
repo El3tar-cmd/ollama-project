@@ -2,6 +2,8 @@ package com.example.agent
 
 import java.io.File
 
+data class AgentTask(val description: String, val isDone: Boolean = false)
+
 class ProjectPlanManager(private val getWorkingDir: () -> String) {
 
     private val devyDir: File
@@ -74,14 +76,65 @@ class ProjectPlanManager(private val getWorkingDir: () -> String) {
         return true
     }
 
+    fun updatePlan(newPlan: String) {
+        planFile.writeText(newPlan.trimEnd() + "\n")
+    }
+
+    fun getTasks(): List<AgentTask> {
+        if (!tasksFile.exists()) return emptyList()
+        return tasksFile.readLines()
+            .filter { it.trimStart().startsWith("- [") }
+            .map { line ->
+                val isDone = line.contains("- [x]")
+                val desc = line.substringAfter("- [ ] ").substringAfter("- [x] ").trim()
+                AgentTask(desc, isDone)
+            }
+    }
+
+    fun updateTaskStatus(index: Int, isDone: Boolean) {
+        val tasks = getTasks().toMutableList()
+        if (index !in tasks.indices) return
+        
+        tasks[index] = tasks[index].copy(isDone = isDone)
+        saveTasks(tasks)
+    }
+
+    fun addTask(description: String) {
+        val tasks = getTasks().toMutableList()
+        tasks.add(AgentTask(description))
+        saveTasks(tasks)
+    }
+
+    fun removeTask(index: Int) {
+        val tasks = getTasks().toMutableList()
+        if (index !in tasks.indices) return
+        tasks.removeAt(index)
+        saveTasks(tasks)
+    }
+
+    fun calculateProgress(): Double {
+        val tasks = getTasks()
+        if (tasks.isEmpty()) return 0.0
+        val completed = tasks.count { it.isDone }
+        return (completed.toDouble() / tasks.size) * 100.0
+    }
+
+    private fun saveTasks(tasks: List<AgentTask>) {
+        tasksFile.writeText(buildString {
+            appendLine("# Tasks")
+            appendLine()
+            tasks.forEach { task ->
+                val checkbox = if (task.isDone) "- [x]" else "- [ ]"
+                appendLine("$checkbox ${task.description}")
+            }
+        }.trimEnd() + "\n")
+    }
+
+    // Keep legacy method for compatibility
     fun markFirstPendingDone(label: String) {
-        if (!tasksFile.exists()) return
-        val lines = tasksFile.readLines().toMutableList()
-        val idx = lines.indexOfFirst { it.trimStart().startsWith("- [ ]") }
-        if (idx < 0) return
-        val current = lines[idx]
-        val suffix = if (label.isBlank()) "" else " <!-- $label -->"
-        lines[idx] = current.replace("- [ ]", "- [x]", ignoreCase = false) + suffix
-        tasksFile.writeText(lines.joinToString("\n") + "\n")
+        val tasks = getTasks()
+        val firstPendingIdx = tasks.indexOfFirst { !it.isDone }
+        if (firstPendingIdx == -1) return
+        updateTaskStatus(firstPendingIdx, true)
     }
 }

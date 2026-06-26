@@ -41,11 +41,7 @@ class BashTool(private val context: Context, private val getWorkingDir: () -> St
             bin = "/system/bin/sh",
             args = listOf("-c", cmd),
             cwd = cwd,
-            extraEnv = mapOf(
-                "HOME" to getWorkingDir(),
-                "PATH" to "/system/bin:/system/xbin:/vendor/bin",
-                "TMPDIR" to context.cacheDir.absolutePath
-            ),
+            extraEnv = com.example.terminal.TermuxBridge.buildTermuxEnv(context),
             timeoutSec = timeoutSec,
             label = "android-shell"
         )

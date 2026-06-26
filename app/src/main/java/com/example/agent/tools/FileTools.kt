@@ -7,6 +7,15 @@ class FileTools(private val getWorkingDir: () -> String) {
 
     private fun ok(msg: String)  = AgentStep("tool_result", msg)
     private fun err(msg: String) = AgentStep("tool_result", "❌ $msg", isError = true)
+
+    private fun validatePath(path: String): File {
+        val workingDir = File(getWorkingDir()).canonicalFile
+        val targetFile = File(path).canonicalFile
+        if (!targetFile.absolutePath.startsWith(workingDir.absolutePath)) {
+            throw SecurityException("Path Traversal Attempt: $path is outside the workspace")
+        }
+        return targetFile
+    }
     private fun sz(b: Long) = when {
         b < 1024      -> "${b}B"
         b < 1024*1024 -> "${b/1024}KB"
@@ -15,7 +24,11 @@ class FileTools(private val getWorkingDir: () -> String) {
 
     // ── Directory Explorer ────────────────────────────────────────────────────
     fun toolListDir(path: String): AgentStep {
-        val dir = File(path.ifBlank { getWorkingDir() })
+        val dir = try {
+            validatePath(path.ifBlank { getWorkingDir() })
+        } catch (e: SecurityException) {
+            return err(e.message ?: "Invalid path")
+        }
         if (!dir.exists()) return err("Not found: $path")
         val entries = dir.listFiles()
             ?.sortedWith(compareBy({ !it.isDirectory }, { it.name }))
@@ -31,7 +44,11 @@ class FileTools(private val getWorkingDir: () -> String) {
 
     // ── Tree (recursive directory tree) ───────────────────────────────────────
     fun toolTree(path: String, maxDepth: Int): AgentStep {
-        val root = File(path.ifBlank { getWorkingDir() })
+        val root = try {
+            validatePath(path.ifBlank { getWorkingDir() })
+        } catch (e: SecurityException) {
+            return err(e.message ?: "Invalid path")
+        }
         if (!root.exists()) return err("Not found: $path")
         val depth = maxDepth.coerceIn(1, 6)
         val sb    = StringBuilder("🌳 ${root.absolutePath}\n")
@@ -62,7 +79,11 @@ class FileTools(private val getWorkingDir: () -> String) {
     // ── File Reader ───────────────────────────────────────────────────────────
     fun toolReadFile(path: String): AgentStep {
         if (path.isBlank()) return err("read_file: path required")
-        val f = File(path)
+        val f = try {
+            validatePath(path)
+        } catch (e: SecurityException) {
+            return err(e.message ?: "Invalid path")
+        }
         if (!f.exists()) return err("Not found: $path")
         if (f.length() > 400_000L) return err("File too large (${sz(f.length())}). Use line_reader.")
         val text = f.readText()
@@ -72,7 +93,11 @@ class FileTools(private val getWorkingDir: () -> String) {
     // ── Line Reader ───────────────────────────────────────────────────────────
     fun toolReadLines(path: String, start: Int, end: Int): AgentStep {
         if (path.isBlank()) return err("line_reader: path required")
-        val f = File(path)
+        val f = try {
+            validatePath(path)
+        } catch (e: SecurityException) {
+            return err(e.message ?: "Invalid path")
+        }
         if (!f.exists()) return err("Not found: $path")
         val lines = f.readLines()
         val total = lines.size
@@ -92,7 +117,11 @@ class FileTools(private val getWorkingDir: () -> String) {
     // ── Head (first N lines) ──────────────────────────────────────────────────
     fun toolHeadFile(path: String, lines: Int): AgentStep {
         if (path.isBlank()) return err("head_file: path required")
-        val f = File(path)
+        val f = try {
+            validatePath(path)
+        } catch (e: SecurityException) {
+            return err(e.message ?: "Invalid path")
+        }
         if (!f.exists()) return err("Not found: $path")
         val n    = lines.coerceIn(1, 500)
         val all  = f.readLines()
@@ -103,7 +132,11 @@ class FileTools(private val getWorkingDir: () -> String) {
     // ── Tail (last N lines) ───────────────────────────────────────────────────
     fun toolTailFile(path: String, lines: Int): AgentStep {
         if (path.isBlank()) return err("tail_file: path required")
-        val f = File(path)
+        val f = try {
+            validatePath(path)
+        } catch (e: SecurityException) {
+            return err(e.message ?: "Invalid path")
+        }
         if (!f.exists()) return err("Not found: $path")
         val n    = lines.coerceIn(1, 500)
         val all  = f.readLines()
@@ -115,7 +148,11 @@ class FileTools(private val getWorkingDir: () -> String) {
     // ── File Info (size, modified, lines, permissions) ────────────────────────
     fun toolFileInfo(path: String): AgentStep {
         if (path.isBlank()) return err("file_info: path required")
-        val f = File(path)
+        val f = try {
+            validatePath(path)
+        } catch (e: SecurityException) {
+            return err(e.message ?: "Invalid path")
+        }
         if (!f.exists()) return err("Not found: $path")
         val ts  = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US)
             .format(java.util.Date(f.lastModified()))
@@ -137,7 +174,7 @@ class FileTools(private val getWorkingDir: () -> String) {
     fun toolWriteFile(path: String, content: String): AgentStep {
         if (path.isBlank()) return err("file_writer: path required")
         return try {
-            val f = File(path)
+            val f = validatePath(path)
             f.parentFile?.mkdirs()
             f.writeText(content)
             ok("✅ Wrote ${sz(f.length())} → $path (${content.lines().size} lines)")
@@ -148,7 +185,7 @@ class FileTools(private val getWorkingDir: () -> String) {
     fun toolAppendFile(path: String, content: String): AgentStep {
         if (path.isBlank()) return err("append_file: path required")
         return try {
-            val f = File(path)
+            val f = validatePath(path)
             f.parentFile?.mkdirs()
             f.appendText(content)
             ok("✅ Appended ${content.length} chars → $path")
@@ -159,7 +196,7 @@ class FileTools(private val getWorkingDir: () -> String) {
     fun toolEditFile(path: String, old: String, new: String): AgentStep {
         if (path.isBlank() || old.isBlank()) return err("line_editor: path and old required")
         return try {
-            val f = File(path)
+            val f = validatePath(path)
             if (!f.exists()) return err("Not found: $path")
             val text  = f.readText()
             val count = text.split(old).size - 1
@@ -173,7 +210,7 @@ class FileTools(private val getWorkingDir: () -> String) {
     fun toolReplaceAll(path: String, old: String, new: String): AgentStep {
         if (path.isBlank() || old.isBlank()) return err("replace_all: path and old required")
         return try {
-            val f = File(path)
+            val f = validatePath(path)
             if (!f.exists()) return err("Not found: $path")
             val text  = f.readText()
             val count = text.split(old).size - 1
@@ -187,7 +224,7 @@ class FileTools(private val getWorkingDir: () -> String) {
         if (path.isBlank()) return err("replace_lines: path required")
         if (start < 1 || end < start) return err("replace_lines: invalid start/end")
         return try {
-            val f = File(path)
+            val f = validatePath(path)
             if (!f.exists()) return err("Not found: $path")
             val lines = f.readLines().toMutableList()
             if (start > lines.size) return err("replace_lines: start line $start beyond file length ${lines.size}")
@@ -210,7 +247,7 @@ class FileTools(private val getWorkingDir: () -> String) {
     private fun insertNearMarker(path: String, marker: String, content: String, before: Boolean): AgentStep {
         if (path.isBlank() || marker.isBlank()) return err("${if (before) "insert_before" else "insert_after"}: path and marker required")
         return try {
-            val f = File(path)
+            val f = validatePath(path)
             if (!f.exists()) return err("Not found: $path")
             val text = f.readText()
             val idx = text.indexOf(marker)
@@ -230,7 +267,11 @@ class FileTools(private val getWorkingDir: () -> String) {
 
     fun toolFileOutline(path: String, maxLines: Int): AgentStep {
         if (path.isBlank()) return err("file_outline: path required")
-        val f = File(path)
+        val f = try {
+            validatePath(path)
+        } catch (e: SecurityException) {
+            return err(e.message ?: "Invalid path")
+        }
         if (!f.exists()) return err("Not found: $path")
         if (!f.isFile) return err("file_outline: not a file: $path")
         val patterns = listOf(
@@ -254,7 +295,11 @@ class FileTools(private val getWorkingDir: () -> String) {
     // ── Delete File ───────────────────────────────────────────────────────────
     fun toolDeleteFile(path: String): AgentStep {
         if (path.isBlank()) return err("delete_file: path required")
-        val f = File(path)
+        val f = try {
+            validatePath(path)
+        } catch (e: SecurityException) {
+            return err(e.message ?: "Invalid path")
+        }
         if (!f.exists()) return err("Not found: $path")
         val deleted = if (f.isDirectory) f.deleteRecursively() else f.delete()
         return if (deleted) ok("🗑️ Deleted: $path")
@@ -264,7 +309,8 @@ class FileTools(private val getWorkingDir: () -> String) {
     // ── Copy File ─────────────────────────────────────────────────────────────
     fun toolCopyFile(src: String, dst: String): AgentStep {
         if (src.isBlank() || dst.isBlank()) return err("copy_file: src and dst required")
-        val s = File(src); val d = File(dst)
+        val s = try { validatePath(src) } catch (e: SecurityException) { return err(e.message ?: "Invalid path") }
+        val d = try { validatePath(dst) } catch (e: SecurityException) { return err(e.message ?: "Invalid path") }
         if (!s.exists()) return err("Source not found: $src")
         return try {
             d.parentFile?.mkdirs()
@@ -276,7 +322,8 @@ class FileTools(private val getWorkingDir: () -> String) {
     // ── Move File ─────────────────────────────────────────────────────────────
     fun toolMoveFile(src: String, dst: String): AgentStep {
         if (src.isBlank() || dst.isBlank()) return err("move_file: src and dst required")
-        val s = File(src); val d = File(dst)
+        val s = try { validatePath(src) } catch (e: SecurityException) { return err(e.message ?: "Invalid path") }
+        val d = try { validatePath(dst) } catch (e: SecurityException) { return err(e.message ?: "Invalid path") }
         if (!s.exists()) return err("Source not found: $src")
         d.parentFile?.mkdirs()
         return try {
@@ -288,7 +335,7 @@ class FileTools(private val getWorkingDir: () -> String) {
     // ── Create Dir ────────────────────────────────────────────────────────────
     fun toolCreateDir(path: String): AgentStep {
         if (path.isBlank()) return err("create_dir: path required")
-        val d = File(path)
+        val d = try { validatePath(path) } catch (e: SecurityException) { return err(e.message ?: "Invalid path") }
         if (d.exists()) return ok("ℹ️ Already exists: $path")
         return if (d.mkdirs()) ok("✅ Created: $path")
         else err("Could not create: $path")
@@ -296,7 +343,11 @@ class FileTools(private val getWorkingDir: () -> String) {
 
     // ── Find Files (glob pattern across directory) ─────────────────────────────
     fun toolFindFiles(dir: String, pattern: String, maxResults: Int): AgentStep {
-        val root = File(dir.ifBlank { getWorkingDir() })
+        val root = try {
+            validatePath(dir.ifBlank { getWorkingDir() })
+        } catch (e: SecurityException) {
+            return err(e.message ?: "Invalid path")
+        }
         if (!root.exists()) return err("Dir not found: $dir")
         if (pattern.isBlank()) return err("find_files: pattern required (e.g. *.kt)")
 
@@ -321,7 +372,8 @@ class FileTools(private val getWorkingDir: () -> String) {
     // ── File Diff (compare two files line by line) ─────────────────────────────
     fun toolFileDiff(pathA: String, pathB: String): AgentStep {
         if (pathA.isBlank() || pathB.isBlank()) return err("file_diff: two paths required")
-        val a = File(pathA); val b = File(pathB)
+        val a = try { validatePath(pathA) } catch (e: SecurityException) { return err(e.message ?: "Invalid path") }
+        val b = try { validatePath(pathB) } catch (e: SecurityException) { return err(e.message ?: "Invalid path") }
         if (!a.exists()) return err("Not found: $pathA")
         if (!b.exists()) return err("Not found: $pathB")
 
@@ -349,7 +401,7 @@ class FileTools(private val getWorkingDir: () -> String) {
     // ── File Exists check ─────────────────────────────────────────────────────
     fun toolFileExists(path: String): AgentStep {
         if (path.isBlank()) return err("file_exists: path required")
-        val f = File(path)
+        val f = try { validatePath(path) } catch (e: SecurityException) { return err(e.message ?: "Invalid path") }
         return ok("${if (f.exists()) "✅" else "❌"} ${f.absolutePath} — exists: ${f.exists()}${if (f.exists()) ", isDir: ${f.isDirectory}" else ""}")
     }
 }
