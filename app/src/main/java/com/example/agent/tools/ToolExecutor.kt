@@ -250,7 +250,47 @@ class ToolExecutor(
                 AgentStep("complete", "✅ $summary")
             }
 
-            else -> AgentStep("tool_result", "❌ Unknown tool: \"$name\"", isError = true)
+            else -> {
+                // Try to map common misnamed tools to correct ones
+                val mappedName = mapOf(
+                    // File reading
+                    "extract" to "file_reader",
+                    "get_file" to "file_reader",
+                    "read_css" to "file_reader",
+                    "read_js" to "file_reader",
+                    "read_html" to "file_reader",
+                    "get_css" to "file_reader",
+                    "get_js" to "file_reader",
+                    // File operations
+                    "delete" to "delete_file",
+                    "remove" to "delete_file",
+                    "move" to "move_file",
+                    "rename" to "move_file",
+                    "copy" to "copy_file",
+                    // Terminal
+                    "run" to "terminal_executor",
+                    "execute" to "terminal_executor",
+                    "command" to "terminal_executor",
+                    "bash_cmd" to "terminal_executor",
+                    // Directory
+                    "ls" to "directory_explorer",
+                    "list" to "directory_explorer",
+                    // Git
+                    "git_status" to "git_status",
+                    "gitdiff" to "git_diff",
+                    // Search
+                    "search" to "project_search",
+                    "grep" to "regex_search"
+                )[name.lowercase()]
+                
+                if (mappedName != null) {
+                    // Re-execute with mapped tool name
+                    val mappedTool = JSONObject(tool.toString()).put("name", mappedName)
+                    return@withContext executeTool(mappedTool)
+                }
+                
+                AgentStep("tool_result", "❌ Unknown tool: \"$name\"", isError = true)
+            }
         }
     }
 }
