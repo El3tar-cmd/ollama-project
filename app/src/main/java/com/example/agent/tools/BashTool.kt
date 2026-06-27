@@ -174,8 +174,9 @@ class BashTool(private val context: Context, private val getWorkingDir: () -> St
         contains("PROOT_TMP_DIR", ignoreCase = true) ||
         contains("can't sanitize binding", ignoreCase = true) ||
         contains("can't cd to /workspace", ignoreCase = true) ||
-        contains("Function not implemented", ignoreCase = true) ||
         contains("PRoot exec error", ignoreCase = true)
+        // Note: "Function not implemented" removed — it can also come from the
+        // child process itself (e.g. Python on older kernels), not from PRoot infra.
 
     private fun shellEscape(s: String): String = "'${s.replace("'", "'\\''")}'"
 

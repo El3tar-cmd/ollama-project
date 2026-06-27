@@ -981,6 +981,9 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
 
     var terminalMode by mutableStateOf("alpine") // "ollama" or "alpine"
 
+    // Persistent Alpine working directory (absolute path inside the container)
+    var alpineCwd by mutableStateOf("/root")
+
     fun runTerminalCommand(context: Context) {
         val rawCmd = terminalInput.trim()
         terminalInput = ""; if (rawCmd.isEmpty()) return
@@ -991,14 +994,56 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
                 liveLogs.add("❌ Alpine Linux not installed. Set it up first.")
                 return
             }
+
+            // Handle `cd` natively — update alpineCwd without calling PRoot
+            if (rawCmd == "cd" || rawCmd == "cd ~") {
+                alpineCwd = "/root"
+                liveLogs.add("> alpine: $rawCmd")
+                liveLogs.add("✅ /root")
+                return
+            }
+            if (rawCmd.startsWith("cd ")) {
+                val arg = rawCmd.removePrefix("cd ").trim()
+                val newDir = when {
+                    arg.startsWith("/") -> arg
+                    arg == ".."         -> alpineCwd.substringBeforeLast("/").ifEmpty { "/" }
+                    arg == "~"          -> "/root"
+                    else                -> "$alpineCwd/$arg".replace("//", "/")
+                }
+                liveLogs.add("> alpine: $rawCmd")
+                // Verify the directory exists by running pwd inside PRoot
+                viewModelScope.launch(Dispatchers.IO) {
+                    val check = EmbeddedLinux.exec(
+                        context,
+                        "cd ${shellQuote(newDir)} && pwd",
+                        timeoutSec = 15L
+                    )
+                    withContext(Dispatchers.Main) {
+                        if (check.success && check.output.trim().startsWith("/")) {
+                            alpineCwd = check.output.trim().lines().first().trim()
+                            liveLogs.add("✅ ${alpineCwd}")
+                        } else {
+                            liveLogs.add("❌ cd: ${check.output.take(200).ifBlank { "no such directory: $newDir" }}")
+                        }
+                    }
+                }
+                return
+            }
+
             liveLogs.add("> alpine: $rawCmd")
             viewModelScope.launch(Dispatchers.IO) {
-                val result = EmbeddedLinux.exec(context, rawCmd, timeoutSec = 120L)
+                // Prepend `cd <cwd> &&` so each command runs in the persisted directory
+                val fullCmd = if (alpineCwd != "/root" && alpineCwd.isNotBlank())
+                    "cd ${shellQuote(alpineCwd)} && $rawCmd"
+                else rawCmd
+                val result = EmbeddedLinux.exec(context, fullCmd, timeoutSec = 120L)
                 withContext(Dispatchers.Main) {
+                    val out = result.output.take(6000)
                     if (result.success) {
-                        liveLogs.add("✅ ${result.output.take(5000)}")
+                        if (out.isNotBlank()) liveLogs.add("✅ $out")
+                        else liveLogs.add("✅")
                     } else {
-                        liveLogs.add("❌ Exit ${result.exitCode}: ${result.output.take(5000)}")
+                        liveLogs.add("❌ Exit ${result.exitCode}: ${out.ifBlank { "(no output)" }}")
                     }
                 }
             }
@@ -1015,4 +1060,6 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
             }
         }
     }
+
+    private fun shellQuote(path: String): String = "'${path.replace("'", "'\\''")}'"
 }

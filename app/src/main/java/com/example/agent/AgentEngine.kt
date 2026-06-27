@@ -11,6 +11,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import org.json.JSONObject
+import java.util.regex.PatternSyntaxException
 import kotlin.coroutines.resume
 
 class AgentEngine(private val context: android.content.Context) {
@@ -146,22 +147,35 @@ class AgentEngine(private val context: android.content.Context) {
             val response = rawResponse
 
             // ── Extract and display <think> blocks ────────────────────────────
-            thinkRegex.findAll(response).forEach { m ->
-                val t = m.groupValues[1].trim()
-                if (t.isNotBlank()) { onStep(AgentStep("think", t)); stateManager.markThought() }
+            try {
+                thinkRegex.findAll(response).forEach { m ->
+                    val t = m.groupValues[1].trim()
+                    if (t.isNotBlank()) { onStep(AgentStep("think", t)); stateManager.markThought() }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG_AGENT, "think regex failed: ${e.message}")
             }
 
-            val toolCalls = parseToolCalls(response)
+            val toolCalls = try { parseToolCalls(response) }
+            catch (e: Exception) {
+                Log.w(TAG_AGENT, "parseToolCalls threw: ${e.message}")
+                emptyList()
+            }
 
             // ── Build display text (strip markers + think blocks) ─────────────
-            val display = response
-                .replace(thinkRegex, "")
-                .replace(thinkOpenRegex, "")
-                .replace(Regex("""WRITE_FILE>>[^\n]+\n[\s\S]*?<<WRITE_FILE"""), "")
-                .replace(Regex("""TOOL>>\s*\n[\s\S]*?\n?<<TOOL"""), "")
-                .replace(Regex("""```tool\s*\n[\s\S]*?\n?```"""), "")
-                .replace(Regex("""```json\s*\n[\s\S]*?\n?```"""), "")
-                .trim()
+            val display = try {
+                response
+                    .replace(thinkRegex, "")
+                    .replace(thinkOpenRegex, "")
+                    .replace(Regex("""WRITE_FILE>>[^\n]+\n[\s\S]*?<<WRITE_FILE"""), "")
+                    .replace(Regex("""TOOL>>\s*\n[\s\S]*?\n?<<TOOL"""), "")
+                    .replace(Regex("""```tool\s*\n[\s\S]*?\n?```"""), "")
+                    .replace(Regex("""```json\s*\n[\s\S]*?\n?```"""), "")
+                    .trim()
+            } catch (e: PatternSyntaxException) {
+                Log.w(TAG_AGENT, "Display regex failed: ${e.message}")
+                response.take(2000)
+            }
             if (display.isNotBlank()) onStep(AgentStep("assistant", display))
 
             // ── No tool calls ─────────────────────────────────────────────────

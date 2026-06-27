@@ -35,7 +35,6 @@ import com.example.ui.theme.*
 fun TerminalScreen(vm: MainViewModel, context: Context) {
     val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
-    val workDir = "/data/data/com.termux/files/home"
 
     LaunchedEffect(vm.liveLogs.size) {
         if (vm.liveLogs.isNotEmpty()) listState.animateScrollToItem(vm.liveLogs.size - 1)
@@ -52,7 +51,7 @@ fun TerminalScreen(vm: MainViewModel, context: Context) {
             Text("Alpine Linux (PRoot)", color = OllamaGreen, fontSize = 11.sp,
                 fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
             Spacer(Modifier.weight(1f))
-            Text(workDir, color = OllamaTextDim, fontSize = 10.sp,
+            Text(vm.alpineCwd, color = OllamaTextDim, fontSize = 10.sp,
                 fontFamily = FontFamily.Monospace, maxLines = 1)
             TextButton(onClick = { vm.clearLogs() }) {
                 Text("Clear", color = OllamaRed, fontSize = 10.sp)

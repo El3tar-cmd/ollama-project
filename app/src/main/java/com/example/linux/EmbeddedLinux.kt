@@ -169,7 +169,7 @@ object EmbeddedLinux {
     }
 
     // ── PRoot command builder ─────────────────────────────────────────────────
-    fun buildProotCommand(context: Context, innerCmd: String): List<String> {
+    fun buildProotCommand(context: Context, innerCmd: String, cwdInsideContainer: String = "/root"): List<String> {
         val proot  = executableProotBin(context).absolutePath
         val rootfs = rootfsDir(context).absolutePath
         return listOf(
@@ -177,11 +177,13 @@ object EmbeddedLinux {
             "--kill-on-exit",
             "-0",                  // Fake root uid=0 (required for apk)
             "-r", rootfs,
+            // Spoof kernel 4.9 so Python/musl don't attempt getrandom() / fchdir quirks
+            "-k", "4.9.0",
             "-b", "/dev:/dev",
             "-b", "/sys:/sys",
             "-b", "/proc:/proc",
             "-b", "/dev/urandom:/dev/random",
-            "-w", "/root",
+            "-w", cwdInsideContainer,
             "/bin/sh", "-c", innerCmd
         )
     }
@@ -234,6 +236,11 @@ object EmbeddedLinux {
                 put("TERM", "xterm-256color")
                 put("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
                 put("LANG", "C.UTF-8")
+                // Disable Python hash randomization — avoids getrandom() syscall
+                put("PYTHONHASHSEED", "0")
+                put("PYTHONDONTWRITEBYTECODE", "1")
+                // Prevent Python from trying linuxaio / newer syscalls
+                put("PYTHONNOUSERSITE", "1")
             }
             pb.redirectErrorStream(true)
             Log.d("EmbeddedLinux", ">>> Starting process...")
@@ -266,7 +273,7 @@ object EmbeddedLinux {
     fun install(context: Context, vararg packages: String): ExecResult {
         val pkgList = packages.joinToString(" ")
         return exec(context,
-            "apt-get update && apt-get install -y $pkgList 2>&1",
+            "apk add --no-cache $pkgList 2>&1",
             timeoutSec = 300L
         )
     }
