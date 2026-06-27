@@ -262,8 +262,11 @@ class OllamaApi {
                         try {
                             val json = JSONObject(line)
                             if (json.has("error")) { onComplete(false, json.getString("error")); return }
-                            val done   = json.optBoolean("done", false)
-                            val token  = json.optJSONObject("message")?.optString("content", "") ?: ""
+                            val done = json.optBoolean("done", false)
+                            // Use isNull check — optString returns "null" (string) for JSON null values
+                            val token = json.optJSONObject("message")?.let { msg ->
+                                if (msg.isNull("content")) "" else msg.optString("content", "")
+                            } ?: ""
                             if (token.isNotEmpty()) onTokenGenerated(token)
                             if (done) break
                         } catch (_: Exception) {}
