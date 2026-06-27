@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DevHive IDE — Android LLM Server</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0D0D0D;
+      color: #E0E0E0;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+    }
+    header {
+      background: #111;
+      border-bottom: 2px solid #00D084;
+      padding: 24px 32px;
+      display: flex;
+      align-items: center;
+      gap: 18px;
+    }
+    header img {
+      width: 56px;
+      height: 56px;
+      border-radius: 12px;
+    }
+    header h1 {
+      font-size: 1.8rem;
+      color: #00D084;
+      letter-spacing: 0.5px;
+    }
+    header p {
+      font-size: 0.95rem;
+      color: #999;
+      margin-top: 2px;
+    }
+    .hero {
+      text-align: center;
+      padding: 60px 24px 40px;
+    }
+    .hero h2 {
+      font-size: 2.2rem;
+      color: #fff;
+      margin-bottom: 12px;
+    }
+    .hero p {
+      font-size: 1.1rem;
+      color: #aaa;
+      max-width: 620px;
+      margin: 0 auto 32px;
+      line-height: 1.6;
+    }
+    .badge {
+      display: inline-block;
+      background: #00D08422;
+      color: #00D084;
+      border: 1px solid #00D08466;
+      border-radius: 20px;
+      padding: 6px 16px;
+      font-size: 0.85rem;
+      margin: 4px;
+    }
+    .features {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 20px;
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 0 24px 60px;
+    }
+    .card {
+      background: #161616;
+      border: 1px solid #2a2a2a;
+      border-radius: 12px;
+      padding: 24px;
+      transition: border-color 0.2s;
+    }
+    .card:hover { border-color: #00D084; }
+    .card .icon { font-size: 2rem; margin-bottom: 12px; }
+    .card h3 { color: #fff; margin-bottom: 8px; font-size: 1.05rem; }
+    .card p { color: #888; font-size: 0.9rem; line-height: 1.5; }
+    .screenshots {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 0 24px 60px;
+    }
+    .screenshots h2 {
+      color: #00D084;
+      font-size: 1.3rem;
+      margin-bottom: 20px;
+      text-align: center;
+    }
+    .screenshot-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+    }
+    .screenshot-grid img {
+      width: 100%;
+      border-radius: 12px;
+      border: 1px solid #2a2a2a;
+      transition: transform 0.2s;
+    }
+    .screenshot-grid img:hover { transform: scale(1.03); }
+    .build-section {
+      max-width: 700px;
+      margin: 0 auto 60px;
+      padding: 0 24px;
+    }
+    .build-section h2 {
+      color: #00D084;
+      font-size: 1.3rem;
+      margin-bottom: 16px;
+      text-align: center;
+    }
+    .build-section pre {
+      background: #111;
+      border: 1px solid #2a2a2a;
+      border-radius: 10px;
+      padding: 20px;
+      font-size: 0.88rem;
+      color: #c0f0d8;
+      overflow-x: auto;
+      line-height: 1.7;
+    }
+    footer {
+      border-top: 1px solid #222;
+      text-align: center;
+      padding: 24px;
+      color: #555;
+      font-size: 0.85rem;
+    }
+    footer span { color: #00D084; }
+  </style>
+</head>
+<body>
+
+<header>
+  <img src="devhive.png" alt="DevHive Logo" onerror="this.style.display='none'" />
+  <div>
+    <h1>DevHive IDE</h1>
+    <p>Android LLM Server &amp; AI Agent Platform</p>
+  </div>
+</header>
+
+<div class="hero">
+  <h2>Run Local LLMs on Android</h2>
+  <p>
+    DevHive IDE lets you run Ollama and llama.cpp directly on your Android device — 
+    no cloud, no internet required. Chat with AI, edit code, and execute shell commands 
+    all from your phone.
+  </p>
+  <div>
+    <span class="badge">Kotlin &amp; Jetpack Compose</span>
+    <span class="badge">Ollama</span>
+    <span class="badge">llama.cpp</span>
+    <span class="badge">100% On-Device</span>
+    <span class="badge">ReAct AI Agent</span>
+    <span class="badge">ARM64</span>
+  </div>
+</div>
+
+<div class="features">
+  <div class="card">
+    <div class="icon">🚀</div>
+    <h3>Ollama &amp; llama.cpp</h3>
+    <p>Run Ollama daemon or llama.cpp server as foreground Android services, fully on-device with ARM64 binaries.</p>
+  </div>
+  <div class="card">
+    <div class="icon">🤖</div>
+    <h3>ReAct AI Agent</h3>
+    <p>Built-in AI Agent with a Reasoning &amp; Acting loop. Reads/writes files, runs shell commands, fetches web pages.</p>
+  </div>
+  <div class="card">
+    <div class="icon">💬</div>
+    <h3>Chat Interface</h3>
+    <p>Chat with local models via Ollama or GGUF files. Markdown rendering, streaming responses, conversation history.</p>
+  </div>
+  <div class="card">
+    <div class="icon">📝</div>
+    <h3>Code Editor</h3>
+    <p>Syntax-highlighted code editor with multi-tab support and file browser integration for your agent workspace.</p>
+  </div>
+  <div class="card">
+    <div class="icon">📦</div>
+    <h3>Model Management</h3>
+    <p>Pull, delete, and switch Ollama models. Download GGUF models directly from HuggingFace on your device.</p>
+  </div>
+  <div class="card">
+    <div class="icon">🔒</div>
+    <h3>Fully Offline</h3>
+    <p>Everything runs on your device. No cloud calls, no data sent anywhere. 100% private AI inference.</p>
+  </div>
+</div>
+
+<div class="screenshots">
+  <h2>Screenshots</h2>
+  <div class="screenshot-grid">
+    <img src="Screenshot_20260622_193630_DevHive_IDE_1782146349037.png" alt="Chat screen" />
+    <img src="Screenshot_20260622_193633_DevHive_IDE_1782146349020.png" alt="Agent screen" />
+    <img src="Screenshot_20260623_095131_DevHive_IDE_1782197520427.png" alt="Files screen" />
+    <img src="Screenshot_20260623_095136_DevHive_IDE_1782197520418.png" alt="Terminal screen" />
+    <img src="Screenshot_20260623_095143_DevHive_IDE_1782197520402.png" alt="Models screen" />
+    <img src="Screenshot_20260623_095813_DevHive_IDE_1782198198133.png" alt="Server screen" />
+  </div>
+</div>
+
+<div class="build-section">
+  <h2>Build the APK</h2>
+  <pre><code># Requirements: Android Studio + ARM64 device (Android 7+)
+
+# 1. Open in Android Studio and connect your device
+# 2. Run → "Run 'app'"
+
+# Or build via GitHub Actions (auto-builds on push to main)
+# Download the APK from the Actions → Artifacts tab
+
+# Local build (requires Android SDK):
+chmod +x gradlew
+echo "sdk.dir=$ANDROID_HOME" > local.properties
+./gradlew assembleDebug
+# Output: app/build/outputs/apk/debug/app-debug.apk</code></pre>
+</div>
+
+<footer>
+  <p>Built with <span>Kotlin &amp; Jetpack Compose</span> · Powered by <span>Ollama</span> &amp; <span>llama.cpp</span></p>
+</footer>
+
+</body>
+</html>
