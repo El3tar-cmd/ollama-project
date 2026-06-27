@@ -112,9 +112,10 @@ class AgentEngine(private val context: android.content.Context) {
             ChatMessage("user",   userTask)
         )
 
-        var steps                  = 0
-        var errs                   = 0
+        var steps                   = 0
+        var errs                    = 0
         var consecutiveThinkingOnly = 0
+        var productiveToolCount     = 0   // writes, edits, terminal, git — not reads/thinks
         val toolSignatureCounts     = mutableMapOf<String, Int>()
 
         // ── Main loop ─────────────────────────────────────────────────────────
@@ -178,21 +179,42 @@ class AgentEngine(private val context: android.content.Context) {
             }
             if (display.isNotBlank()) onStep(AgentStep("assistant", display))
 
-            // ── No tool calls ─────────────────────────────────────────────────
+            // ── No tool calls — NEVER silently complete, always redirect ────────
             if (toolCalls.isEmpty()) {
                 messages.add(ChatMessage("assistant", response))
-                onStep(AgentStep("info", "ℹ️ Task complete."))
-                break
+                // If the agent produced real work already and the response looks conclusive → done
+                val looksConclusive = response.length < 300 &&
+                    !response.contains("will ", ignoreCase = true) &&
+                    !response.contains("I'll ", ignoreCase = true) &&
+                    !response.contains("let me ", ignoreCase = true) &&
+                    !response.contains("going to ", ignoreCase = true) &&
+                    productiveToolCount > 0
+                if (looksConclusive) {
+                    onStep(AgentStep("info", "✅ Task complete."))
+                    break
+                }
+                // Otherwise: the agent described work but used no tool — redirect
+                val redirect = if (productiveToolCount == 0) {
+                    "[AGENT ERROR] You described what you plan to do but used NO tools. " +
+                    "You MUST immediately perform the first action using a tool call. " +
+                    "Do NOT explain — execute. Use TOOL>>...<<TOOL format right now."
+                } else {
+                    "[AGENT REMINDER] You responded with text but no tool call. " +
+                    "If the task is done, call: TOOL>>\n{\"name\":\"complete\",\"summary\":\"...\"}\n<<TOOL\n" +
+                    "Otherwise, continue working with the next required tool."
+                }
+                onStep(AgentStep("info", "⚡ Redirecting agent to use tools..."))
+                messages.add(ChatMessage("user", redirect))
+                continue
             }
 
             // ── Cycle detection (consecutive sequence_thinking only) ───────────
             val onlyThinking = toolCalls.all { tc ->
                 val n = tc.optString("name", "")
-                n == "sequence_thinking" || n.contains("think")
+                n == "sequence_thinking" || n.contains("think") || n == "planning"
             }
             if (onlyThinking) {
                 consecutiveThinkingOnly++
-                // Global cycle check across all tool names
                 val recentTools = stateManager.recentTools(8)
                 if (AgentErrorRecovery.detectCycle(recentTools)) {
                     val stuck = recentTools.lastOrNull() ?: "unknown"
@@ -200,9 +222,15 @@ class AgentEngine(private val context: android.content.Context) {
                     messages.add(ChatMessage("user", AgentErrorRecovery.cycleRecoveryMessage(stuck)))
                     consecutiveThinkingOnly = 0
                 }
-                if (consecutiveThinkingOnly >= 3) {
-                    onStep(AgentStep("info", "ℹ️ Task complete."))
-                    break
+                if (consecutiveThinkingOnly >= 4) {
+                    // Too many thinking-only cycles — demand concrete action
+                    val demand = "[AGENT STUCK] You have been thinking for $consecutiveThinkingOnly " +
+                        "consecutive steps without taking real action. STOP thinking. " +
+                        "Pick up the first task step and execute it NOW with a file write, edit, or command. " +
+                        "Thinking alone accomplishes nothing."
+                    onStep(AgentStep("info", "⚠️ Agent stuck in thinking loop — forcing action"))
+                    messages.add(ChatMessage("user", demand))
+                    consecutiveThinkingOnly = 0
                 }
             } else {
                 consecutiveThinkingOnly = 0
@@ -225,17 +253,32 @@ class AgentEngine(private val context: android.content.Context) {
                     continue
                 }
 
-                if (toolName == "complete" &&
-                    stateManager.state.filesWritten.isNotEmpty() &&
-                    "git_diff" !in stateManager.state.toolsUsed
-                ) {
-                    val advice = "Before complete, review changes with git_diff because files were modified."
-                    onStep(AgentStep("info", "⚠️ $advice"))
-                    resultBuf.appendLine("BLOCKED: $advice")
-                    messages.add(ChatMessage("user",
-                        "[VERIFY] Files were changed. Call git_diff first, then complete with a verified summary."
-                    ))
-                    continue
+                // ── Gate: prevent premature `complete` ───────────────────────
+                if (toolName == "complete") {
+                    val hasWritten = stateManager.state.filesWritten.isNotEmpty()
+                    val needsDiff  = hasWritten && "git_diff" !in stateManager.state.toolsUsed
+
+                    when {
+                        productiveToolCount == 0 && steps <= 4 -> {
+                            val msg = "[BLOCKED] You called complete but have not done any real work yet. " +
+                                "filesWritten=${stateManager.state.filesWritten.size}, " +
+                                "productiveActions=$productiveToolCount. " +
+                                "You must perform the actual task first: read the task, write/edit files, " +
+                                "run commands. Then call complete with a verified summary."
+                            onStep(AgentStep("info", "🚫 Premature complete blocked — forcing execution"))
+                            resultBuf.appendLine(msg)
+                            messages.add(ChatMessage("user", msg))
+                            continue
+                        }
+                        needsDiff -> {
+                            val msg = "[BLOCKED] Files were modified. Run git_diff to review changes, " +
+                                "then call complete with a verified summary of what changed."
+                            onStep(AgentStep("info", "⚠️ git_diff required before complete"))
+                            resultBuf.appendLine(msg)
+                            messages.add(ChatMessage("user", msg))
+                            continue
+                        }
+                    }
                 }
 
                 // Rules Engine check
@@ -245,22 +288,35 @@ class AgentEngine(private val context: android.content.Context) {
                     if (violation.blocking) {
                         resultBuf.appendLine("BLOCKED: ${violation.advice}")
                         stateManager.recordStep(toolName, "BLOCKED: ${violation.advice}", isError = true)
-                        continue   // skip this tool call entirely
+                        continue
                     }
                 }
 
-                // Track state
+                // ── Track state + productive count ────────────────────────────
+                val isThinkTool  = toolName.contains("think") || toolName == "sequence_thinking" || toolName == "planning"
+                val isReadTool   = toolName in setOf("file_reader", "read_file", "line_reader",
+                                                     "read_lines", "head_file", "tail_file",
+                                                     "directory_explorer", "tree", "find_files",
+                                                     "project_search", "regex_search", "semantic_search",
+                                                     "git_status", "memory_recall_all", "context_manager")
+                val isWriteTool  = toolName in setOf("file_writer", "write_file", "multi_file_writer",
+                                                     "line_editor", "edit_file", "multi_line_editor",
+                                                     "append_file", "replace_all", "create_file",
+                                                     "delete_file", "move_file", "copy_file")
+                val isRunTool    = toolName in setOf("terminal_executor", "run_command", "bash", "shell",
+                                                     "run_python", "run_node", "calculate",
+                                                     "git_add", "git_commit", "git_push", "git_branch",
+                                                     "git_diff", "lint")
+
                 when {
-                    toolName.contains("think") || toolName == "sequence_thinking"
-                        -> stateManager.markThought()
-                    toolName in setOf("file_reader", "read_file", "line_reader", "read_lines",
-                                      "head_file", "tail_file")
-                        -> stateManager.recordFileRead(call.optString("path", ""))
-                    toolName in setOf("file_writer", "write_file", "multi_file_writer",
-                                      "line_editor", "edit_file", "multi_line_editor",
-                                      "append_file", "replace_all")
-                        -> stateManager.recordFileWrite(call.optString("path",
+                    isThinkTool -> stateManager.markThought()
+                    isReadTool  -> stateManager.recordFileRead(call.optString("path", ""))
+                    isWriteTool -> {
+                        stateManager.recordFileWrite(call.optString("path",
                             call.optJSONArray("files")?.optJSONObject(0)?.optString("path") ?: ""))
+                        productiveToolCount++
+                    }
+                    isRunTool   -> productiveToolCount++
                 }
 
                 onStep(AgentStep("tool_call", "🔧 $toolName"))
