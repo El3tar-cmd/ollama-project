@@ -160,8 +160,7 @@ fun GitPanel(vm: MainViewModel, context: Context) {
                 if (isRepo) {
                     Row(verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Icon(Icons.Default.AccountTree, null,
-                            tint = OllamaGreen, modifier = Modifier.size(13.dp))
+                        Text("⎇", color = OllamaGreen, fontSize = 13.sp)
                         Text(branchName, color = OllamaText,
                             fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                         if (statusLines.isNotEmpty())
@@ -389,7 +388,7 @@ fun GitPanel(vm: MainViewModel, context: Context) {
                                     modifier = Modifier.size(24.dp)
                                 ) {
                                     Icon(
-                                        if (s.isStaged) Icons.Default.Remove else Icons.Default.Add,
+                                        if (s.isStaged) Icons.Default.Clear else Icons.Default.Add,
                                         null,
                                         tint = if (s.isStaged) OllamaRed else OllamaGreen,
                                         modifier = Modifier.size(14.dp)
