@@ -1,1 +1,0 @@
-- [PRoot Android fixes](proot-android-fixes.md) — kernel spoof, Python env vars, cd tracking, regex crash protection all needed together
