@@ -1,6 +1,0 @@
-XX Agent crashed: Error in {min, max} interval near index 5
-:(){:|:&};:
-^
-
-
-
