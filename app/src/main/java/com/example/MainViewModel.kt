@@ -111,6 +111,13 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         if (index in openFiles.indices) { activeTabIndex = index; openFile(openFiles[index]) }
     }
 
+    fun closeTabForFile(file: File) {
+        val idx = openFiles.indexOfFirst {
+            it.absolutePath == file.absolutePath || it.absolutePath.startsWith(file.absolutePath + "/")
+        }
+        if (idx >= 0) closeTab(idx)
+    }
+
     // ask_user support
     var agentPendingQuestion    by mutableStateOf<String?>(null)
     var agentQuestionInput      by mutableStateOf("")

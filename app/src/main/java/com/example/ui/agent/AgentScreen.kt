@@ -304,11 +304,11 @@ fun AgentScreen(vm: MainViewModel, context: Context) {
                     Box(Modifier.tabIndicatorOffset(tabPositions[agentTab]).height(2.dp).background(OllamaGreen))
                 }
             ) {
-                listOf("Chat", "Files", "Steps", "Terminal").forEachIndexed { i, title ->
+                listOf("Chat", "Files", "Steps", "Terminal", "Git").forEachIndexed { i, title ->
                     Tab(
                         selected = agentTab == i,
                         onClick = { agentTab = i },
-                        text = { Text(title, fontSize = 12.sp, color = if (agentTab == i) OllamaGreen else OllamaTextDim) }
+                        text = { Text(title, fontSize = 11.sp, color = if (agentTab == i) OllamaGreen else OllamaTextDim) }
                     )
                 }
             }
@@ -319,6 +319,7 @@ fun AgentScreen(vm: MainViewModel, context: Context) {
             1 -> AgentFilesPane(vm, context)
             2 -> AgentStepsPane(vm)
             3 -> AgentTerminalPane(vm, context)
+            4 -> GitPanel(vm, context)
         }
     }
 }

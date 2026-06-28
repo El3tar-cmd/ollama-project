@@ -4,9 +4,11 @@ import android.content.Context
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -56,25 +58,33 @@ private fun buildFlatTree(dir: File, expandedDirs: Set<String>, depth: Int = 0):
 
 // ── HTML WebView Preview ──────────────────────────────────────────────────────
 @Composable
-private fun HtmlPreviewPane(html: String, modifier: Modifier = Modifier) {
+private fun HtmlPreviewPane(html: String, baseUrl: String? = null, modifier: Modifier = Modifier) {
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
 
     LaunchedEffect(html) {
         webViewRef?.loadDataWithBaseURL(
-            "file:///android_asset/", html, "text/html", "UTF-8", null
+            baseUrl ?: "file:///android_asset/", html, "text/html", "UTF-8", null
         )
     }
 
     AndroidView(
         factory = { ctx ->
             WebView(ctx).apply {
-                settings.javaScriptEnabled  = true
-                settings.domStorageEnabled  = true
-                settings.allowFileAccess    = true
-                webViewClient               = WebViewClient()
-                webViewRef                  = this
+                with(settings) {
+                    javaScriptEnabled       = true
+                    domStorageEnabled       = true
+                    allowFileAccess         = true
+                    useWideViewPort         = true      // Enable wide viewport for desktop pages
+                    loadWithOverviewMode    = true      // Zoom out to fit the screen
+                    setSupportZoom(true)                // Allow pinch-to-zoom
+                    builtInZoomControls     = true      // Enable zoom controls
+                    displayZoomControls     = false     // Hide the on-screen zoom buttons
+                    textZoom                = 100       // Prevent text-only zoom distortion
+                }
+                webViewClient = WebViewClient()
+                webViewRef    = this
                 loadDataWithBaseURL(
-                    "file:///android_asset/", html, "text/html", "UTF-8", null
+                    baseUrl ?: "file:///android_asset/", html, "text/html", "UTF-8", null
                 )
             }
         },
@@ -82,40 +92,96 @@ private fun HtmlPreviewPane(html: String, modifier: Modifier = Modifier) {
     )
 }
 
-// ── File Sidebar ──────────────────────────────────────────────────────────────
+// ── Delete confirmation dialog ────────────────────────────────────────────────
 @Composable
-private fun FileSidebar(vm: MainViewModel) {
+private fun DeleteConfirmDialog(
+    target: File,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = OllamaCard,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("🗑️", fontSize = 20.sp)
+                Text("Delete?", color = OllamaText, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    if (target.isDirectory) "Delete folder and all its contents?"
+                    else "Delete this file?",
+                    color = OllamaTextDim, fontSize = 13.sp
+                )
+                Text(
+                    target.name,
+                    color = OllamaRed, fontSize = 12.sp,
+                    fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                colors = ButtonDefaults.buttonColors(containerColor = OllamaRed)
+            ) { Text("Delete", color = Color.White, fontWeight = FontWeight.Bold) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel", color = OllamaTextDim) }
+        }
+    )
+}
+
+// ── File Sidebar ──────────────────────────────────────────────────────────────
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun FileSidebar(vm: MainViewModel, context: Context) {
     val expandedDirs = remember { mutableStateOf(setOf<String>()) }
     val rootDir = File(vm.agentWorkingDir.ifBlank { "/" })
     val parentDir = rootDir.parentFile
+    var deleteTarget by remember { mutableStateOf<File?>(null) }
+    var contextMenuTarget by remember { mutableStateOf<File?>(null) }
 
-    // Reading agentFileTree.size causes recomposition when agent adds/deletes files
     val fileCount = vm.agentFileTree.size
     val treeItems = remember(vm.agentWorkingDir, expandedDirs.value, fileCount) {
         buildFlatTree(rootDir, expandedDirs.value)
     }
 
-    Column(
-        Modifier.width(160.dp).fillMaxHeight().background(Color(0xFF0F0F0F))
-    ) {
-        // ── Header: folder name + back button ─────────────────────────────────
+    // ── Delete confirmation dialog ─────────────────────────────────────────────
+    deleteTarget?.let { target ->
+        DeleteConfirmDialog(
+            target = target,
+            onConfirm = {
+                val deleted = if (target.isDirectory) target.deleteRecursively() else target.delete()
+                if (deleted) {
+                    vm.closeTabForFile(target)
+                    vm.refreshFileTree()
+                    Toast.makeText(context, "Deleted: ${target.name}", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(context, "Failed to delete: ${target.name}", Toast.LENGTH_SHORT).show()
+                }
+                deleteTarget = null
+            },
+            onDismiss = { deleteTarget = null }
+        )
+    }
+
+    Column(Modifier.width(165.dp).fillMaxHeight().background(Color(0xFF0F0F0F))) {
+        // ── Header ────────────────────────────────────────────────────────────
         Row(
             Modifier.fillMaxWidth().background(OllamaSurface)
                 .padding(horizontal = 6.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(2.dp)
         ) {
-            // Back button — only show when not at a root/top-level directory
             if (parentDir != null && parentDir.canRead()) {
                 IconButton(
                     onClick = { vm.updateAgentWorkingDir(parentDir.absolutePath) },
                     modifier = Modifier.size(22.dp)
                 ) {
-                    Icon(
-                        Icons.Default.ArrowBack, "Go up",
-                        tint = OllamaTextDim,
-                        modifier = Modifier.size(14.dp)
-                    )
+                    Icon(Icons.Default.ArrowBack, "Go up", tint = OllamaTextDim, modifier = Modifier.size(14.dp))
                 }
             } else {
                 Spacer(Modifier.size(22.dp))
@@ -124,97 +190,107 @@ private fun FileSidebar(vm: MainViewModel) {
             Text(
                 rootDir.name.ifBlank { "/" },
                 color = OllamaGreen.copy(alpha = 0.9f),
-                fontSize = 10.sp,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+                fontSize = 10.sp, fontWeight = FontWeight.SemiBold,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f)
             )
+            // New file button
+            IconButton(
+                onClick = {
+                    val newFile = File(rootDir, "new_file.txt")
+                    if (!newFile.exists()) { newFile.createNewFile(); vm.refreshFileTree() }
+                },
+                modifier = Modifier.size(22.dp)
+            ) {
+                Icon(Icons.Default.Add, "New file", tint = OllamaGreen.copy(alpha = 0.8f), modifier = Modifier.size(13.dp))
+            }
         }
 
         HorizontalDivider(color = OllamaBorder, thickness = 0.5.dp)
 
         if (treeItems.isEmpty() && rootDir.listFiles()?.isEmpty() == true) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    "Empty\nfolder",
-                    color = OllamaTextDim.copy(alpha = 0.5f),
-                    fontSize = 10.sp,
-                    textAlign = TextAlign.Center,
-                    fontFamily = FontFamily.Monospace
-                )
+                Text("Empty\nfolder", color = OllamaTextDim.copy(alpha = 0.5f),
+                    fontSize = 10.sp, textAlign = TextAlign.Center, fontFamily = FontFamily.Monospace)
             }
         } else {
             LazyColumn(Modifier.fillMaxSize().padding(4.dp)) {
                 items(treeItems, key = { it.file.absolutePath }) { item ->
-                    val file = item.file
-                    val depth = item.depth
-                    val isDir = file.isDirectory
+                    val file      = item.file
+                    val depth     = item.depth
+                    val isDir     = file.isDirectory
                     val isExpanded = file.absolutePath in expandedDirs.value
                     val isOpenInTab = vm.openFiles.contains(file)
+                    val showCtxMenu = contextMenuTarget?.absolutePath == file.absolutePath
 
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(
-                                when {
-                                    isOpenInTab -> OllamaGreen.copy(alpha = 0.12f)
-                                    else -> Color.Transparent
-                                }
-                            )
-                            .clickable {
-                                if (isDir) {
-                                    val path = file.absolutePath
-                                    expandedDirs.value = if (isExpanded) {
-                                        expandedDirs.value - path
-                                    } else {
-                                        expandedDirs.value + path
+                    Box {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(when {
+                                    showCtxMenu   -> OllamaRed.copy(alpha = 0.08f)
+                                    isOpenInTab   -> OllamaGreen.copy(alpha = 0.12f)
+                                    else          -> Color.Transparent
+                                })
+                                .combinedClickable(
+                                    onClick = {
+                                        contextMenuTarget = null
+                                        if (isDir) {
+                                            val path = file.absolutePath
+                                            expandedDirs.value = if (isExpanded)
+                                                expandedDirs.value - path
+                                            else expandedDirs.value + path
+                                        } else {
+                                            vm.openInNewTab(file)
+                                        }
+                                    },
+                                    onLongClick = {
+                                        contextMenuTarget = if (showCtxMenu) null else file
                                     }
-                                } else {
-                                    vm.openInNewTab(file)
+                                )
+                                .padding(start = (6 + depth * 10).dp, end = 2.dp, top = 5.dp, bottom = 5.dp)
+                        ) {
+                            if (isDir) {
+                                Icon(
+                                    if (isExpanded) Icons.Default.KeyboardArrowDown
+                                    else Icons.Default.KeyboardArrowRight,
+                                    null, tint = OllamaTextDim.copy(alpha = 0.7f),
+                                    modifier = Modifier.size(12.dp)
+                                )
+                                Spacer(Modifier.width(2.dp))
+                            } else {
+                                Spacer(Modifier.width(14.dp))
+                            }
+                            Text(
+                                if (isDir) (if (isExpanded) "📂" else "📁") else getFileIcon(file),
+                                fontSize = 11.sp
+                            )
+                            Spacer(Modifier.width(3.dp))
+                            Text(
+                                file.name,
+                                color = when {
+                                    isOpenInTab -> OllamaGreen
+                                    isDir       -> OllamaText.copy(alpha = 0.9f)
+                                    else        -> OllamaTextDim
+                                },
+                                fontSize = 10.sp,
+                                fontWeight = if (isDir) FontWeight.Medium else FontWeight.Normal,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            // Delete icon — shown when long-pressed
+                            if (showCtxMenu) {
+                                IconButton(
+                                    onClick = { deleteTarget = file; contextMenuTarget = null },
+                                    modifier = Modifier.size(22.dp)
+                                ) {
+                                    Icon(Icons.Default.Delete, "Delete",
+                                        tint = OllamaRed, modifier = Modifier.size(13.dp))
                                 }
                             }
-                            .padding(
-                                start = (6 + depth * 10).dp,
-                                end = 6.dp,
-                                top = 5.dp,
-                                bottom = 5.dp
-                            )
-                    ) {
-                        // Expand/collapse chevron for directories
-                        if (isDir) {
-                            Icon(
-                                imageVector = if (isExpanded) Icons.Default.KeyboardArrowDown
-                                              else Icons.Default.KeyboardArrowRight,
-                                contentDescription = null,
-                                tint = OllamaTextDim.copy(alpha = 0.7f),
-                                modifier = Modifier.size(12.dp)
-                            )
-                            Spacer(Modifier.width(2.dp))
-                        } else {
-                            Spacer(Modifier.width(14.dp))
                         }
-
-                        Text(
-                            if (isDir) (if (isExpanded) "📂" else "📁") else getFileIcon(file),
-                            fontSize = 11.sp
-                        )
-                        Spacer(Modifier.width(3.dp))
-                        Text(
-                            file.name,
-                            color = when {
-                                isOpenInTab -> OllamaGreen
-                                isDir -> OllamaText.copy(alpha = 0.9f)
-                                else -> OllamaTextDim
-                            },
-                            fontSize = 10.sp,
-                            fontWeight = if (isDir) FontWeight.Medium else FontWeight.Normal,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
-                        )
                     }
                 }
             }
@@ -299,7 +375,7 @@ fun AgentFilesPane(vm: MainViewModel, context: Context) {
 
         Row(Modifier.fillMaxSize()) {
             if (showFileSidebar) {
-                FileSidebar(vm)
+                FileSidebar(vm, context)
                 VerticalDivider(color = OllamaBorder, thickness = 1.dp)
             }
 

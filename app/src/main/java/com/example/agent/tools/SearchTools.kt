@@ -98,9 +98,11 @@ class SearchTools(private val getWorkingDir: () -> String) {
         if (!root.exists()) return err("Dir not found: $dir")
         val regex = try { Regex(pattern, RegexOption.IGNORE_CASE) }
                     catch (_: Exception) { Regex(Regex.escape(pattern), RegexOption.IGNORE_CASE) }
-        val globR = if (glob.isNotBlank())
-            Regex("^${glob.replace(".", "\\.").replace("*", ".*").replace("?", ".")}$")
-        else null
+        val globR = if (glob.isNotBlank()) {
+            try {
+                Regex("^${glob.replace(".", "\\.").replace("*", ".*").replace("?", ".")}$")
+            } catch (_: Exception) { null }
+        } else null
         val hits = mutableListOf<String>()
         root.walkTopDown()
             .filter { it.isFile && (globR == null || globR.matches(it.name)) && it.length() < 2_000_000L }

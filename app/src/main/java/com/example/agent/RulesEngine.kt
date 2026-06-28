@@ -11,9 +11,18 @@ object RulesEngine {
         "go", "rs", "rb", "php", "swift", "dart", "sh", "kts", "gradle"
     )
 
-    private val DANGEROUS_CMDS = listOf(
-        "rm -rf /", "mkfs", "dd if=", "chmod 777 /", "curl.*| sh", "wget.*| sh",
-        ":(){:|:&};:", ">/dev/sda", "format c:"
+    // Stored as plain literal strings — checked with .contains(), NOT as regex patterns.
+    // Using these as regex would crash on strings like ":(){:|:&};:" (invalid regex syntax).
+    private val DANGEROUS_CMDS_LITERAL = listOf(
+        "rm -rf /", "mkfs", "dd if=", "chmod 777 /",
+        ":(){:|:&};:", ">/dev/sda", "format c:", "shred /dev"
+    )
+    // These ARE valid regex patterns and safe to compile
+    private val DANGEROUS_CMDS_REGEX = listOf(
+        Regex("""curl\s+.*\|\s*sh"""),
+        Regex("""wget\s+.*\|\s*sh"""),
+        Regex("""curl\s+.*\|\s*bash"""),
+        Regex("""wget\s+.*\|\s*bash""")
     )
 
     fun validate(tool: JSONObject, state: AgentState): RuleViolation? {
@@ -22,9 +31,9 @@ object RulesEngine {
         // ── BLOCKING: Dangerous shell commands ────────────────────────────────
         if (name in setOf("terminal_executor", "bash")) {
             val cmd = tool.optString("cmd", tool.optString("command", "")).lowercase()
-            val dangerous = DANGEROUS_CMDS.firstOrNull { pattern ->
-                Regex(pattern).containsMatchIn(cmd)
-            }
+            val literalMatch = DANGEROUS_CMDS_LITERAL.firstOrNull { cmd.contains(it, ignoreCase = true) }
+            val regexMatch   = if (literalMatch == null) DANGEROUS_CMDS_REGEX.firstOrNull { it.containsMatchIn(cmd) }?.pattern else null
+            val dangerous    = literalMatch ?: regexMatch
             if (dangerous != null) {
                 return RuleViolation(
                     "dangerous-command",

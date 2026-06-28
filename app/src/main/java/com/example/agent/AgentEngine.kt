@@ -96,6 +96,25 @@ class AgentEngine(private val context: android.content.Context) {
 
         val effectiveMaxSteps = maxSteps
         onStep(AgentStep("info", "Agent loop started · max steps $effectiveMaxSteps"))
+        // Outer guard: catch any exception that escapes the loop so the whole coroutine doesn't crash
+        try { runAgentLoopInternal(userTask, model, baseUrl, cloudApiKey, backend, effectiveMaxSteps, onStep) }
+        catch (ce: CancellationException) { throw ce }
+        catch (e: Exception) {
+            Log.e(TAG_AGENT, "Agent loop crashed", e)
+            onStep(AgentStep("error", "❌ Agent error (${e::class.java.simpleName}): ${e.message?.take(200) ?: "unknown"}. Recovered.", true))
+        }
+    }
+
+    @Suppress("NAME_SHADOWING")
+    private suspend fun runAgentLoopInternal(
+        userTask: String,
+        model: String,
+        baseUrl: String,
+        cloudApiKey: String,
+        backend: String,
+        effectiveMaxSteps: Int,
+        onStep: suspend (AgentStep) -> Unit
+    ) {
 
         executeSimpleShellTask(userTask, onStep)?.let {
             onStep(AgentStep("info", "ℹ️ Task complete."))
@@ -179,18 +198,21 @@ class AgentEngine(private val context: android.content.Context) {
             }
             if (display.isNotBlank()) onStep(AgentStep("assistant", display))
 
-            // ── No tool calls — NEVER silently complete, always redirect ────────
+            // ── No tool calls — decide: chat response vs. agent failure ─────────
             if (toolCalls.isEmpty()) {
                 messages.add(ChatMessage("assistant", response))
-                // If the agent produced real work already and the response looks conclusive → done
-                val looksConclusive = response.length < 300 &&
-                    !response.contains("will ", ignoreCase = true) &&
-                    !response.contains("I'll ", ignoreCase = true) &&
-                    !response.contains("let me ", ignoreCase = true) &&
-                    !response.contains("going to ", ignoreCase = true) &&
-                    productiveToolCount > 0
-                if (looksConclusive) {
-                    onStep(AgentStep("info", "✅ Task complete."))
+                // Detect a genuine chat/conversational response (no tools needed)
+                val isShortAnswer = response.length < 500
+                val hasPlanningWords = listOf(
+                    "i will ", "i'll ", "let me ", "going to ", "i'm going",
+                    "step 1", "first,", "firstly", "next step", "i need to",
+                    "i should ", "now i", "then i"
+                ).any { response.contains(it, ignoreCase = true) }
+                val isConversational = isShortAnswer && !hasPlanningWords
+                // Also allow exit if productive work was done and this looks like a wrap-up
+                val isWrapUp = productiveToolCount > 0 && isShortAnswer
+                if (isConversational || isWrapUp) {
+                    onStep(AgentStep("info", "✅ Done."))
                     break
                 }
                 // Otherwise: the agent described work but used no tool — redirect
