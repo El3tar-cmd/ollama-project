@@ -209,7 +209,7 @@ class ProjectPlanManager(private val getWorkingDir: () -> String) {
     fun appendPlanNote(note: String) {
         if (!planFile.exists()) return
         try {
-            planFile.appendText("\n_[${ts()}] $note_\n")
+            planFile.appendText("\n_[${ts()}] ${note}_\n")
         } catch (_: Exception) {}
     }
 

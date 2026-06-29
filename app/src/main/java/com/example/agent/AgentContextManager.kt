@@ -12,7 +12,7 @@ import com.example.data.model.ChatMessage
 class AgentContextManager {
 
     // ── File content cache (LRU via LinkedHashMap) ────────────────────────────
-    private val fileCache = object : LinkedHashMap<String, CachedFile>(32, 0.75f, true) {
+    private val fileCache: LinkedHashMap<String, CachedFile> = object : LinkedHashMap<String, CachedFile>(32, 0.75f, true) {
         override fun removeEldestEntry(eldest: Map.Entry<String, CachedFile>): Boolean {
             return size > MAX_CACHE_ENTRIES || totalCacheChars() > MAX_CACHE_CHARS
         }
@@ -42,7 +42,7 @@ class AgentContextManager {
 
     fun reset() { fileCache.clear() }
 
-    private fun totalCacheChars() = fileCache.values.sumOf { it.content.length }
+    private fun totalCacheChars(): Int = fileCache.values.sumOf { it.content.length }
 
     fun cachedFilesSummary(): String {
         if (fileCache.isEmpty()) return ""
