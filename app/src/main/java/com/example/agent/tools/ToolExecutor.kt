@@ -6,6 +6,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
+/**
+ * Central tool dispatcher for the APEX Agent.
+ * Routes parsed JSON tool calls to their implementations.
+ * Supports fuzzy name mapping for common model hallucinations.
+ */
 class ToolExecutor(
     private val context: Context,
     private val getWorkingDir: () -> String
@@ -23,274 +28,448 @@ class ToolExecutor(
     private val thinkingTools  = ThinkingTools()
 
     suspend fun executeTool(tool: JSONObject): AgentStep = withContext(Dispatchers.IO) {
-        when (val name = tool.optString("name", "")) {
+        when (val name = tool.optString("name", "").lowercase().trim()) {
 
-            // ── Thinking & Planning ───────────────────────────────────────────
+            // ── Thinking & Metacognition ──────────────────────────────────────
             "think", "sequence_thinking" -> {
                 val steps   = tool.optJSONArray("steps")
                 val content = tool.optString("content", tool.optString("thought", ""))
                 thinkingTools.toolSequenceThinking(steps, content)
             }
+
+            "deep_think", "deep_analysis", "analyze" -> {
+                thinkingTools.toolDeepThink(
+                    problem      = tool.optString("problem", tool.optString("content", "")),
+                    rootCause    = tool.optString("root_cause", ""),
+                    solution     = tool.optString("solution", ""),
+                    risks        = tool.optString("risks", ""),
+                    alternatives = tool.optString("alternatives", "")
+                )
+            }
+
             "planning", "plan" -> {
-                val task  = tool.optString("task", "")
+                val task  = tool.optString("task", tool.optString("content", ""))
                 val steps = tool.optJSONArray("steps")
                 if (steps != null) thinkingTools.toolPlanning(task, steps)
                 else AgentStep("plan", "📋 Plan: ${tool.optString("content", "(no steps provided)")}")
             }
-            "context_manager" -> {
-                thinkingTools.toolContextManager(
-                    tool.optString("action", "summarize"),
-                    tool.optString("focus", "")
+
+            "decompose_task", "task_decomposition", "decompose" -> {
+                thinkingTools.toolDecomposeTask(
+                    task        = tool.optString("task", ""),
+                    subtasks    = tool.optJSONArray("subtasks"),
+                    constraints = tool.optString("constraints", "")
                 )
             }
 
-            // ── Directory Explorer & File System ──────────────────────────────
-            "directory_explorer", "list_directory_files", "list_dir", "list", "ls"
-                -> fileTools.toolListDir(tool.optString("path", getWorkingDir()))
-            "tree"
-                -> fileTools.toolTree(
+            "critique", "self_critique", "review_plan" -> {
+                thinkingTools.toolCritique(
+                    proposal     = tool.optString("proposal", tool.optString("content", "")),
+                    concerns     = tool.optString("concerns", ""),
+                    improvements = tool.optString("improvements", ""),
+                    verdict      = tool.optString("verdict", "review")
+                )
+            }
+
+            "verify_plan", "plan_check" -> {
+                thinkingTools.toolVerifyPlan(
+                    planSummary       = tool.optString("plan_summary", tool.optString("content", "")),
+                    completenessCheck = tool.optString("completeness_check", ""),
+                    feasibilityCheck  = tool.optString("feasibility_check", ""),
+                    missingSteps      = tool.optString("missing_steps", "")
+                )
+            }
+
+            "reflect", "reflection", "retrospective" -> {
+                thinkingTools.toolReflect(
+                    whatWorked  = tool.optString("what_worked", ""),
+                    whatFailed  = tool.optString("what_failed", ""),
+                    lessons     = tool.optString("lessons", ""),
+                    nextTime    = tool.optString("next_time", "")
+                )
+            }
+
+            "context_manager" -> {
+                thinkingTools.toolContextManager(
+                    action = tool.optString("action", "summarize"),
+                    focus  = tool.optString("focus", "")
+                )
+            }
+
+            // ── Directory & File System Exploration ───────────────────────────
+            "directory_explorer", "list_directory_files", "list_dir", "list", "ls" ->
+                fileTools.toolListDir(tool.optString("path", getWorkingDir()))
+
+            "tree" ->
+                fileTools.toolTree(
                     tool.optString("path", getWorkingDir()),
                     tool.optInt("depth", 3)
                 )
-            "file_info"
-                -> fileTools.toolFileInfo(tool.optString("path", ""))
-            "file_exists"
-                -> fileTools.toolFileExists(tool.optString("path", ""))
 
-            // ── File Reader ───────────────────────────────────────────────────
-            "file_reader", "read_file", "read"
-                -> fileTools.toolReadFile(tool.optString("path", ""))
+            "file_info" ->
+                fileTools.toolFileInfo(tool.optString("path", ""))
+
+            "file_exists" ->
+                fileTools.toolFileExists(tool.optString("path", ""))
+
+            "file_outline", "outline" ->
+                fileTools.toolFileOutline(tool.optString("path", ""), tool.optInt("max_lines", 100))
+
+            "file_diff", "diff_files" ->
+                fileTools.toolFileDiff(
+                    tool.optString("a", tool.optString("path_a", tool.optString("src", ""))),
+                    tool.optString("b", tool.optString("path_b", tool.optString("dst", "")))
+                )
+
+            // ── File Reading ──────────────────────────────────────────────────
+            "file_reader", "read_file", "read" ->
+                fileTools.toolReadFile(tool.optString("path", ""))
+
             "line_reader", "read_file_lines", "read_lines" -> {
-                // Handle both separate start/end and interval formats like "(5,10)" or "5-10"
-                val path = tool.optString("path", "")
-                val startStr = tool.optString("start", tool.optString("lines", "1"))
-                val endStr = tool.optString("end", tool.optString("lines", "50"))
-                
-                // Parse interval format if present (e.g., "(5,10)", "{5,10}", or "5-10")
+                val path     = tool.optString("path", "")
+                val startStr = tool.optString("start", "1")
+                val endStr   = tool.optString("end",   "50")
                 val intervalMatch = Regex("""^[\{\(]?(\d+)[-,:]?\s*(\d+)[\)\}]?$""").find(startStr)
                 val start: Int
                 val end: Int
                 if (intervalMatch != null) {
                     start = intervalMatch.groupValues[1].toIntOrNull() ?: 1
-                    end = intervalMatch.groupValues[2].toIntOrNull() ?: 50
+                    end   = intervalMatch.groupValues[2].toIntOrNull() ?: 50
                 } else {
                     start = startStr.toIntOrNull() ?: 1
-                    end = endStr.toIntOrNull() ?: 50
+                    end   = endStr.toIntOrNull()   ?: 50
                 }
-                
                 fileTools.toolReadLines(path, start, end)
             }
-            "head_file"
-                -> fileTools.toolHeadFile(tool.optString("path", ""), tool.optInt("lines", 20))
-            "tail_file"
-                -> fileTools.toolTailFile(tool.optString("path", ""), tool.optInt("lines", 20))
-            "file_diff"
-                -> fileTools.toolFileDiff(tool.optString("a", tool.optString("path_a", "")),
-                                          tool.optString("b", tool.optString("path_b", "")))
 
-            // ── File Writer ───────────────────────────────────────────────────
-            "file_writer", "write_file", "create_file"
-                -> fileTools.toolWriteFile(tool.optString("path", ""), tool.optString("content", ""))
-            "append_file"
-                -> fileTools.toolAppendFile(tool.optString("path", ""), tool.optString("content", ""))
+            "head_file", "head" ->
+                fileTools.toolHeadFile(tool.optString("path", ""), tool.optInt("lines", 30))
 
-            // ── Line Editor ───────────────────────────────────────────────────
-            "line_editor", "replace_in_file", "edit_file"
-                -> fileTools.toolEditFile(
+            "tail_file", "tail" ->
+                fileTools.toolTailFile(tool.optString("path", ""), tool.optInt("lines", 20))
+
+            // ── File Writing ──────────────────────────────────────────────────
+            "file_writer", "write_file", "create_file" ->
+                fileTools.toolWriteFile(tool.optString("path", ""), tool.optString("content", ""))
+
+            "append_file" ->
+                fileTools.toolAppendFile(tool.optString("path", ""), tool.optString("content", ""))
+
+            // ── File Editing ──────────────────────────────────────────────────
+            "line_editor", "replace_in_file", "edit_file" ->
+                fileTools.toolEditFile(
                     tool.optString("path", ""),
-                    tool.optString("old", ""),
-                    tool.optString("new", "")
-                )
-            "replace_all"
-                -> fileTools.toolReplaceAll(
-                    tool.optString("path", ""),
-                    tool.optString("old", ""),
-                    tool.optString("new", "")
+                    tool.optString("old",  ""),
+                    tool.optString("new",  "")
                 )
 
-            // ── Multi File Writer ─────────────────────────────────────────────
+            "replace_all" ->
+                fileTools.toolReplaceAll(
+                    tool.optString("path", ""),
+                    tool.optString("old",  ""),
+                    tool.optString("new",  "")
+                )
+
+            "replace_lines" ->
+                fileTools.toolReplaceLines(
+                    tool.optString("path", ""),
+                    tool.optInt("start", 1),
+                    tool.optInt("end",   1),
+                    tool.optString("content", "")
+                )
+
+            "insert_before" ->
+                fileTools.toolInsertBefore(
+                    tool.optString("path",    ""),
+                    tool.optString("marker",  ""),
+                    tool.optString("content", "")
+                )
+
+            "insert_after" ->
+                fileTools.toolInsertAfter(
+                    tool.optString("path",    ""),
+                    tool.optString("marker",  ""),
+                    tool.optString("content", "")
+                )
+
+            // ── Multi-file operations ─────────────────────────────────────────
             "multi_file_writer" -> {
                 val files = tool.optJSONArray("files")
-                    ?: return@withContext AgentStep("tool_result", "❌ multi_file_writer: 'files' array required", isError = true)
+                    ?: return@withContext AgentStep("tool_result",
+                        "❌ multi_file_writer: 'files' array required", isError = true)
                 multiFileTools.toolMultiFileWriter(files)
             }
 
-            // ── Multi Line Editor ─────────────────────────────────────────────
             "multi_line_editor" -> {
                 val edits = tool.optJSONArray("edits")
-                    ?: return@withContext AgentStep("tool_result", "❌ multi_line_editor: 'edits' array required", isError = true)
+                    ?: return@withContext AgentStep("tool_result",
+                        "❌ multi_line_editor: 'edits' array required", isError = true)
                 multiFileTools.toolMultiLineEditor(tool.optString("path", ""), edits)
             }
 
-            // ── File management ───────────────────────────────────────────────
-            "delete_file", "delete_path", "remove_file"
-                -> fileTools.toolDeleteFile(tool.optString("path", ""))
-            "copy_file", "copy_path"
-                -> fileTools.toolCopyFile(tool.optString("src", ""), tool.optString("dst", ""))
-            "move_file", "rename_path", "move_path"
-                -> fileTools.toolMoveFile(tool.optString("src", ""), tool.optString("dst", ""))
-            "create_dir", "create_directory", "mkdir"
-                -> fileTools.toolCreateDir(tool.optString("path", ""))
-            "find_files"
-                -> fileTools.toolFindFiles(
+            // ── File Management ───────────────────────────────────────────────
+            "delete_file", "delete_path", "remove_file" ->
+                fileTools.toolDeleteFile(tool.optString("path", ""))
+
+            "copy_file", "copy_path" ->
+                fileTools.toolCopyFile(
+                    tool.optString("src", tool.optString("source", "")),
+                    tool.optString("dst", tool.optString("dest",   tool.optString("destination", "")))
+                )
+
+            "move_file", "rename_path", "move_path", "rename_file" ->
+                fileTools.toolMoveFile(
+                    tool.optString("src", tool.optString("source", tool.optString("old", ""))),
+                    tool.optString("dst", tool.optString("dest",   tool.optString("new", "")))
+                )
+
+            "create_dir", "create_directory", "mkdir" ->
+                fileTools.toolCreateDir(tool.optString("path", ""))
+
+            "find_files" ->
+                fileTools.toolFindFiles(
                     tool.optString("dir", tool.optString("path", getWorkingDir())),
                     tool.optString("pattern", "*"),
                     tool.optInt("max", 50)
                 )
 
-            // ── Terminal Executor ─────────────────────────────────────────────
-            "terminal_executor", "run_command", "bash", "shell"
-                -> bashTool.toolBash(tool.optString("cmd", ""), tool.optString("cwd", getWorkingDir()))
-            "git_tool", "git"
-                -> bashTool.toolBash("git ${tool.optString("args", "status")}", getWorkingDir())
-
-            // ── Python Executor ───────────────────────────────────────────────
-            "run_python", "python_exec", "python"
-                -> bashTool.toolRunPython(
-                    tool.optString("code", tool.optString("cmd", "")),
+            // ── Shell Execution ───────────────────────────────────────────────
+            "terminal_executor", "run_command", "bash", "shell" ->
+                bashTool.toolBash(
+                    tool.optString("cmd", tool.optString("command", "")),
                     tool.optString("cwd", getWorkingDir())
                 )
 
-            // ── Node.js Executor ──────────────────────────────────────────────
-            "run_node", "node_exec", "node"
-                -> bashTool.toolRunNode(
-                    tool.optString("code", tool.optString("cmd", "")),
+            "git_tool", "git" ->
+                bashTool.toolBash("git ${tool.optString("args", "status")}", getWorkingDir())
+
+            "run_python", "python_exec", "python" ->
+                bashTool.toolRunPython(
+                    tool.optString("code", tool.optString("cmd", tool.optString("script", ""))),
                     tool.optString("cwd", getWorkingDir())
                 )
 
-            "fetch_url", "web_fetch"
-                -> webTool.toolFetchUrl(
-                    tool.optString("url", ""),
+            "run_node", "node_exec", "node" ->
+                bashTool.toolRunNode(
+                    tool.optString("code", tool.optString("cmd", tool.optString("script", ""))),
+                    tool.optString("cwd", getWorkingDir())
+                )
+
+            "calculate", "calc", "math" ->
+                bashTool.toolCalculate(tool.optString("expr", tool.optString("expression", "")))
+
+            // ── Web ───────────────────────────────────────────────────────────
+            "fetch_url", "web_fetch", "http_request" ->
+                webTool.toolFetchUrl(
+                    tool.optString("url",    ""),
                     tool.optString("method", "GET"),
-                    tool.optString("body", "")
+                    tool.optString("body",   "")
                 )
-            "calculate"
-                -> bashTool.toolCalculate(tool.optString("expr", ""))
 
-            // ── Search Tools ──────────────────────────────────────────────────
-            "project_search", "search_content", "search_files", "search"
-                -> searchTools.toolSearchFiles(
+            "web_search", "search_web", "google" ->
+                webTool.toolWebSearch(tool.optString("query", ""))
+
+            // ── Search ────────────────────────────────────────────────────────
+            "project_search", "search_content", "search_files", "search" ->
+                searchTools.toolSearchFiles(
                     tool.optString("dir", tool.optString("path", getWorkingDir())),
                     tool.optString("query", "")
                 )
-            "regex_search", "grep"
-                -> searchTools.toolGrep(
+
+            "regex_search", "grep", "grep_search" ->
+                searchTools.toolGrep(
                     tool.optString("dir", getWorkingDir()),
                     tool.optString("pattern", ""),
-                    tool.optString("glob", "")
+                    tool.optString("glob", tool.optString("file_pattern", ""))
                 )
-            "semantic_search"
-                -> searchTools.toolSemanticSearch(
+
+            "semantic_search" ->
+                searchTools.toolSemanticSearch(
                     tool.optString("dir", getWorkingDir()),
                     tool.optString("query", "")
                 )
-            "web_search"
-                -> webTool.toolWebSearch(tool.optString("query", ""))
+
+            "todo_scan", "scan_todos", "find_todos" ->
+                searchTools.toolTodoScan(
+                    tool.optString("dir", getWorkingDir()),
+                    tool.optInt("max", 50)
+                )
+
+            "project_overview" ->
+                searchTools.toolProjectOverview(
+                    tool.optString("dir", tool.optString("path", getWorkingDir()))
+                )
 
             // ── Linter ────────────────────────────────────────────────────────
-            "lint", "linter"
-                -> linterTool.toolLint(tool.optString("path", ""))
+            "lint", "linter", "check_syntax" ->
+                linterTool.toolLint(tool.optString("path", ""))
 
-            // ── Git Tool ──────────────────────────────────────────────────────
-            "git_status"
-                -> gitTool.toolGitStatus()
-            "git_diff"
-                -> gitTool.toolGitDiff(tool.optString("target", "HEAD"))
-            "git_log"
-                -> gitTool.toolGitLog(tool.optInt("count", 10))
-            "git_add"
-                -> gitTool.toolGitAdd(tool.optString("paths", "."))
-            "git_commit"
-                -> gitTool.toolGitCommit(
+            // ── Git ───────────────────────────────────────────────────────────
+            "git_status" ->
+                gitTool.toolGitStatus()
+
+            "git_diff" ->
+                gitTool.toolGitDiff(tool.optString("target", "HEAD"))
+
+            "git_log" ->
+                gitTool.toolGitLog(tool.optInt("count", 10))
+
+            "git_add" ->
+                gitTool.toolGitAdd(tool.optString("paths", "."))
+
+            "git_commit" ->
+                gitTool.toolGitCommit(
                     tool.optString("message", ""),
                     tool.optBoolean("add_all", true)
                 )
-            "git_push"
-                -> gitTool.toolGitPush(
+
+            "git_push" ->
+                gitTool.toolGitPush(
                     tool.optString("remote", "origin"),
                     tool.optString("branch", "")
                 )
-            "git_branch"
-                -> gitTool.toolGitBranch(tool.optString("name", ""))
 
-            // ── Memory System ─────────────────────────────────────────────────
-            "memory_save", "memory_save_long"
-                -> memoryTool.toolMemorySaveLong(
-                    tool.optString("key", "note").trim().replace(Regex("[^a-zA-Z0-9_\\- ]"), ""),
-                    tool.optString("value", tool.optString("content", ""))
-                )
-            "memory_save_short"
-                -> memoryTool.toolMemorySaveShort(
-                    tool.optString("key", "note").trim().replace(Regex("[^a-zA-Z0-9_\\- ]"), ""),
-                    tool.optString("value", tool.optString("content", ""))
-                )
-            "memory_recall", "memory_recall_long"
-                -> memoryTool.toolMemoryRecallLong(tool.optString("key", ""))
-            "memory_recall_short"
-                -> memoryTool.toolMemoryRecallShort()
-            "memory_recall_all"
-                -> memoryTool.toolMemoryRecallAll()
-            "memory_clear", "memory_clear_long"
-                -> memoryTool.toolMemoryClearLong(tool.optString("key", ""))
-            "memory_clear_short"
-                -> memoryTool.toolMemoryClearShort()
+            "git_branch" ->
+                gitTool.toolGitBranch(tool.optString("name", ""))
 
-            // ── User interaction ──────────────────────────────────────────────
-            "ask_user", "ask_human" -> {
-                val q  = tool.optString("question", "What should I do next?")
+            // ── Memory — Three-Tier System ────────────────────────────────────
+
+            // Tier 1: Long-term / Semantic
+            "memory_save", "memory_save_long" ->
+                memoryTool.toolMemorySaveLong(
+                    key   = tool.optString("key",   tool.optString("name", "note")).trim()
+                                .replace(Regex("[^a-zA-Z0-9_\\- ]"), ""),
+                    value = tool.optString("value", tool.optString("content", ""))
+                )
+
+            "memory_recall", "memory_recall_long" ->
+                memoryTool.toolMemoryRecallLong(tool.optString("key", ""))
+
+            "memory_clear", "memory_clear_long" ->
+                memoryTool.toolMemoryClearLong(tool.optString("key", ""))
+
+            // Tier 2: Session / Episodic
+            "memory_save_short" ->
+                memoryTool.toolMemorySaveShort(
+                    key   = tool.optString("key",   "note").trim()
+                                .replace(Regex("[^a-zA-Z0-9_\\- ]"), ""),
+                    value = tool.optString("value", tool.optString("content", ""))
+                )
+
+            "memory_recall_short" ->
+                memoryTool.toolMemoryRecallShort()
+
+            "memory_clear_short" ->
+                memoryTool.toolMemoryClearShort()
+
+            // Tier 3: Procedural / How-To
+            "memory_save_procedure", "save_procedure", "learn_procedure" ->
+                memoryTool.toolMemorySaveProcedure(
+                    name  = tool.optString("name",  tool.optString("key",   "procedure")).trim(),
+                    steps = tool.optString("steps", tool.optString("value", tool.optString("content", "")))
+                )
+
+            "memory_recall_procedure", "recall_procedure", "get_procedure" ->
+                memoryTool.toolMemoryRecallProcedure(tool.optString("name", tool.optString("key", "")))
+
+            // All tiers at once
+            "memory_recall_all" ->
+                memoryTool.toolMemoryRecallAll()
+
+            // Cross-tier search
+            "memory_search", "search_memory" ->
+                memoryTool.toolMemorySearch(tool.optString("query", ""))
+
+            // ── User Interaction ──────────────────────────────────────────────
+            "ask_user", "ask_human", "clarify" -> {
+                val question = tool.optString("question", "What should I do next?")
                 val fn = askUserFn
-                if (fn != null) AgentStep("tool_result", "💬 User: ${fn(q)}")
-                else AgentStep("tool_result", "ℹ️ No user input available — continuing.")
+                if (fn != null) AgentStep("tool_result", "💬 User says: ${fn(question)}")
+                else AgentStep("tool_result", "ℹ️ No user input available — continuing autonomously.")
             }
 
             // ── Complete ──────────────────────────────────────────────────────
-            "complete" -> {
-                val summary = tool.optString("summary", "Task complete.")
+            "complete", "done", "finish" -> {
+                val summary = tool.optString("summary",
+                    tool.optString("result", tool.optString("content", "Task complete.")))
                 memoryTool.recordTaskDone(summary)
                 AgentStep("complete", "✅ $summary")
             }
 
+            // ── Fuzzy fallback mapping ────────────────────────────────────────
             else -> {
-                // Try to map common misnamed tools to correct ones
-                val mappedName = mapOf(
-                    // File reading
-                    "extract" to "file_reader",
-                    "get_file" to "file_reader",
-                    "read_css" to "file_reader",
-                    "read_js" to "file_reader",
-                    "read_html" to "file_reader",
-                    "get_css" to "file_reader",
-                    "get_js" to "file_reader",
-                    // File operations
-                    "delete" to "delete_file",
-                    "remove" to "delete_file",
-                    "move" to "move_file",
-                    "rename" to "move_file",
-                    "copy" to "copy_file",
-                    // Terminal
-                    "run" to "terminal_executor",
-                    "execute" to "terminal_executor",
-                    "command" to "terminal_executor",
-                    "bash_cmd" to "terminal_executor",
-                    // Directory
-                    "ls" to "directory_explorer",
-                    "list" to "directory_explorer",
-                    // Git
-                    "git_status" to "git_status",
-                    "gitdiff" to "git_diff",
-                    // Search
-                    "search" to "project_search",
-                    "grep" to "regex_search"
-                )[name.lowercase()]
-                
-                if (mappedName != null) {
-                    // Re-execute with mapped tool name
-                    val mappedTool = JSONObject(tool.toString()).put("name", mappedName)
-                    return@withContext executeTool(mappedTool)
+                val mapped = FUZZY_TOOL_MAP[name] ?: FUZZY_TOOL_MAP.entries
+                    .firstOrNull { (k, _) -> name.contains(k) || k.contains(name) }?.value
+
+                if (mapped != null) {
+                    executeTool(JSONObject(tool.toString()).put("name", mapped))
+                } else {
+                    AgentStep("tool_result",
+                        "❌ Unknown tool: \"$name\"\n" +
+                        "Available: file_reader, line_reader, file_writer, line_editor, " +
+                        "multi_line_editor, terminal_executor, git_diff, lint, " +
+                        "project_search, regex_search, deep_think, planning, complete",
+                        isError = true)
                 }
-                
-                AgentStep("tool_result", "❌ Unknown tool: \"$name\"", isError = true)
             }
         }
+    }
+
+    companion object {
+        // Common LLM hallucination → correct tool name mappings
+        private val FUZZY_TOOL_MAP = mapOf(
+            // Reading
+            "extract"       to "file_reader",
+            "get_file"      to "file_reader",
+            "read_css"      to "file_reader",
+            "read_js"       to "file_reader",
+            "read_html"     to "file_reader",
+            "get_css"       to "file_reader",
+            "get_js"        to "file_reader",
+            "view_file"     to "file_reader",
+            "show_file"     to "file_reader",
+            "print_file"    to "file_reader",
+            "cat"           to "file_reader",
+            // Writing
+            "save_file"     to "write_file",
+            "overwrite"     to "write_file",
+            "update_file"   to "line_editor",
+            "patch_file"    to "line_editor",
+            "modify_file"   to "line_editor",
+            // File management
+            "delete"        to "delete_file",
+            "remove"        to "delete_file",
+            "move"          to "move_file",
+            "rename"        to "move_file",
+            "copy"          to "copy_file",
+            // Terminal
+            "run"           to "terminal_executor",
+            "execute"       to "terminal_executor",
+            "command"       to "terminal_executor",
+            "bash_cmd"      to "terminal_executor",
+            "sh"            to "terminal_executor",
+            "cmd"           to "terminal_executor",
+            // Directory
+            "ls"            to "directory_explorer",
+            "dir"           to "directory_explorer",
+            // Git
+            "gitdiff"       to "git_diff",
+            "git_show"      to "git_diff",
+            // Search
+            "grep"          to "regex_search",
+            "find"          to "find_files",
+            "locate"        to "project_search",
+            // Thinking
+            "think"         to "sequence_thinking",
+            "reason"        to "deep_think",
+            "analysis"      to "deep_think",
+            "brainstorm"    to "deep_think",
+            "check_plan"    to "verify_plan",
+            // Memory
+            "save_memory"   to "memory_save_long",
+            "remember"      to "memory_save_long",
+            "recall"        to "memory_recall_all",
+            "forget"        to "memory_clear_long"
+        )
     }
 }
