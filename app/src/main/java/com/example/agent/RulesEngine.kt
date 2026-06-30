@@ -97,10 +97,13 @@ object RulesEngine {
             val productive = state.filesWritten.size + state.toolsUsed.count {
                 it in StateManager.RUN_TOOLS || it in StateManager.GIT_TOOLS
             }
-            if (productive == 0 && state.stepCount <= 3) {
+            // Only block if the agent used NO tools at all (not even think/read).
+            // Conversational or informational tasks legitimately need zero file writes.
+            val usedAnyTool = state.toolsUsed.isNotEmpty()
+            if (productive == 0 && !usedAnyTool && state.stepCount <= 2) {
                 return RuleViolation(
                     rule     = "premature-complete",
-                    advice   = "🚫 BLOCKED: You called 'complete' without doing any real work. You must write/edit files or run commands first. Productive actions so far: $productive",
+                    advice   = "🚫 BLOCKED: You called 'complete' without doing any real work. Use think, read a file, or run a command before completing. Productive actions so far: $productive",
                     blocking = true,
                     severity = "high"
                 )

@@ -657,6 +657,9 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
 
     private fun shouldUseCloudRoute(modelName: String): Boolean {
         if (activeBackend != "ollama") return false
+        // If the model is already listed in the local Ollama instance, it's served locally —
+        // never route it through the cloud API regardless of what its name contains.
+        if (modelList.any { it.name == modelName }) return false
         val normalized = modelName.lowercase(Locale.US)
         return normalized.startsWith("cloud/") ||
             normalized.startsWith("ollama.com/") ||
@@ -1037,12 +1040,17 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
                 return
             }
 
-            liveLogs.add("> alpine: $rawCmd")
+            // ── apt → apk shim (Alpine uses apk, not apt/apt-get) ─────────────────
+            val cmd = translateAptToApk(rawCmd)
+            if (cmd != rawCmd) {
+                liveLogs.add("ℹ️ Alpine uses apk, not apt — running: $cmd")
+            }
+            liveLogs.add("> alpine: $cmd")
             viewModelScope.launch(Dispatchers.IO) {
                 // Prepend `cd <cwd> &&` so each command runs in the persisted directory
                 val fullCmd = if (alpineCwd != "/root" && alpineCwd.isNotBlank())
-                    "cd ${shellQuote(alpineCwd)} && $rawCmd"
-                else rawCmd
+                    "cd ${shellQuote(alpineCwd)} && $cmd"
+                else cmd
                 val result = EmbeddedLinux.exec(context, fullCmd, timeoutSec = 120L)
                 withContext(Dispatchers.Main) {
                     val out = result.output.take(6000)
@@ -1069,4 +1077,28 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     }
 
     private fun shellQuote(path: String): String = "'${path.replace("'", "'\\''")}'"
+
+    private fun translateAptToApk(cmd: String): String {
+        val t = cmd.trim()
+        // apt / apt-get → apk equivalents for Alpine Linux
+        val aptPrefix = when {
+            t.startsWith("apt-get ") -> "apt-get "
+            t.startsWith("apt ")     -> "apt "
+            else -> return t
+        }
+        val rest = t.removePrefix(aptPrefix).trim()
+        return when {
+            rest == "update"               -> "apk update"
+            rest == "upgrade"              -> "apk upgrade"
+            rest.startsWith("install ")    -> "apk add --no-cache ${rest.removePrefix("install ").trim()}"
+            rest.startsWith("remove ")     -> "apk del ${rest.removePrefix("remove ").trim()}"
+            rest.startsWith("purge ")      -> "apk del ${rest.removePrefix("purge ").trim()}"
+            rest.startsWith("autoremove")  -> "apk autoremove"
+            rest.startsWith("search ")     -> "apk search ${rest.removePrefix("search ").trim()}"
+            rest.startsWith("show ")       -> "apk info ${rest.removePrefix("show ").trim()}"
+            rest.startsWith("list")        -> "apk list --installed"
+            rest == "clean"                -> "rm -rf /var/cache/apk/*"
+            else -> t
+        }
+    }
 }
