@@ -82,8 +82,11 @@ class PersistentLinuxSession(private val context: Context) {
 
             readerJob = scope.launch(Dispatchers.IO) {
                 try {
-                    process!!.inputStream.bufferedReader().forEachLine { line ->
-                        withContext(Dispatchers.Main) { pushLine(line); onLine(line) }
+                    val reader = process!!.inputStream.bufferedReader()
+                    var line: String?
+                    while (reader.readLine().also { line = it } != null) {
+                        val l = line!!
+                        withContext(Dispatchers.Main) { pushLine(l); onLine(l) }
                     }
                 } catch (_: Exception) {}
                 withContext(Dispatchers.Main) {
