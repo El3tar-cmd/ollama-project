@@ -55,11 +55,15 @@ object EmbeddedLinux {
     // Alpine 3.16 rootfs — uses OpenSSL 1.x (libssl.so.1.1) instead of OpenSSL 3
     // (libcrypto.so.3 in 3.18 causes "Function not implemented" on Android kernels
     // because it calls getrandom()/memfd_create() syscalls unavailable in PRoot).
-    val debianRootfsUrl: String get() = when (arch) {
-        "aarch64" -> "https://dl-cdn.alpinelinux.org/alpine/v3.16/releases/aarch64/alpine-minirootfs-3.16.9-aarch64.tar.gz"
-        "x86_64"  -> "https://dl-cdn.alpinelinux.org/alpine/v3.16/releases/x86_64/alpine-minirootfs-3.16.9-x86_64.tar.gz"
-        "arm"     -> "https://dl-cdn.alpinelinux.org/alpine/v3.16/releases/armv7/alpine-minirootfs-3.16.9-armv7.tar.gz"
-        else      -> "https://dl-cdn.alpinelinux.org/alpine/v3.16/releases/aarch64/alpine-minirootfs-3.16.9-aarch64.tar.gz"
+    // Ubuntu Base RootFS - High compatibility with Android via PRoot
+    // Using glibc-based Ubuntu for professional stability and tool support
+    // Debian 12 (Bookworm) Minimal RootFS - The gold standard for PRoot on Android
+    // Extremely stable, glibc-based, and avoids the 404/incompatibility issues of Alpine/Ubuntu-base
+    val ubuntuRootfsUrl: String get() = when (arch) {
+        "aarch64" -> "https://cloud-images.debian.deb.ian.debian.org/cloud-images/bookworm/latest/arm64/debian-12-generic-arm64.tar.xz"
+        "x86_64"  -> "https://cloud-images.debian.deb.ian.debian.org/cloud-images/bookworm/latest/amd64/debian-12-generic-amd64.tar.xz"
+        "arm"     -> "https://cloud-images.debian.deb.ian.debian.org/cloud-images/bookworm/latest/armhf/debian-12-generic-armhf.tar.xz"
+        else      -> "https://cloud-images.debian.deb.ian.debian.org/cloud-images/bookworm/latest/arm64/debian-12-generic-arm64.tar.xz"
     }
 
     // ── Paths ─────────────────────────────────────────────────────────────────
