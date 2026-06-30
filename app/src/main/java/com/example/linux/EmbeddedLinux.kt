@@ -60,10 +60,10 @@ object EmbeddedLinux {
     // Debian 12 (Bookworm) Minimal RootFS - The gold standard for PRoot on Android
     // Extremely stable, glibc-based, and avoids the 404/incompatibility issues of Alpine/Ubuntu-base
     val ubuntuRootfsUrl: String get() = when (arch) {
-        "aarch64" -> "https://cloud-images.debian.deb.ian.debian.org/cloud-images/bookworm/latest/arm64/debian-12-generic-arm64.tar.xz"
-        "x86_64"  -> "https://cloud-images.debian.deb.ian.debian.org/cloud-images/bookworm/latest/amd64/debian-12-generic-amd64.tar.xz"
-        "arm"     -> "https://cloud-images.debian.deb.ian.debian.org/cloud-images/bookworm/latest/armhf/debian-12-generic-armhf.tar.xz"
-        else      -> "https://cloud-images.debian.deb.ian.debian.org/cloud-images/bookworm/latest/arm64/debian-12-generic-arm64.tar.xz"
+        "aarch64" -> "https://github.com/termux/proot-distro/raw/master/rootfs/debian/bookworm-aarch64.tar.xz"
+        "x86_64"  -> "https://github.com/termux/proot-distro/raw/master/rootfs/debian/bookworm-x86_64.tar.xz"
+        "arm"     -> "https://github.com/termux/proot-distro/raw/master/rootfs/debian/bookworm-arm.tar.xz"
+        else      -> "https://github.com/termux/proot-distro/raw/master/rootfs/debian/bookworm-aarch64.tar.xz"
     }
 
     // ── Paths ─────────────────────────────────────────────────────────────────
