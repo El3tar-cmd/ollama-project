@@ -11,6 +11,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -35,7 +37,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.MainViewModel
+import com.example.ui.editor.getFileIcon
 import com.example.ui.theme.*
+import java.io.File
 
 // ── Tab data model ────────────────────────────────────────────────────────────
 data class BrowserTab(
@@ -44,7 +48,242 @@ data class BrowserTab(
     var title: String = "New Tab"
 )
 
+// ── File tree helpers ─────────────────────────────────────────────────────────
+private data class BrowserFileItem(val file: File, val depth: Int)
+
+private fun buildBrowserFileTree(
+    dir: File,
+    expandedDirs: Set<String>,
+    depth: Int = 0
+): List<BrowserFileItem> {
+    val children = dir.listFiles()
+        ?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() }))
+        ?: return emptyList()
+    return children.flatMap { f ->
+        val item = BrowserFileItem(f, depth)
+        if (f.isDirectory && f.absolutePath in expandedDirs)
+            listOf(item) + buildBrowserFileTree(f, expandedDirs, depth + 1)
+        else listOf(item)
+    }
+}
+
+private val WEB_EXTENSIONS = setOf(
+    "html", "htm", "xhtml",
+    "js", "mjs", "ts",
+    "css", "less", "scss",
+    "json", "xml", "svg",
+    "png", "jpg", "jpeg", "gif", "webp",
+    "md", "txt"
+)
+
+// ── File Manager Bottom Sheet ─────────────────────────────────────────────────
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun FileManagerSheet(
+    vm: MainViewModel,
+    onFileSelected: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val rootDir       = File(vm.agentWorkingDir.ifBlank { "/sdcard" })
+    val expandedDirs  = remember { mutableStateOf(setOf(rootDir.absolutePath)) }
+    var currentRoot   by remember { mutableStateOf(rootDir) }
+
+    val treeItems = remember(currentRoot.absolutePath, expandedDirs.value) {
+        buildBrowserFileTree(currentRoot, expandedDirs.value)
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor   = Color(0xFF1A1A1A),
+        dragHandle = {
+            // custom handle
+            Box(
+                Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 4.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    Modifier.width(40.dp).height(4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(Color(0xFF555555))
+                )
+            }
+        }
+    ) {
+        Column(Modifier.fillMaxWidth().heightIn(max = 500.dp)) {
+
+            // ── Header ────────────────────────────────────────────────────────
+            Row(
+                Modifier.fillMaxWidth()
+                    .background(Color(0xFF252526))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text("📁", fontSize = 16.sp)
+                Text(
+                    "File Manager",
+                    color = OllamaGreen,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    modifier = Modifier.weight(1f)
+                )
+                // Navigate up
+                if (currentRoot.parentFile?.canRead() == true) {
+                    IconButton(
+                        onClick = { currentRoot = currentRoot.parentFile!! },
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(Icons.Default.ArrowBack, "Up",
+                            tint = OllamaTextDim, modifier = Modifier.size(16.dp))
+                    }
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("Close", color = OllamaTextDim, fontSize = 11.sp)
+                }
+            }
+
+            // Current path breadcrumb
+            Text(
+                currentRoot.absolutePath,
+                color = Color(0xFF555555),
+                fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF141414))
+                    .padding(horizontal = 12.dp, vertical = 4.dp)
+            )
+
+            HorizontalDivider(color = Color(0xFF2C2C2C))
+
+            // ── File List ─────────────────────────────────────────────────────
+            if (treeItems.isEmpty()) {
+                Box(
+                    Modifier.fillMaxWidth().height(120.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("Empty folder", color = OllamaTextDim, fontSize = 12.sp)
+                }
+            } else {
+                LazyColumn(
+                    Modifier.fillMaxWidth().weight(1f),
+                    contentPadding = PaddingValues(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(1.dp)
+                ) {
+                    items(treeItems, key = { it.file.absolutePath }) { item ->
+                        val f          = item.file
+                        val isDir      = f.isDirectory
+                        val isExpanded = f.absolutePath in expandedDirs.value
+                        val ext        = f.name.substringAfterLast('.', "").lowercase()
+                        val isWeb      = ext in WEB_EXTENSIONS
+                        val isHtml     = ext in setOf("html", "htm", "xhtml")
+
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(if (isHtml) OllamaGreen.copy(0.06f) else Color.Transparent)
+                                .clickable {
+                                    if (isDir) {
+                                        val path = f.absolutePath
+                                        expandedDirs.value = if (isExpanded)
+                                            expandedDirs.value - path
+                                        else expandedDirs.value + path
+                                    } else if (isWeb) {
+                                        val fileUrl = "file://${f.absolutePath}"
+                                        onFileSelected(fileUrl)
+                                        onDismiss()
+                                    }
+                                }
+                                .padding(
+                                    start = (8 + item.depth * 14).dp,
+                                    end = 8.dp, top = 7.dp, bottom = 7.dp
+                                ),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            // Expand arrow for dirs
+                            if (isDir) {
+                                Icon(
+                                    if (isExpanded) Icons.Default.KeyboardArrowDown
+                                    else Icons.Default.KeyboardArrowRight,
+                                    null, tint = OllamaTextDim.copy(0.6f),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            } else {
+                                Spacer(Modifier.width(14.dp))
+                            }
+
+                            Text(
+                                if (isDir) (if (isExpanded) "📂" else "📁")
+                                else getFileIcon(f),
+                                fontSize = 13.sp
+                            )
+
+                            Text(
+                                f.name,
+                                color = when {
+                                    isHtml -> Color(0xFFFFD966)
+                                    isDir  -> OllamaText
+                                    isWeb  -> OllamaTextDim
+                                    else   -> Color(0xFF555555)
+                                },
+                                fontSize = 12.sp,
+                                fontWeight = if (isHtml) FontWeight.SemiBold
+                                    else if (isDir) FontWeight.Medium
+                                    else FontWeight.Normal,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+
+                            // "Open" badge for HTML files
+                            if (isHtml) {
+                                Box(
+                                    Modifier
+                                        .clip(RoundedCornerShape(3.dp))
+                                        .background(OllamaGreen.copy(0.15f))
+                                        .padding(horizontal = 5.dp, vertical = 2.dp)
+                                ) {
+                                    Text("Open", color = OllamaGreen, fontSize = 9.sp,
+                                        fontFamily = FontFamily.Monospace)
+                                }
+                            } else if (isDir) {
+                                Text(
+                                    "${f.listFiles()?.size ?: 0}",
+                                    color = Color(0xFF444444),
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Bottom hint ───────────────────────────────────────────────────
+            HorizontalDivider(color = Color(0xFF2C2C2C))
+            Row(
+                Modifier.fillMaxWidth()
+                    .background(Color(0xFF141414))
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("🟡", fontSize = 10.sp)
+                Text("HTML files open in browser with CSS & JS loaded",
+                    color = Color(0xFF555555), fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace)
+            }
+        }
+    }
+}
+
+// ── Browser Screen ────────────────────────────────────────────────────────────
 @SuppressLint("SetJavaScriptEnabled")
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BrowserScreen(vm: MainViewModel) {
 
@@ -55,17 +294,16 @@ fun BrowserScreen(vm: MainViewModel) {
     var pageTitle by remember { mutableStateOf("New Tab") }
     var canGoBack    by remember { mutableStateOf(false) }
     var canGoForward by remember { mutableStateOf(false) }
+    var showFileManager by remember { mutableStateOf(false) }
     val focusManager  = LocalFocusManager.current
     val urlFocus      = remember { FocusRequester() }
 
-    // WebView instance — persisted across recompositions
-    val webView = remember {
-        mutableStateOf<WebView?>(null)
-    }
+    val webView = remember { mutableStateOf<WebView?>(null) }
 
     fun navigate(rawUrl: String) {
         val url = when {
             rawUrl.isBlank()                                       -> return
+            rawUrl.startsWith("file://")                          -> rawUrl
             rawUrl.startsWith("http://") ||
             rawUrl.startsWith("https://") ||
             rawUrl.startsWith("localhost") ||
@@ -97,7 +335,6 @@ fun BrowserScreen(vm: MainViewModel) {
         webView.value?.loadUrl(tab.url)
     }
 
-    // Quick-access localhost shortcuts
     val serverPort = vm.linuxSession.serverPort
     val shortcuts  = buildList {
         serverPort?.let { add("localhost:$it" to "Server :$it") }
@@ -106,6 +343,15 @@ fun BrowserScreen(vm: MainViewModel) {
         add("localhost:5000" to ":5000")
         add("localhost:8000" to ":8000")
     }.distinctBy { it.first }
+
+    // ── File Manager Sheet ────────────────────────────────────────────────────
+    if (showFileManager) {
+        FileManagerSheet(
+            vm             = vm,
+            onFileSelected = { fileUrl -> navigate(fileUrl) },
+            onDismiss      = { showFileManager = false }
+        )
+    }
 
     Column(Modifier.fillMaxSize().background(OllamaBg)) {
 
@@ -184,6 +430,15 @@ fun BrowserScreen(vm: MainViewModel) {
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                     keyboardActions = KeyboardActions(onGo = { navigate(urlInput) })
                 )
+
+                // File Manager button
+                IconButton(
+                    onClick = { showFileManager = true },
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(Icons.Default.FolderOpen, "Files",
+                        tint = Color(0xFFFFD966), modifier = Modifier.size(18.dp))
+                }
 
                 // New tab
                 IconButton(
@@ -289,8 +544,19 @@ fun BrowserScreen(vm: MainViewModel) {
                             fontFamily = FontFamily.Monospace)
                     }
                 }
+                // 📁 Files shortcut
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(Color(0xFF2A2A1A))
+                        .border(0.5.dp, Color(0xFF554433), RoundedCornerShape(4.dp))
+                        .clickable { showFileManager = true }
+                        .padding(horizontal = 8.dp, vertical = 3.dp)
+                ) {
+                    Text("📁 Files", color = Color(0xFFFFD966), fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace)
+                }
                 Spacer(Modifier.weight(1f))
-                // Home button
                 Box(
                     Modifier
                         .clip(RoundedCornerShape(4.dp))
@@ -317,6 +583,8 @@ fun BrowserScreen(vm: MainViewModel) {
                         setSupportMultipleWindows(false)
                         @Suppress("DEPRECATION")
                         allowUniversalAccessFromFileURLs = true
+                        @Suppress("DEPRECATION")
+                        allowFileAccessFromFileURLs = true
                         useWideViewPort             = true
                         loadWithOverviewMode        = true
                         builtInZoomControls         = true
@@ -356,7 +624,6 @@ fun BrowserScreen(vm: MainViewModel) {
 
                     webView.value = this
 
-                    // Load the current tab's URL
                     val initUrl = tabs[activeIdx].url
                     if (initUrl != "about:blank") loadUrl(initUrl)
                 }

@@ -492,7 +492,14 @@ private fun FileEditorArea(vm: MainViewModel, context: Context) {
             when {
                 isHtml && showPreview -> {
                     key(htmlKey) {
-                        HtmlPreviewPane(html = vm.agentFileContent, modifier = Modifier.fillMaxSize())
+                        val baseUrl = file.parentFile
+                            ?.let { "file://${it.absolutePath}/" }
+                            ?: "file:///android_asset/"
+                        HtmlPreviewPane(
+                            html    = vm.agentFileContent,
+                            baseUrl = baseUrl,
+                            modifier = Modifier.fillMaxSize()
+                        )
                     }
                 }
                 isMd && showPreview -> {
