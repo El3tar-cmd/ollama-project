@@ -20,6 +20,7 @@ import com.example.data.api.LlamaCppApi
 import com.example.data.api.OllamaApi
 import com.example.linux.EmbeddedLinux
 import com.example.linux.LinuxSetupManager
+import com.example.linux.PersistentLinuxSession
 import com.example.data.model.AgentStep
 import com.example.data.model.ChatMessage
 import com.example.data.model.OllamaModel
@@ -32,6 +33,16 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     private val settingsPrefs = ctx.getSharedPreferences("devhive_prefs", android.content.Context.MODE_PRIVATE)
     val executor         = OllamaExecutor(ctx)
     val agentEngine      = AgentEngine(ctx)
+    val linuxSession     = PersistentLinuxSession(ctx)
+
+    fun startPersistentServer(cmd: String, hostCwd: String? = null) {
+        linuxSession.startServer(cmd, hostCwd, viewModelScope) { line ->
+            liveLogs.add("[server] $line")
+            if (liveLogs.size > 1000) liveLogs.removeAt(0)
+        }
+    }
+
+    fun stopPersistentServer() = linuxSession.stopServer()
     
     // Track coroutines for proper cleanup
     private val initJob = viewModelScope.launch(Dispatchers.IO) {
@@ -322,12 +333,10 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     
     override fun onCleared() {
         super.onCleared()
-        // Clean up executor resources
         executor.cleanup()
-        // Cancel init job
         initJob.cancel()
-        // Cancel agent job if running
         agentJob?.cancel()
+        linuxSession.stopServer()
     }
 
     private fun syncLogs() {
@@ -1045,6 +1054,15 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
             if (cmd != rawCmd) {
                 liveLogs.add("ℹ️ Alpine uses apk, not apt — running: $cmd")
             }
+
+            // ── Persistent server detection ────────────────────────────────────
+            if (isServerCommand(cmd)) {
+                liveLogs.add("> alpine [server]: $cmd")
+                liveLogs.add("🚀 Starting as persistent server (won't block terminal)…")
+                startPersistentServer(cmd, alpineCwd.takeIf { it != "/root" && it.isNotBlank() })
+                return
+            }
+
             liveLogs.add("> alpine: $cmd")
             viewModelScope.launch(Dispatchers.IO) {
                 // Prepend `cd <cwd> &&` so each command runs in the persisted directory
@@ -1077,6 +1095,22 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     }
 
     private fun shellQuote(path: String): String = "'${path.replace("'", "'\\''")}'"
+
+    private fun isServerCommand(cmd: String): Boolean {
+        val c = cmd.trim().lowercase()
+        return c.contains("http.server") ||
+            c.contains("flask run") || c.contains("flask dev") ||
+            c.contains("uvicorn") || c.contains("gunicorn") ||
+            c.contains("django") && c.contains("runserver") ||
+            c.contains("fastapi") ||
+            (c.startsWith("node ") && !c.contains("-e ") && !c.contains("-c ")) ||
+            c.startsWith("npm start") || c.startsWith("npm run") ||
+            c.startsWith("yarn start") || c.startsWith("yarn dev") ||
+            c.contains("python3 -m http") || c.contains("python -m http") ||
+            c.contains("serve ") || c.contains("live-server") ||
+            c.contains("vite") || c.contains("next dev") ||
+            c.contains("rails server") || c.contains("rails s")
+    }
 
     private fun translateAptToApk(cmd: String): String {
         val t = cmd.trim()

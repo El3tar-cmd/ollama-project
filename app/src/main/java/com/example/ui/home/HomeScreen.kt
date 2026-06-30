@@ -35,6 +35,7 @@ import com.example.MainViewModel
 import com.example.R
 import com.example.data.model.AppTab
 import com.example.ui.agent.AgentScreen
+import com.example.ui.browser.BrowserScreen
 import com.example.ui.chat.ChatScreen
 import com.example.ui.components.StatusPill
 import com.example.ui.models.ModelsScreen
@@ -199,6 +200,7 @@ fun MainAppScreen() {
                         AppTab.CHAT     -> ChatScreen(vm, context)
                         AppTab.AGENT    -> AgentScreen(vm, context)
                         AppTab.TERMINAL -> TerminalScreen(vm, context)
+                        AppTab.BROWSER  -> BrowserScreen(vm)
                     }
                 }
 

@@ -58,6 +58,38 @@ fun TerminalScreen(vm: MainViewModel, context: Context) {
             }
         }
 
+        // ── Persistent server status banner ───────────────────────────────────
+        if (vm.linuxSession.isRunning) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF0D2A1A))
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Box(
+                    Modifier.size(8.dp)
+                        .clip(androidx.compose.foundation.shape.CircleShape)
+                        .background(OllamaGreen)
+                )
+                Column(Modifier.weight(1f)) {
+                    Text("Server Running", color = OllamaGreen, fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                    vm.linuxSession.serverPort?.let { port ->
+                        Text("localhost:$port — open Browser tab to view",
+                            color = OllamaTextDim, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                    }
+                }
+                TextButton(
+                    onClick = { vm.stopPersistentServer() },
+                    colors = ButtonDefaults.textButtonColors(contentColor = OllamaRed)
+                ) {
+                    Text("⏹ Stop", fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                }
+            }
+        }
+
         HorizontalDivider(color = OllamaBorder, thickness = 0.5.dp)
 
         // Terminal output

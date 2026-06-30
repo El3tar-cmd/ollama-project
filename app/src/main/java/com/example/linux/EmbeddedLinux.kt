@@ -52,13 +52,14 @@ object EmbeddedLinux {
         else      -> "https://packages.termux.dev/apt/termux-main/pool/main/liba/libandroid-shmem/libandroid-shmem_0.7_aarch64.deb"
     }
 
-    // Alpine 3.18 rootfs — ~3.1MB. v3.18 is the last version confirmed stable
-    // with PRoot on Android kernels (newer musl builds cause SIGBUS/signal 7).
+    // Alpine 3.16 rootfs — uses OpenSSL 1.x (libssl.so.1.1) instead of OpenSSL 3
+    // (libcrypto.so.3 in 3.18 causes "Function not implemented" on Android kernels
+    // because it calls getrandom()/memfd_create() syscalls unavailable in PRoot).
     val debianRootfsUrl: String get() = when (arch) {
-        "aarch64" -> "https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/aarch64/alpine-minirootfs-3.18.9-aarch64.tar.gz"
-        "x86_64"  -> "https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/alpine-minirootfs-3.18.9-x86_64.tar.gz"
-        "arm"     -> "https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/armv7/alpine-minirootfs-3.18.9-armv7.tar.gz"
-        else      -> "https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/aarch64/alpine-minirootfs-3.18.9-aarch64.tar.gz"
+        "aarch64" -> "https://dl-cdn.alpinelinux.org/alpine/v3.16/releases/aarch64/alpine-minirootfs-3.16.9-aarch64.tar.gz"
+        "x86_64"  -> "https://dl-cdn.alpinelinux.org/alpine/v3.16/releases/x86_64/alpine-minirootfs-3.16.9-x86_64.tar.gz"
+        "arm"     -> "https://dl-cdn.alpinelinux.org/alpine/v3.16/releases/armv7/alpine-minirootfs-3.16.9-armv7.tar.gz"
+        else      -> "https://dl-cdn.alpinelinux.org/alpine/v3.16/releases/aarch64/alpine-minirootfs-3.16.9-aarch64.tar.gz"
     }
 
     // ── Paths ─────────────────────────────────────────────────────────────────
@@ -78,7 +79,7 @@ object EmbeddedLinux {
     fun setupDone(context: Context)  = File(baseDir(context), ".setup_complete")
     fun runtimesFile(context: Context) = File(baseDir(context), ".runtimes_installed")
     fun rootfsVersionFile(context: Context) = File(baseDir(context), ".rootfs_version")
-    const val ROOTFS_VERSION = "alpine-3.18-minimal"
+    const val ROOTFS_VERSION = "alpine-3.16-minimal"
 
     fun rootfsHealthy(context: Context): Boolean {
         val rootfs = rootfsDir(context)
