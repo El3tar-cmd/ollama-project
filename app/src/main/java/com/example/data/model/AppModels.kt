@@ -4,7 +4,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.List
-import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -46,5 +45,5 @@ enum class AppTab(val label: String, val icon: ImageVector) {
     CHAT("Chat",       Icons.Default.Face),
     AGENT("Agent",     Icons.Default.Star),
     TERMINAL("Logs",   Icons.Default.Info),
-    BROWSER("Browser", Icons.Default.Public),
+    BROWSER("Browser", Icons.Default.Home),
 }

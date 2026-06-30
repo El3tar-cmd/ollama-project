@@ -436,7 +436,7 @@ fun BrowserScreen(vm: MainViewModel) {
                     onClick = { showFileManager = true },
                     modifier = Modifier.size(36.dp)
                 ) {
-                    Icon(Icons.Default.Folder, "Files",
+                    Icon(Icons.Default.List, "Files",
                         tint = Color(0xFFFFD966), modifier = Modifier.size(18.dp))
                 }
 
