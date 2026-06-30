@@ -129,7 +129,7 @@ class LinuxSetupManager(private val context: Context) {
 
             if (!EmbeddedLinux.rootfsHealthy(context)) {
                 emit(Stage.DOWNLOADING_ROOTFS, "Downloading Alpine Linux rootfs…", 0)
-                val ok = downloadFile(EmbeddedLinux.debianRootfsUrl, rootfsArchive) { pct ->
+                val ok = downloadFile(EmbeddedLinux.ubuntuRootfsUrl, rootfsArchive) { pct ->
                     emit(Stage.DOWNLOADING_ROOTFS, "Downloading Alpine… $pct%", pct)
                 }
                 if (!ok) { emit(Stage.ERROR, "Failed to download Alpine rootfs.", err = true); return@withContext }
