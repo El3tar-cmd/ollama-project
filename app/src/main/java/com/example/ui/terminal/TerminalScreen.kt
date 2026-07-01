@@ -1,5 +1,7 @@
 package com.example.ui.terminal
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -52,6 +54,17 @@ fun TerminalScreen(vm: MainViewModel, context: Context) {
             Spacer(Modifier.weight(1f))
             Text(vm.linuxCwd, color = OllamaTextDim, fontSize = 10.sp,
                 fontFamily = FontFamily.Monospace, maxLines = 1)
+            TextButton(
+                onClick = {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(
+                        ClipData.newPlainText("terminal log", vm.liveLogs.joinToString("\n"))
+                    )
+                },
+                enabled = vm.liveLogs.isNotEmpty()
+            ) {
+                Text("Copy", color = OllamaGreen, fontSize = 10.sp)
+            }
             TextButton(onClick = { vm.clearLogs() }) {
                 Text("Clear", color = OllamaRed, fontSize = 10.sp)
             }
