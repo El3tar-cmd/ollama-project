@@ -998,26 +998,26 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
 
     fun clearLogs() { synchronized(OllamaService.logBuffer) { OllamaService.logBuffer.clear() }; liveLogs.clear() }
 
-    var terminalMode by mutableStateOf("alpine") // "ollama" or "alpine"
+    var terminalMode by mutableStateOf("linux") // "ollama" or embedded Linux
 
-    // Persistent Alpine working directory (absolute path inside the container)
-    var alpineCwd by mutableStateOf("/root")
+    // Persistent embedded Linux working directory (absolute path inside the container)
+    var linuxCwd by mutableStateOf("/root")
 
     fun runTerminalCommand(context: Context) {
         val rawCmd = terminalInput.trim()
         terminalInput = ""; if (rawCmd.isEmpty()) return
 
-        if (terminalMode == "alpine") {
-            // Run command inside Alpine Linux via PRoot
+        if (terminalMode == "linux") {
+            // Run command inside embedded Linux via PRoot
             if (!EmbeddedLinux.isReady(context)) {
-                liveLogs.add("❌ Alpine Linux not installed. Set it up first.")
+                liveLogs.add("❌ Embedded Linux not installed. Set it up first.")
                 return
             }
 
-            // Handle `cd` natively — update alpineCwd without calling PRoot
+            // Handle `cd` natively without calling PRoot
             if (rawCmd == "cd" || rawCmd == "cd ~") {
-                alpineCwd = "/root"
-                liveLogs.add("> alpine: $rawCmd")
+                linuxCwd = "/root"
+                liveLogs.add("> linux: $rawCmd")
                 liveLogs.add("✅ /root")
                 return
             }
@@ -1025,11 +1025,11 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
                 val arg = rawCmd.removePrefix("cd ").trim()
                 val newDir = when {
                     arg.startsWith("/") -> arg
-                    arg == ".."         -> alpineCwd.substringBeforeLast("/").ifEmpty { "/" }
+                    arg == ".."         -> linuxCwd.substringBeforeLast("/").ifEmpty { "/" }
                     arg == "~"          -> "/root"
-                    else                -> "$alpineCwd/$arg".replace("//", "/")
+                    else                -> "$linuxCwd/$arg".replace("//", "/")
                 }
-                liveLogs.add("> alpine: $rawCmd")
+                liveLogs.add("> linux: $rawCmd")
                 // Verify the directory exists by running pwd inside PRoot
                 viewModelScope.launch(Dispatchers.IO) {
                     val check = EmbeddedLinux.exec(
@@ -1039,8 +1039,8 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
                     )
                     withContext(Dispatchers.Main) {
                         if (check.success && check.output.trim().startsWith("/")) {
-                            alpineCwd = check.output.trim().lines().first().trim()
-                            liveLogs.add("✅ ${alpineCwd}")
+                            linuxCwd = check.output.trim().lines().first().trim()
+                            liveLogs.add("✅ ${linuxCwd}")
                         } else {
                             liveLogs.add("❌ cd: ${check.output.take(200).ifBlank { "no such directory: $newDir" }}")
                         }
@@ -1049,25 +1049,21 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
                 return
             }
 
-            // ── apt → apk shim (Alpine uses apk, not apt/apt-get) ─────────────────
-            val cmd = translateAptToApk(rawCmd)
-            if (cmd != rawCmd) {
-                liveLogs.add("ℹ️ Alpine uses apk, not apt — running: $cmd")
-            }
+            val cmd = rawCmd
 
             // ── Persistent server detection ────────────────────────────────────
             if (isServerCommand(cmd)) {
-                liveLogs.add("> alpine [server]: $cmd")
+                liveLogs.add("> linux [server]: $cmd")
                 liveLogs.add("🚀 Starting as persistent server (won't block terminal)…")
-                startPersistentServer(cmd, alpineCwd.takeIf { it != "/root" && it.isNotBlank() })
+                startPersistentServer(cmd, linuxCwd.takeIf { it != "/root" && it.isNotBlank() })
                 return
             }
 
-            liveLogs.add("> alpine: $cmd")
+            liveLogs.add("> linux: $cmd")
             viewModelScope.launch(Dispatchers.IO) {
                 // Prepend `cd <cwd> &&` so each command runs in the persisted directory
-                val fullCmd = if (alpineCwd != "/root" && alpineCwd.isNotBlank())
-                    "cd ${shellQuote(alpineCwd)} && $cmd"
+                val fullCmd = if (linuxCwd != "/root" && linuxCwd.isNotBlank())
+                    "cd ${shellQuote(linuxCwd)} && $cmd"
                 else cmd
                 val result = EmbeddedLinux.exec(context, fullCmd, timeoutSec = 120L)
                 withContext(Dispatchers.Main) {
@@ -1112,27 +1108,4 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
             c.contains("rails server") || c.contains("rails s")
     }
 
-    private fun translateAptToApk(cmd: String): String {
-        val t = cmd.trim()
-        // apt / apt-get → apk equivalents for Alpine Linux
-        val aptPrefix = when {
-            t.startsWith("apt-get ") -> "apt-get "
-            t.startsWith("apt ")     -> "apt "
-            else -> return t
-        }
-        val rest = t.removePrefix(aptPrefix).trim()
-        return when {
-            rest == "update"               -> "apk update"
-            rest == "upgrade"              -> "apk upgrade"
-            rest.startsWith("install ")    -> "apk add --no-cache ${rest.removePrefix("install ").trim()}"
-            rest.startsWith("remove ")     -> "apk del ${rest.removePrefix("remove ").trim()}"
-            rest.startsWith("purge ")      -> "apk del ${rest.removePrefix("purge ").trim()}"
-            rest.startsWith("autoremove")  -> "apk autoremove"
-            rest.startsWith("search ")     -> "apk search ${rest.removePrefix("search ").trim()}"
-            rest.startsWith("show ")       -> "apk info ${rest.removePrefix("show ").trim()}"
-            rest.startsWith("list")        -> "apk list --installed"
-            rest == "clean"                -> "rm -rf /var/cache/apk/*"
-            else -> t
-        }
-    }
 }

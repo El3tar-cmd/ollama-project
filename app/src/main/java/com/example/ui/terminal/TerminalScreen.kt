@@ -48,10 +48,10 @@ fun TerminalScreen(vm: MainViewModel, context: Context) {
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Icon(Icons.Default.AccountBox, null, tint = OllamaGreen, modifier = Modifier.size(16.dp))
-            Text("Alpine Linux (PRoot)", color = OllamaGreen, fontSize = 11.sp,
+            Text("Debian Linux (PRoot)", color = OllamaGreen, fontSize = 11.sp,
                 fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
             Spacer(Modifier.weight(1f))
-            Text(vm.alpineCwd, color = OllamaTextDim, fontSize = 10.sp,
+            Text(vm.linuxCwd, color = OllamaTextDim, fontSize = 10.sp,
                 fontFamily = FontFamily.Monospace, maxLines = 1)
             TextButton(onClick = { vm.clearLogs() }) {
                 Text("Clear", color = OllamaRed, fontSize = 10.sp)
@@ -97,7 +97,7 @@ fun TerminalScreen(vm: MainViewModel, context: Context) {
             if (vm.liveLogs.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
-                        "Welcome to Alpine Linux Terminal!\n\nType commands below to run in Alpine Linux.\nExample: ls, pwd, apk add, cat file.txt",
+                        "Welcome to Debian Linux Terminal!\n\nType commands below to run in Debian Linux.\nExample: ls, pwd, apt install, cat file.txt",
                         color = OllamaTextDim, textAlign = TextAlign.Center,
                         fontSize = 12.sp, fontFamily = FontFamily.Monospace
                     )
@@ -140,7 +140,7 @@ fun TerminalScreen(vm: MainViewModel, context: Context) {
                 value = vm.terminalInput,
                 onValueChange = { vm.terminalInput = it },
                 placeholder = {
-                    Text("alpine command...", color = OllamaTextDim,
+                    Text("linux command...", color = OllamaTextDim,
                         fontSize = 12.sp, fontFamily = FontFamily.Monospace)
                 },
                 modifier = Modifier.weight(1f).testTag("terminal_input"),

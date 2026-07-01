@@ -9,7 +9,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Manages the embedded Alpine Linux environment running inside the app via PRoot.
+ * Manages the embedded Debian Linux environment running inside the app via PRoot.
  *
  * Directory layout (inside context.filesDir):
  *   embedded_linux/
@@ -52,14 +52,9 @@ object EmbeddedLinux {
         else      -> "https://packages.termux.dev/apt/termux-main/pool/main/liba/libandroid-shmem/libandroid-shmem_0.7_aarch64.deb"
     }
 
-    // Alpine 3.16 rootfs — uses OpenSSL 1.x (libssl.so.1.1) instead of OpenSSL 3
-    // (libcrypto.so.3 in 3.18 causes "Function not implemented" on Android kernels
-    // because it calls getrandom()/memfd_create() syscalls unavailable in PRoot).
-    // Ubuntu Base RootFS - High compatibility with Android via PRoot
-    // Using glibc-based Ubuntu for professional stability and tool support
     // Debian 12 (Bookworm) Minimal RootFS - The gold standard for PRoot on Android
     // Extremely stable, glibc-based, and avoids the 404/incompatibility issues of Alpine/Ubuntu-base
-    val ubuntuRootfsUrl: String get() = when (arch) {
+    val debianRootfsUrl: String get() = when (arch) {
         "aarch64" -> "https://github.com/termux/proot-distro/raw/master/rootfs/debian/bookworm-aarch64.tar.xz"
         "x86_64"  -> "https://github.com/termux/proot-distro/raw/master/rootfs/debian/bookworm-x86_64.tar.xz"
         "arm"     -> "https://github.com/termux/proot-distro/raw/master/rootfs/debian/bookworm-arm.tar.xz"
@@ -83,7 +78,7 @@ object EmbeddedLinux {
     fun setupDone(context: Context)  = File(baseDir(context), ".setup_complete")
     fun runtimesFile(context: Context) = File(baseDir(context), ".runtimes_installed")
     fun rootfsVersionFile(context: Context) = File(baseDir(context), ".rootfs_version")
-    const val ROOTFS_VERSION = "alpine-3.16-minimal"
+    const val ROOTFS_VERSION = "debian-bookworm-minimal"
 
     fun rootfsHealthy(context: Context): Boolean {
         val rootfs = rootfsDir(context)
@@ -180,9 +175,9 @@ object EmbeddedLinux {
         return listOf(
             proot,
             "--kill-on-exit",
-            "-0",                  // Fake root uid=0 (required for apk)
+            "-0",                  // Fake root uid=0 for package manager operations
             "-r", rootfs,
-            // Spoof kernel 4.9 so Python/musl don't attempt getrandom() / fchdir quirks
+            // Spoof kernel 4.9 to avoid syscall compatibility issues under PRoot.
             "-k", "4.9.0",
             "-b", "/dev:/dev",
             "-b", "/sys:/sys",
@@ -273,12 +268,12 @@ object EmbeddedLinux {
     }
 
     /**
-     * Install packages inside Alpine via apk.
+     * Install packages inside Debian via apt.
      */
     fun install(context: Context, vararg packages: String): ExecResult {
         val pkgList = packages.joinToString(" ")
         return exec(context,
-            "apk add --no-cache $pkgList 2>&1",
+            "DEBIAN_FRONTEND=noninteractive apt-get update 2>&1 && DEBIAN_FRONTEND=noninteractive apt-get install -y $pkgList 2>&1",
             timeoutSec = 300L
         )
     }

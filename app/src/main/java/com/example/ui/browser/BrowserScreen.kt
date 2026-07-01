@@ -6,6 +6,7 @@ import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -75,6 +76,49 @@ private val WEB_EXTENSIONS = setOf(
     "png", "jpg", "jpeg", "gif", "webp",
     "md", "txt"
 )
+
+@Composable
+private fun BrowserStartPage(
+    shortcuts: List<Pair<String, String>>,
+    onOpen: (String) -> Unit,
+    onOpenFiles: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier
+            .background(OllamaBg)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            "Browser",
+            color = OllamaGreen,
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            shortcuts.forEach { (url, label) ->
+                OutlinedButton(
+                    onClick = { onOpen("http://$url") },
+                    border = BorderStroke(1.dp, OllamaBorder),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Text(label, color = OllamaGreen, fontSize = 11.sp)
+                }
+            }
+            OutlinedButton(
+                onClick = onOpenFiles,
+                border = BorderStroke(1.dp, OllamaBorder),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+            ) {
+                Text("Files", color = Color(0xFFFFD966), fontSize = 11.sp)
+            }
+        }
+    }
+}
 
 // ── File Manager Bottom Sheet ─────────────────────────────────────────────────
 @OptIn(ExperimentalMaterial3Api::class)
@@ -306,9 +350,9 @@ fun BrowserScreen(vm: MainViewModel) {
             rawUrl.startsWith("file://")                          -> rawUrl
             rawUrl.startsWith("http://") ||
             rawUrl.startsWith("https://") ||
-            rawUrl.startsWith("localhost") ||
-            rawUrl.startsWith("127.") ||
             rawUrl.startsWith("about:")                           -> rawUrl
+            rawUrl.startsWith("localhost") ||
+            rawUrl.startsWith("127.")                              -> "http://$rawUrl"
             rawUrl.matches(Regex("""[\w.-]+\.\w{2,}(/.*)?"""))   -> "https://$rawUrl"
             else -> "https://www.google.com/search?q=${java.net.URLEncoder.encode(rawUrl, "UTF-8")}"
         }
@@ -571,65 +615,75 @@ fun BrowserScreen(vm: MainViewModel) {
             HorizontalDivider(color = Color(0xFF3C3C3C), thickness = 0.5.dp)
         }
 
-        // ── WebView ────────────────────────────────────────────────────────────
-        AndroidView(
-            factory = { ctx ->
-                WebView(ctx).apply {
-                    settings.apply {
-                        javaScriptEnabled          = true
-                        domStorageEnabled           = true
-                        allowFileAccess             = true
-                        allowContentAccess          = true
-                        setSupportMultipleWindows(false)
-                        @Suppress("DEPRECATION")
-                        allowUniversalAccessFromFileURLs = true
-                        @Suppress("DEPRECATION")
-                        allowFileAccessFromFileURLs = true
-                        useWideViewPort             = true
-                        loadWithOverviewMode        = true
-                        builtInZoomControls         = true
-                        displayZoomControls         = false
-                        mixedContentMode            =
-                            android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+        val currentUrl = tabs.getOrNull(activeIdx)?.url ?: "about:blank"
+        if (currentUrl == "about:blank") {
+            BrowserStartPage(
+                shortcuts = shortcuts,
+                onOpen = ::navigate,
+                onOpenFiles = { showFileManager = true },
+                modifier = Modifier.weight(1f).fillMaxWidth()
+            )
+        } else {
+            // ── WebView ────────────────────────────────────────────────────────────
+            AndroidView(
+                factory = { ctx ->
+                    WebView(ctx).apply {
+                        settings.apply {
+                            javaScriptEnabled          = true
+                            domStorageEnabled           = true
+                            allowFileAccess             = true
+                            allowContentAccess          = true
+                            setSupportMultipleWindows(false)
+                            @Suppress("DEPRECATION")
+                            allowUniversalAccessFromFileURLs = true
+                            @Suppress("DEPRECATION")
+                            allowFileAccessFromFileURLs = true
+                            useWideViewPort             = true
+                            loadWithOverviewMode        = true
+                            builtInZoomControls         = true
+                            displayZoomControls         = false
+                            mixedContentMode            =
+                                android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                        }
+
+                        webViewClient = object : WebViewClient() {
+                            override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+                                urlInput  = url ?: ""
+                                progress  = 0.1f
+                            }
+                            override fun onPageFinished(view: WebView, url: String?) {
+                                progress     = 0f
+                                canGoBack    = view.canGoBack()
+                                canGoForward = view.canGoForward()
+                                val curr = url ?: ""
+                                tabs[activeIdx] = tabs[activeIdx].copy(url = curr)
+                                urlInput = curr
+                            }
+                            override fun shouldOverrideUrlLoading(
+                                view: WebView, request: WebResourceRequest
+                            ): Boolean = false
+                        }
+
+                        webChromeClient = object : WebChromeClient() {
+                            override fun onProgressChanged(view: WebView, newProgress: Int) {
+                                progress = newProgress / 100f
+                            }
+                            override fun onReceivedTitle(view: WebView, title: String?) {
+                                val t = title?.take(30) ?: "Tab"
+                                pageTitle = t
+                                tabs[activeIdx] = tabs[activeIdx].copy(title = t)
+                            }
+                        }
+
+                        webView.value = this
+                        loadUrl(currentUrl)
                     }
-
-                    webViewClient = object : WebViewClient() {
-                        override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
-                            urlInput  = url ?: ""
-                            progress  = 0.1f
-                        }
-                        override fun onPageFinished(view: WebView, url: String?) {
-                            progress     = 0f
-                            canGoBack    = view.canGoBack()
-                            canGoForward = view.canGoForward()
-                            val curr = url ?: ""
-                            tabs[activeIdx] = tabs[activeIdx].copy(url = curr)
-                            urlInput = curr
-                        }
-                        override fun shouldOverrideUrlLoading(
-                            view: WebView, request: WebResourceRequest
-                        ): Boolean = false
-                    }
-
-                    webChromeClient = object : WebChromeClient() {
-                        override fun onProgressChanged(view: WebView, newProgress: Int) {
-                            progress = newProgress / 100f
-                        }
-                        override fun onReceivedTitle(view: WebView, title: String?) {
-                            val t = title?.take(30) ?: "Tab"
-                            pageTitle = t
-                            tabs[activeIdx] = tabs[activeIdx].copy(title = t)
-                        }
-                    }
-
-                    webView.value = this
-
-                    val initUrl = tabs[activeIdx].url
-                    if (initUrl != "about:blank") loadUrl(initUrl)
+                },
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                update = { view ->
+                    if (view.url != currentUrl) view.loadUrl(currentUrl)
                 }
-            },
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            update = { /* WebView manages its own state */ }
-        )
+            )
+        }
     }
 }
