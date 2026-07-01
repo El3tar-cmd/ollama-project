@@ -19,8 +19,8 @@ import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.xz.XZCompressorInputStream
 
 /**
- * Handles downloading and setting up the embedded Debian Linux environment.
- * Switched from Alpine to Debian to resolve SIGBUS (signal 7) errors on Android kernels.
+ * Handles downloading and setting up the embedded Ubuntu Linux environment.
+ * Switched from Alpine to Ubuntu Base to use a glibc rootfs with apt.
  */
 class LinuxSetupManager(private val context: Context) {
 
@@ -53,7 +53,7 @@ class LinuxSetupManager(private val context: Context) {
             val storageDir = if (baseDir.exists()) baseDir else baseDir.parentFile ?: context.filesDir
             val availableSpace = storageDir.usableSpace
             val availableMB = availableSpace / (1024 * 1024)
-            val requiredSpace = 80L * 1024 * 1024 // Alpine is very lightweight (~3.8MB compressed)
+            val requiredSpace = 80L * 1024 * 1024
 
             if (availableSpace < requiredSpace) {
                 emit(Stage.ERROR, "Insufficient disk space. Need at least 80MB, available: ${availableMB}MB", err = true)
@@ -114,7 +114,7 @@ class LinuxSetupManager(private val context: Context) {
                 emit(Stage.DOWNLOADING_PROOT, "PRoot ready ✓", 100)
             }
 
-            val rootfsArchive = File(base, "alpine-rootfs.tar.gz")
+            val rootfsArchive = File(base, "ubuntu-rootfs.tar.gz")
             val rootfsNeedsReinstall = rootfs.exists() &&
                 (!EmbeddedLinux.rootfsHealthy(context) ||
                     EmbeddedLinux.installedRootfsVersion(context) != EmbeddedLinux.ROOTFS_VERSION)
@@ -128,13 +128,13 @@ class LinuxSetupManager(private val context: Context) {
             }
 
             if (!EmbeddedLinux.rootfsHealthy(context)) {
-                emit(Stage.DOWNLOADING_ROOTFS, "Downloading Alpine Linux rootfs…", 0)
+                emit(Stage.DOWNLOADING_ROOTFS, "Downloading Ubuntu Linux rootfs…", 0)
                 val ok = downloadFile(EmbeddedLinux.ubuntuRootfsUrl, rootfsArchive) { pct ->
-                    emit(Stage.DOWNLOADING_ROOTFS, "Downloading Alpine… $pct%", pct)
+                    emit(Stage.DOWNLOADING_ROOTFS, "Downloading Ubuntu… $pct%", pct)
                 }
-                if (!ok) { emit(Stage.ERROR, "Failed to download Alpine rootfs.", err = true); return@withContext }
+                if (!ok) { emit(Stage.ERROR, "Failed to download Ubuntu rootfs.", err = true); return@withContext }
 
-                emit(Stage.EXTRACTING, "Extracting Alpine rootfs…")
+                emit(Stage.EXTRACTING, "Extracting Ubuntu rootfs…")
                 val extracted = extractTar(rootfsArchive, rootfs) { msg ->
                     emit(Stage.EXTRACTING, msg)
                 }
@@ -152,42 +152,42 @@ class LinuxSetupManager(private val context: Context) {
                 emit(Stage.CONFIGURING, "Warning: ${e.message}")
             }
 
-            emit(Stage.CONFIGURING, "Testing Alpine shell under PRoot…")
+            emit(Stage.CONFIGURING, "Testing Ubuntu shell under PRoot…")
             val smokeTest = EmbeddedLinux.exec(
                 context,
-                "echo alpine-ready",
+                "echo ubuntu-ready",
                 timeoutSec = 30,
                 allowIncompleteSetup = true
             )
-            if (!smokeTest.success || !smokeTest.output.contains("alpine-ready")) {
+            if (!smokeTest.success || !smokeTest.output.contains("ubuntu-ready")) {
                 EmbeddedLinux.setupDone(context).delete()
                 EmbeddedLinux.runtimesFile(context).delete()
                 emit(
                     Stage.ERROR,
-                    "PRoot failed to start Alpine: ${smokeTest.output.ifBlank { "exit ${smokeTest.exitCode}" }.take(300)}",
+                    "PRoot failed to start Ubuntu: ${smokeTest.output.ifBlank { "exit ${smokeTest.exitCode}" }.take(300)}",
                     err = true
                 )
                 return@withContext
             }
 
             if (!EmbeddedLinux.runtimesInstalled(context)) {
-                emit(Stage.INSTALLING_RUNTIMES, "Updating package list (apk)… (first run only)")
+                emit(Stage.INSTALLING_RUNTIMES, "Updating package list (apt)… (first run only)")
                 try {
-                    val updateResult = EmbeddedLinux.exec(context, "apk update 2>&1", timeoutSec = 120)
+                    val updateResult = EmbeddedLinux.exec(context, "apt-get ${EmbeddedLinux.APT_PROOT_OPTIONS} update 2>&1", timeoutSec = 120)
                     if (!updateResult.success) {
-                        emit(Stage.INSTALLING_RUNTIMES, "apk update warning: ${updateResult.output.take(200)}")
+                        emit(Stage.INSTALLING_RUNTIMES, "apt update warning: ${updateResult.output.take(200)}")
                     }
 
                     emit(Stage.INSTALLING_RUNTIMES, "Installing Python 3, Node.js, git, curl…")
-                    val installResult = EmbeddedLinux.exec(context, "apk add --no-cache python3 py3-pip nodejs npm git curl wget nano vim build-base 2>&1", timeoutSec = 300)
+                    val installResult = EmbeddedLinux.exec(context, "DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none apt-get ${EmbeddedLinux.APT_PROOT_OPTIONS} -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install -y python3 python3-pip nodejs npm git curl wget nano vim build-essential 2>&1", timeoutSec = 300)
                     if (!installResult.success) {
                         emit(Stage.INSTALLING_RUNTIMES, "Install warning: ${installResult.output.takeLast(300)}")
+                    } else {
+                        try {
+                            EmbeddedLinux.runtimesFile(context).writeText("installed")
+                        } catch (e: Exception) {}
+                        emit(Stage.INSTALLING_RUNTIMES, "Runtimes installed ✓")
                     }
-
-                    try {
-                        EmbeddedLinux.runtimesFile(context).writeText("installed")
-                    } catch (e: Exception) {}
-                    emit(Stage.INSTALLING_RUNTIMES, "Runtimes installed ✓")
                 } catch (e: Exception) {
                     emit(Stage.INSTALLING_RUNTIMES, "Runtime installation error: ${e.message}")
                 }
@@ -196,7 +196,12 @@ class LinuxSetupManager(private val context: Context) {
             try {
                 EmbeddedLinux.setupDone(context).writeText("ok")
             } catch (e: Exception) {}
-            emit(Stage.DONE, "✅ Embedded Linux ready! Python, Node.js, and git available.", 100)
+            val doneMessage = if (EmbeddedLinux.runtimesInstalled(context)) {
+                "✅ Embedded Linux ready! Python, Node.js, and git available."
+            } else {
+                "✅ Embedded Linux ready. Runtime packages still need installation."
+            }
+            emit(Stage.DONE, doneMessage, 100)
 
         } catch (e: Exception) {
             Log.e("LinuxSetupManager", "Critical setup error", e)

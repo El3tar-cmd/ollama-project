@@ -9,16 +9,17 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Manages the embedded Alpine Linux environment running inside the app via PRoot.
+ * Manages the embedded Ubuntu Linux environment running inside the app via PRoot.
  *
  * Directory layout (inside context.filesDir):
  *   embedded_linux/
  *     bin/proot           ← Static PRoot binary
- *     rootfs/             ← Debian arm64 minimal rootfs
+ *     rootfs/             ← Ubuntu arm64 minimal rootfs
  *
  * No root required — PRoot implements chroot in userspace.
  */
 object EmbeddedLinux {
+    const val APT_PROOT_OPTIONS = "-o APT::Sandbox::User=root -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Dpkg::Options::=--force-unsafe-io"
 
     // ── Architecture detection ────────────────────────────────────────────────
     val arch: String by lazy {
@@ -52,18 +53,12 @@ object EmbeddedLinux {
         else      -> "https://packages.termux.dev/apt/termux-main/pool/main/liba/libandroid-shmem/libandroid-shmem_0.7_aarch64.deb"
     }
 
-    // Alpine 3.16 rootfs — uses OpenSSL 1.x (libssl.so.1.1) instead of OpenSSL 3
-    // (libcrypto.so.3 in 3.18 causes "Function not implemented" on Android kernels
-    // because it calls getrandom()/memfd_create() syscalls unavailable in PRoot).
-    // Ubuntu Base RootFS - High compatibility with Android via PRoot
-    // Using glibc-based Ubuntu for professional stability and tool support
-    // Debian 12 (Bookworm) Minimal RootFS - The gold standard for PRoot on Android
-    // Extremely stable, glibc-based, and avoids the 404/incompatibility issues of Alpine/Ubuntu-base
+    // Ubuntu Base 24.04.4 (Noble) plain rootfs tarballs from Canonical.
     val ubuntuRootfsUrl: String get() = when (arch) {
-        "aarch64" -> "https://github.com/termux/proot-distro/raw/master/rootfs/debian/bookworm-aarch64.tar.xz"
-        "x86_64"  -> "https://github.com/termux/proot-distro/raw/master/rootfs/debian/bookworm-x86_64.tar.xz"
-        "arm"     -> "https://github.com/termux/proot-distro/raw/master/rootfs/debian/bookworm-arm.tar.xz"
-        else      -> "https://github.com/termux/proot-distro/raw/master/rootfs/debian/bookworm-aarch64.tar.xz"
+        "aarch64" -> "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.4-base-arm64.tar.gz"
+        "x86_64"  -> "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.4-base-amd64.tar.gz"
+        "arm"     -> "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.4-base-armhf.tar.gz"
+        else      -> "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.4-base-arm64.tar.gz"
     }
 
     // ── Paths ─────────────────────────────────────────────────────────────────
@@ -83,7 +78,7 @@ object EmbeddedLinux {
     fun setupDone(context: Context)  = File(baseDir(context), ".setup_complete")
     fun runtimesFile(context: Context) = File(baseDir(context), ".runtimes_installed")
     fun rootfsVersionFile(context: Context) = File(baseDir(context), ".rootfs_version")
-    const val ROOTFS_VERSION = "alpine-3.16-minimal"
+    const val ROOTFS_VERSION = "ubuntu-base-24.04.4"
 
     fun rootfsHealthy(context: Context): Boolean {
         val rootfs = rootfsDir(context)
@@ -180,9 +175,10 @@ object EmbeddedLinux {
         return listOf(
             proot,
             "--kill-on-exit",
-            "-0",                  // Fake root uid=0 (required for apk)
+            "--link2symlink",
+            "-0",                  // Fake root uid=0 for package manager operations
             "-r", rootfs,
-            // Spoof kernel 4.9 so Python/musl don't attempt getrandom() / fchdir quirks
+            // Spoof kernel 4.9 to avoid syscall compatibility issues under PRoot.
             "-k", "4.9.0",
             "-b", "/dev:/dev",
             "-b", "/sys:/sys",
@@ -194,7 +190,7 @@ object EmbeddedLinux {
     }
 
     /**
-     * Execute a command inside the Debian container.
+     * Execute a command inside the Ubuntu container.
      * @param hostCwd  Bind this host path into container at /workspace
      */
     fun exec(
@@ -272,13 +268,83 @@ object EmbeddedLinux {
         }
     }
 
+    fun execStreaming(
+        context: Context,
+        cmd: String,
+        hostCwd: String? = null,
+        timeoutSec: Long = 600L,
+        allowIncompleteSetup: Boolean = false,
+        onLine: (String) -> Unit
+    ): ExecResult {
+        Log.d("EmbeddedLinux", ">>> execStreaming() called with cmd: $cmd")
+        if (!isReady(context, requireSetupDone = !allowIncompleteSetup)) {
+            return ExecResult(-1, "Embedded Linux not ready. Please set it up first.")
+        }
+        return try {
+            prepareRuntimeDirs(context)
+            val fullCmd = if (hostCwd != null) "cd /workspace && $cmd" else cmd
+            val prootCmd = buildProotCommand(context, fullCmd).toMutableList()
+            if (hostCwd != null && File(hostCwd).exists()) {
+                val bindIdx = prootCmd.indexOfFirst { it == "-w" }
+                if (bindIdx >= 0) {
+                    prootCmd.add(bindIdx, "$hostCwd:/workspace")
+                    prootCmd.add(bindIdx, "-b")
+                }
+            }
+
+            val pb = ProcessBuilder(prootCmd)
+            pb.directory(context.filesDir)
+            configureProcessEnvironment(context, pb)
+            pb.redirectErrorStream(true)
+
+            val proc = pb.start()
+            val output = StringBuilder()
+            val readerThread = Thread {
+                try {
+                    proc.inputStream.bufferedReader().useLines { lines ->
+                        lines.forEach { line ->
+                            synchronized(output) {
+                                output.appendLine(line)
+                                if (output.length > 32000) {
+                                    output.delete(0, output.length - 32000)
+                                }
+                            }
+                            onLine(line)
+                        }
+                    }
+                } catch (e: Exception) {
+                    val msg = "Failed to read process output: ${e.message}"
+                    synchronized(output) { output.appendLine(msg) }
+                    onLine(msg)
+                }
+            }
+            readerThread.isDaemon = true
+            readerThread.start()
+
+            val timeout = !proc.waitFor(timeoutSec, TimeUnit.SECONDS)
+            if (timeout) {
+                proc.destroy()
+                if (proc.isAlive) proc.destroyForcibly()
+                readerThread.join(1000)
+                val text = synchronized(output) { output.toString() }
+                return ExecResult(-1, "Command timed out after ${timeoutSec}s\n${text.takeLast(2000)}".trimEnd())
+            }
+            readerThread.join(3000)
+            val text = synchronized(output) { output.toString() }
+            ExecResult(proc.exitValue(), text.trimEnd())
+        } catch (e: Exception) {
+            Log.e("EmbeddedLinux", ">>> execStreaming() exception: ${e.message}", e)
+            ExecResult(-1, "PRoot exec error: ${e.message}")
+        }
+    }
+
     /**
-     * Install packages inside Alpine via apk.
+     * Install packages inside Ubuntu via apt.
      */
     fun install(context: Context, vararg packages: String): ExecResult {
         val pkgList = packages.joinToString(" ")
         return exec(context,
-            "apk add --no-cache $pkgList 2>&1",
+            "DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none apt-get $APT_PROOT_OPTIONS update 2>&1 && DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none apt-get $APT_PROOT_OPTIONS install -y $pkgList 2>&1",
             timeoutSec = 300L
         )
     }
@@ -311,8 +377,33 @@ object EmbeddedLinux {
             hostsFile.writeText("127.0.0.1 localhost\n::1 localhost\n")
             Log.d("EmbeddedLinux", ">>> hosts file created")
         }
+
+        // Android/PRoot blocks the setresuid call used by APT's _apt sandbox.
+        // Keep APT's fetch methods running as root inside the fake-root container.
+        val aptSandboxConfig = File(rootfs, "etc/apt/apt.conf.d/99proot-no-sandbox")
+        aptSandboxConfig.parentFile?.mkdirs()
+        aptSandboxConfig.writeText("APT::Sandbox::User \"root\";\n")
         
         Log.d("EmbeddedLinux", ">>> configureSystem() finished")
+    }
+
+    private fun configureProcessEnvironment(context: Context, pb: ProcessBuilder) {
+        pb.environment().apply {
+            put("PROOT_NO_SECCOMP", "1")
+            put("PROOT_TMP_DIR", prootTmpDir(context).absolutePath)
+            put("PROOT_LOADER", loaderBin(context).absolutePath)
+            put("PROOT_LOADER_32", loader32Bin(context).absolutePath)
+            put("LD_LIBRARY_PATH", libsDir(context).absolutePath)
+            put("TMPDIR", context.cacheDir.absolutePath)
+            put("HOME", "/root")
+            put("USER", "root")
+            put("TERM", "xterm-256color")
+            put("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+            put("LANG", "C.UTF-8")
+            put("PYTHONHASHSEED", "0")
+            put("PYTHONDONTWRITEBYTECODE", "1")
+            put("PYTHONNOUSERSITE", "1")
+        }
     }
 
     data class ExecResult(val exitCode: Int, val output: String) {

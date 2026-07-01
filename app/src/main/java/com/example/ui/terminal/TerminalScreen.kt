@@ -1,5 +1,7 @@
 package com.example.ui.terminal
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -9,7 +11,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.AccountBox
@@ -48,11 +49,22 @@ fun TerminalScreen(vm: MainViewModel, context: Context) {
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Icon(Icons.Default.AccountBox, null, tint = OllamaGreen, modifier = Modifier.size(16.dp))
-            Text("Alpine Linux (PRoot)", color = OllamaGreen, fontSize = 11.sp,
+            Text("Ubuntu Linux (PRoot)", color = OllamaGreen, fontSize = 11.sp,
                 fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
             Spacer(Modifier.weight(1f))
-            Text(vm.alpineCwd, color = OllamaTextDim, fontSize = 10.sp,
+            Text(vm.linuxCwd, color = OllamaTextDim, fontSize = 10.sp,
                 fontFamily = FontFamily.Monospace, maxLines = 1)
+            TextButton(
+                onClick = {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(
+                        ClipData.newPlainText("terminal log", vm.liveLogs.joinToString("\n"))
+                    )
+                },
+                enabled = vm.liveLogs.isNotEmpty()
+            ) {
+                Text("Copy", color = OllamaGreen, fontSize = 10.sp)
+            }
             TextButton(onClick = { vm.clearLogs() }) {
                 Text("Clear", color = OllamaRed, fontSize = 10.sp)
             }
@@ -97,28 +109,27 @@ fun TerminalScreen(vm: MainViewModel, context: Context) {
             if (vm.liveLogs.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
-                        "Welcome to Alpine Linux Terminal!\n\nType commands below to run in Alpine Linux.\nExample: ls, pwd, apk add, cat file.txt",
+                        "Welcome to Ubuntu Linux Terminal!\n\nType commands below to run in Ubuntu Linux.\nExample: ls, pwd, apt install, cat file.txt",
                         color = OllamaTextDim, textAlign = TextAlign.Center,
                         fontSize = 12.sp, fontFamily = FontFamily.Monospace
                     )
                 }
             } else {
-                SelectionContainer {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 6.dp),
-                        verticalArrangement = Arrangement.spacedBy(1.dp)
-                    ) {
-                        items(vm.liveLogs) { line ->
-                            val color = when {
-                                line.startsWith("❌") || line.contains("error", ignoreCase = true) -> Color(0xFFFF6B6B)
-                                line.startsWith("✅") || line.contains("success", ignoreCase = true) -> OllamaGreen
-                                line.startsWith(">") -> Color(0xFFFFCC44)
-                                line.startsWith("$") -> Color(0xFF44CCFF)
-                                else -> TerminalGreen
-                            }
-                            Text(line, color = color, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(1.dp)
+                ) {
+                    items(vm.liveLogs) { line ->
+                        val displayLine = if (line.length > 1200) line.take(1200) + " ..." else line
+                        val color = when {
+                            line.startsWith("❌") || line.contains("error", ignoreCase = true) -> Color(0xFFFF6B6B)
+                            line.startsWith("✅") || line.contains("success", ignoreCase = true) -> OllamaGreen
+                            line.startsWith(">") -> Color(0xFFFFCC44)
+                            line.startsWith("$") -> Color(0xFF44CCFF)
+                            else -> TerminalGreen
                         }
+                        Text(displayLine, color = color, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
                     }
                 }
             }
@@ -140,7 +151,7 @@ fun TerminalScreen(vm: MainViewModel, context: Context) {
                 value = vm.terminalInput,
                 onValueChange = { vm.terminalInput = it },
                 placeholder = {
-                    Text("alpine command...", color = OllamaTextDim,
+                    Text("linux command...", color = OllamaTextDim,
                         fontSize = 12.sp, fontFamily = FontFamily.Monospace)
                 },
                 modifier = Modifier.weight(1f).testTag("terminal_input"),

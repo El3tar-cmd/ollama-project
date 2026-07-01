@@ -327,7 +327,7 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
         // ── Embedded Linux Section ────────────────────────────────────────────
         LaunchedEffect(Unit) { vm.checkLinuxStatus(context) }
 
-        SectionCard("EMBEDDED LINUX", "Alpine arm64 • Python 3 • Node.js • git — no Termux needed") {
+        SectionCard("EMBEDDED LINUX", "Ubuntu • Python 3 • Node.js • git — no Termux needed") {
             if (vm.linuxReady) {
                 // ── Ready state ───────────────────────────────────────────────
                 Row(
@@ -339,7 +339,7 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
                         Row(verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             Box(Modifier.size(8.dp).clip(CircleShape).background(OllamaGreen))
-                            Text("Alpine Linux ready", color = OllamaGreen,
+                            Text("Ubuntu Linux ready", color = OllamaGreen,
                                 fontWeight = FontWeight.Bold, fontSize = 14.sp)
                         }
                         Text("Python 3  ·  Node.js  ·  git  ·  curl",
@@ -390,7 +390,7 @@ fun ServerScreen(vm: MainViewModel, context: Context) {
                             fontWeight = FontWeight.Bold, fontSize = 14.sp)
                     }
                     Text(
-                        "Install a self-contained Debian Linux environment (~80MB, one-time download). " +
+                        "Install a self-contained Ubuntu Linux environment (~80MB, one-time download). " +
                         "Gives the AI agent Python 3, Node.js, git, and apt — with zero Termux dependency.",
                         color = OllamaTextDim, fontSize = 12.sp, lineHeight = 18.sp
                     )

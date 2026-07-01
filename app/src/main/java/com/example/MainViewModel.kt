@@ -2,6 +2,7 @@ package com.example
 
 import android.content.Context
 import android.content.Intent
+import android.os.Bundle
 import android.widget.Toast
 import androidx.compose.runtime.*
 import androidx.lifecycle.ViewModel
@@ -15,6 +16,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import com.example.agent.AgentEngine
 import com.example.data.api.LlamaCppApi
 import com.example.data.api.OllamaApi
@@ -27,6 +29,12 @@ import com.example.data.model.OllamaModel
 import com.example.data.model.ShellLine
 import com.example.data.model.ShellLineType
 import com.example.ui.editor.getLanguageFromExtension
+
+data class BrowserTabState(
+    val id: Int,
+    val url: String = "about:blank",
+    val title: String = "New Tab"
+)
 
 class MainViewModel(private val ctx: Context) : ViewModel() {
     private val api      = OllamaApi()
@@ -43,6 +51,19 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     }
 
     fun stopPersistentServer() = linuxSession.stopServer()
+
+    val browserTabs = mutableStateListOf(BrowserTabState(0, "about:blank", "New Tab"))
+    var browserActiveIdx by mutableIntStateOf(0)
+    var browserUrlInput by mutableStateOf("")
+    var browserWebViewState: Bundle? = null
+
+    fun updateBrowserTab(idx: Int, url: String? = null, title: String? = null) {
+        val tab = browserTabs.getOrNull(idx) ?: return
+        browserTabs[idx] = tab.copy(
+            url = url ?: tab.url,
+            title = title ?: tab.title
+        )
+    }
     
     // Track coroutines for proper cleanup
     private val initJob = viewModelScope.launch(Dispatchers.IO) {
@@ -998,38 +1019,50 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
 
     fun clearLogs() { synchronized(OllamaService.logBuffer) { OllamaService.logBuffer.clear() }; liveLogs.clear() }
 
-    var terminalMode by mutableStateOf("alpine") // "ollama" or "alpine"
+    private fun addLiveLog(line: String) {
+        val clipped = if (line.length > 4000) line.take(4000) + " ..." else line
+        liveLogs.add(clipped)
+        while (liveLogs.size > 600) liveLogs.removeAt(0)
+    }
 
-    // Persistent Alpine working directory (absolute path inside the container)
-    var alpineCwd by mutableStateOf("/root")
+    var terminalMode by mutableStateOf("linux") // "ollama" or embedded Linux
+
+    // Persistent embedded Linux working directory (absolute path inside the container)
+    var linuxCwd by mutableStateOf("/root")
 
     fun runTerminalCommand(context: Context) {
         val rawCmd = terminalInput.trim()
         terminalInput = ""; if (rawCmd.isEmpty()) return
 
-        if (terminalMode == "alpine") {
-            // Run command inside Alpine Linux via PRoot
+        if (terminalMode == "linux") {
+            // Run command inside embedded Linux via PRoot
             if (!EmbeddedLinux.isReady(context)) {
-                liveLogs.add("❌ Alpine Linux not installed. Set it up first.")
+                liveLogs.add("❌ Embedded Linux not installed. Set it up first.")
                 return
             }
 
-            // Handle `cd` natively — update alpineCwd without calling PRoot
+            // Handle `cd` natively without calling PRoot
             if (rawCmd == "cd" || rawCmd == "cd ~") {
-                alpineCwd = "/root"
-                liveLogs.add("> alpine: $rawCmd")
-                liveLogs.add("✅ /root")
+                linuxCwd = "/root"
+                addLiveLog("> linux: $rawCmd")
+                addLiveLog("✅ /root")
+                return
+            }
+            if (rawCmd == "clear") {
+                liveLogs.clear()
+                addLiveLog("> linux: clear")
+                addLiveLog("✅")
                 return
             }
             if (rawCmd.startsWith("cd ")) {
                 val arg = rawCmd.removePrefix("cd ").trim()
                 val newDir = when {
                     arg.startsWith("/") -> arg
-                    arg == ".."         -> alpineCwd.substringBeforeLast("/").ifEmpty { "/" }
+                    arg == ".."         -> linuxCwd.substringBeforeLast("/").ifEmpty { "/" }
                     arg == "~"          -> "/root"
-                    else                -> "$alpineCwd/$arg".replace("//", "/")
+                    else                -> "$linuxCwd/$arg".replace("//", "/")
                 }
-                liveLogs.add("> alpine: $rawCmd")
+                addLiveLog("> linux: $rawCmd")
                 // Verify the directory exists by running pwd inside PRoot
                 viewModelScope.launch(Dispatchers.IO) {
                     val check = EmbeddedLinux.exec(
@@ -1039,44 +1072,59 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
                     )
                     withContext(Dispatchers.Main) {
                         if (check.success && check.output.trim().startsWith("/")) {
-                            alpineCwd = check.output.trim().lines().first().trim()
-                            liveLogs.add("✅ ${alpineCwd}")
+                            linuxCwd = check.output.trim().lines().first().trim()
+                            addLiveLog("✅ ${linuxCwd}")
                         } else {
-                            liveLogs.add("❌ cd: ${check.output.take(200).ifBlank { "no such directory: $newDir" }}")
+                            addLiveLog("❌ cd: ${check.output.take(200).ifBlank { "no such directory: $newDir" }}")
                         }
                     }
                 }
                 return
             }
 
-            // ── apt → apk shim (Alpine uses apk, not apt/apt-get) ─────────────────
-            val cmd = translateAptToApk(rawCmd)
-            if (cmd != rawCmd) {
-                liveLogs.add("ℹ️ Alpine uses apk, not apt — running: $cmd")
-            }
+            val cmd = rawCmd
 
             // ── Persistent server detection ────────────────────────────────────
             if (isServerCommand(cmd)) {
-                liveLogs.add("> alpine [server]: $cmd")
-                liveLogs.add("🚀 Starting as persistent server (won't block terminal)…")
-                startPersistentServer(cmd, alpineCwd.takeIf { it != "/root" && it.isNotBlank() })
+                addLiveLog("> linux [server]: $cmd")
+                addLiveLog("Starting as persistent server (won't block terminal)...")
+                startPersistentServer(cmd, linuxCwd.takeIf { it != "/root" && it.isNotBlank() })
                 return
             }
 
-            liveLogs.add("> alpine: $cmd")
+            val commandToRun = makeLinuxCommandNonInteractive(cmd)
+            addLiveLog("> linux: $cmd")
+            if (commandToRun != cmd) {
+                addLiveLog("(running with non-interactive apt options)")
+            }
             viewModelScope.launch(Dispatchers.IO) {
                 // Prepend `cd <cwd> &&` so each command runs in the persisted directory
-                val fullCmd = if (alpineCwd != "/root" && alpineCwd.isNotBlank())
-                    "cd ${shellQuote(alpineCwd)} && $cmd"
-                else cmd
-                val result = EmbeddedLinux.exec(context, fullCmd, timeoutSec = 120L)
+                val fullCmd = if (linuxCwd != "/root" && linuxCwd.isNotBlank())
+                    "cd ${shellQuote(linuxCwd)} && $commandToRun"
+                else commandToRun
+                val timeout = linuxCommandTimeoutSec(commandToRun)
+                val streamedAnyOutput = AtomicBoolean(false)
+                val result = EmbeddedLinux.execStreaming(
+                    context,
+                    fullCmd,
+                    timeoutSec = timeout
+                ) { line ->
+                    streamedAnyOutput.set(true)
+                    viewModelScope.launch(Dispatchers.Main) {
+                        addLiveLog(line)
+                    }
+                }
                 withContext(Dispatchers.Main) {
-                    val out = result.output.take(6000)
                     if (result.success) {
-                        if (out.isNotBlank()) liveLogs.add("✅ $out")
-                        else liveLogs.add("✅")
+                        addLiveLog("✅")
                     } else {
-                        liveLogs.add("❌ Exit ${result.exitCode}: ${out.ifBlank { "(no output)" }}")
+                        val out = result.output.takeLast(4000).ifBlank { "(no output)" }
+                        if (streamedAnyOutput.get()) {
+                            addLiveLog("❌ Exit ${result.exitCode}")
+                            addLiveLog(out)
+                        } else {
+                            addLiveLog("❌ Exit ${result.exitCode}: $out")
+                        }
                     }
                 }
             }
@@ -1096,6 +1144,44 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
 
     private fun shellQuote(path: String): String = "'${path.replace("'", "'\\''")}'"
 
+    private fun makeLinuxCommandNonInteractive(cmd: String): String {
+        val trimmed = cmd.trim()
+        val lower = trimmed.lowercase(Locale.US)
+        val aptPrefix = "DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1"
+        val aptProotOptions = EmbeddedLinux.APT_PROOT_OPTIONS
+        val dpkgOptions = "-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-unsafe-io"
+        val repairDpkg = "$aptPrefix dpkg --force-unsafe-io --force-confdef --force-confold --configure -a"
+        val fixBroken = "$aptPrefix apt-get $aptProotOptions $dpkgOptions -f install -y"
+        fun aptWithRepair(action: String): String =
+            "$repairDpkg || true; $fixBroken || true; $aptPrefix apt-get $aptProotOptions $dpkgOptions $action"
+        return when {
+            lower.startsWith("apt install ") ->
+                aptWithRepair("install -y ${trimmed.removePrefix("apt install").trim()}")
+            lower.startsWith("apt-get install ") ->
+                aptWithRepair("install -y ${trimmed.removePrefix("apt-get install").trim()}")
+            lower.startsWith("apt upgrade") ->
+                aptWithRepair("upgrade -y ${trimmed.removePrefix("apt upgrade").trim()}")
+            lower.startsWith("apt-get upgrade") ->
+                aptWithRepair("upgrade -y ${trimmed.removePrefix("apt-get upgrade").trim()}")
+            lower.startsWith("apt full-upgrade") ->
+                aptWithRepair("full-upgrade -y ${trimmed.removePrefix("apt full-upgrade").trim()}")
+            lower.startsWith("apt-get full-upgrade") ->
+                aptWithRepair("full-upgrade -y ${trimmed.removePrefix("apt-get full-upgrade").trim()}")
+            else -> trimmed
+        }
+    }
+
+    private fun linuxCommandTimeoutSec(cmd: String): Long {
+        val c = cmd.trim().lowercase(Locale.US)
+        return when {
+            c.startsWith("apt ") || c.startsWith("apt-get ") -> 900L
+            c.contains(" apt ") || c.contains(" apt-get ") -> 900L
+            c.startsWith("pip ") || c.startsWith("pip3 ") -> 900L
+            c.startsWith("npm ") || c.startsWith("npx ") -> 900L
+            else -> 180L
+        }
+    }
+
     private fun isServerCommand(cmd: String): Boolean {
         val c = cmd.trim().lowercase()
         return c.contains("http.server") ||
@@ -1112,27 +1198,4 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
             c.contains("rails server") || c.contains("rails s")
     }
 
-    private fun translateAptToApk(cmd: String): String {
-        val t = cmd.trim()
-        // apt / apt-get → apk equivalents for Alpine Linux
-        val aptPrefix = when {
-            t.startsWith("apt-get ") -> "apt-get "
-            t.startsWith("apt ")     -> "apt "
-            else -> return t
-        }
-        val rest = t.removePrefix(aptPrefix).trim()
-        return when {
-            rest == "update"               -> "apk update"
-            rest == "upgrade"              -> "apk upgrade"
-            rest.startsWith("install ")    -> "apk add --no-cache ${rest.removePrefix("install ").trim()}"
-            rest.startsWith("remove ")     -> "apk del ${rest.removePrefix("remove ").trim()}"
-            rest.startsWith("purge ")      -> "apk del ${rest.removePrefix("purge ").trim()}"
-            rest.startsWith("autoremove")  -> "apk autoremove"
-            rest.startsWith("search ")     -> "apk search ${rest.removePrefix("search ").trim()}"
-            rest.startsWith("show ")       -> "apk info ${rest.removePrefix("show ").trim()}"
-            rest.startsWith("list")        -> "apk list --installed"
-            rest == "clean"                -> "rm -rf /var/cache/apk/*"
-            else -> t
-        }
-    }
 }

@@ -8,7 +8,7 @@ import kotlinx.coroutines.*
 import java.io.File
 
 /**
- * Keeps a PRoot/Alpine process alive indefinitely so long-running servers
+ * Keeps a PRoot/Linux process alive indefinitely so long-running servers
  * (python3 -m http.server, node server.js, flask run, etc.) stay up.
  *
  * Lifecycle:
