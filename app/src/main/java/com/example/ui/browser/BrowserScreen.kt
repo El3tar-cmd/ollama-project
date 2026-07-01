@@ -639,7 +639,7 @@ fun BrowserScreen(vm: MainViewModel) {
                 factory = { ctx ->
                     WebView(ctx).apply {
                         setBackgroundColor(AndroidColor.WHITE)
-                        setLayerType(View.LAYER_TYPE_SOFTWARE, null)
+                        setLayerType(View.LAYER_TYPE_HARDWARE, null)
                         val cookieManager = CookieManager.getInstance()
                         cookieManager.setAcceptCookie(true)
                         cookieManager.setAcceptThirdPartyCookies(this, true)

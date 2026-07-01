@@ -175,6 +175,7 @@ object EmbeddedLinux {
         return listOf(
             proot,
             "--kill-on-exit",
+            "--link2symlink",
             "-0",                  // Fake root uid=0 for package manager operations
             "-r", rootfs,
             // Spoof kernel 4.9 to avoid syscall compatibility issues under PRoot.
@@ -303,7 +304,10 @@ object EmbeddedLinux {
                     proc.inputStream.bufferedReader().useLines { lines ->
                         lines.forEach { line ->
                             synchronized(output) {
-                                if (output.length < 16000) output.appendLine(line)
+                                output.appendLine(line)
+                                if (output.length > 32000) {
+                                    output.delete(0, output.length - 32000)
+                                }
                             }
                             onLine(line)
                         }
@@ -327,7 +331,7 @@ object EmbeddedLinux {
             }
             readerThread.join(3000)
             val text = synchronized(output) { output.toString() }
-            ExecResult(proc.exitValue(), text.take(16000).trimEnd())
+            ExecResult(proc.exitValue(), text.trimEnd())
         } catch (e: Exception) {
             Log.e("EmbeddedLinux", ">>> execStreaming() exception: ${e.message}", e)
             ExecResult(-1, "PRoot exec error: ${e.message}")

@@ -9,7 +9,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.AccountBox
@@ -103,22 +102,21 @@ fun TerminalScreen(vm: MainViewModel, context: Context) {
                     )
                 }
             } else {
-                SelectionContainer {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 6.dp),
-                        verticalArrangement = Arrangement.spacedBy(1.dp)
-                    ) {
-                        items(vm.liveLogs) { line ->
-                            val color = when {
-                                line.startsWith("❌") || line.contains("error", ignoreCase = true) -> Color(0xFFFF6B6B)
-                                line.startsWith("✅") || line.contains("success", ignoreCase = true) -> OllamaGreen
-                                line.startsWith(">") -> Color(0xFFFFCC44)
-                                line.startsWith("$") -> Color(0xFF44CCFF)
-                                else -> TerminalGreen
-                            }
-                            Text(line, color = color, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(1.dp)
+                ) {
+                    items(vm.liveLogs) { line ->
+                        val displayLine = if (line.length > 1200) line.take(1200) + " ..." else line
+                        val color = when {
+                            line.startsWith("❌") || line.contains("error", ignoreCase = true) -> Color(0xFFFF6B6B)
+                            line.startsWith("✅") || line.contains("success", ignoreCase = true) -> OllamaGreen
+                            line.startsWith(">") -> Color(0xFFFFCC44)
+                            line.startsWith("$") -> Color(0xFF44CCFF)
+                            else -> TerminalGreen
                         }
+                        Text(displayLine, color = color, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
                     }
                 }
             }

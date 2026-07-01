@@ -1020,8 +1020,9 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     fun clearLogs() { synchronized(OllamaService.logBuffer) { OllamaService.logBuffer.clear() }; liveLogs.clear() }
 
     private fun addLiveLog(line: String) {
-        liveLogs.add(line)
-        if (liveLogs.size > 1000) liveLogs.removeAt(0)
+        val clipped = if (line.length > 4000) line.take(4000) + " ..." else line
+        liveLogs.add(clipped)
+        while (liveLogs.size > 600) liveLogs.removeAt(0)
     }
 
     var terminalMode by mutableStateOf("linux") // "ollama" or embedded Linux
