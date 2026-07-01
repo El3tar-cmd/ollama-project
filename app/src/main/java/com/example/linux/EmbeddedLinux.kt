@@ -9,12 +9,12 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Manages the embedded Debian Linux environment running inside the app via PRoot.
+ * Manages the embedded Ubuntu Linux environment running inside the app via PRoot.
  *
  * Directory layout (inside context.filesDir):
  *   embedded_linux/
  *     bin/proot           ← Static PRoot binary
- *     rootfs/             ← Debian arm64 minimal rootfs
+ *     rootfs/             ← Ubuntu arm64 minimal rootfs
  *
  * No root required — PRoot implements chroot in userspace.
  */
@@ -52,13 +52,12 @@ object EmbeddedLinux {
         else      -> "https://packages.termux.dev/apt/termux-main/pool/main/liba/libandroid-shmem/libandroid-shmem_0.7_aarch64.deb"
     }
 
-    // Debian 12 (Bookworm) Minimal RootFS - The gold standard for PRoot on Android
-    // Extremely stable, glibc-based, and avoids the 404/incompatibility issues of Alpine/Ubuntu-base
-    val debianRootfsUrl: String get() = when (arch) {
-        "aarch64" -> "https://github.com/termux/proot-distro/raw/master/rootfs/debian/bookworm-aarch64.tar.xz"
-        "x86_64"  -> "https://github.com/termux/proot-distro/raw/master/rootfs/debian/bookworm-x86_64.tar.xz"
-        "arm"     -> "https://github.com/termux/proot-distro/raw/master/rootfs/debian/bookworm-arm.tar.xz"
-        else      -> "https://github.com/termux/proot-distro/raw/master/rootfs/debian/bookworm-aarch64.tar.xz"
+    // Ubuntu Base 24.04.4 (Noble) plain rootfs tarballs from Canonical.
+    val ubuntuRootfsUrl: String get() = when (arch) {
+        "aarch64" -> "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.4-base-arm64.tar.gz"
+        "x86_64"  -> "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.4-base-amd64.tar.gz"
+        "arm"     -> "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.4-base-armhf.tar.gz"
+        else      -> "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.4-base-arm64.tar.gz"
     }
 
     // ── Paths ─────────────────────────────────────────────────────────────────
@@ -78,7 +77,7 @@ object EmbeddedLinux {
     fun setupDone(context: Context)  = File(baseDir(context), ".setup_complete")
     fun runtimesFile(context: Context) = File(baseDir(context), ".runtimes_installed")
     fun rootfsVersionFile(context: Context) = File(baseDir(context), ".rootfs_version")
-    const val ROOTFS_VERSION = "debian-bookworm-minimal"
+    const val ROOTFS_VERSION = "ubuntu-base-24.04.4"
 
     fun rootfsHealthy(context: Context): Boolean {
         val rootfs = rootfsDir(context)
@@ -189,7 +188,7 @@ object EmbeddedLinux {
     }
 
     /**
-     * Execute a command inside the Debian container.
+     * Execute a command inside the Ubuntu container.
      * @param hostCwd  Bind this host path into container at /workspace
      */
     fun exec(
@@ -268,7 +267,7 @@ object EmbeddedLinux {
     }
 
     /**
-     * Install packages inside Debian via apt.
+     * Install packages inside Ubuntu via apt.
      */
     fun install(context: Context, vararg packages: String): ExecResult {
         val pkgList = packages.joinToString(" ")

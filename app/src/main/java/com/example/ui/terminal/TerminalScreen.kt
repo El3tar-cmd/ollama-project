@@ -48,7 +48,7 @@ fun TerminalScreen(vm: MainViewModel, context: Context) {
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Icon(Icons.Default.AccountBox, null, tint = OllamaGreen, modifier = Modifier.size(16.dp))
-            Text("Debian Linux (PRoot)", color = OllamaGreen, fontSize = 11.sp,
+            Text("Ubuntu Linux (PRoot)", color = OllamaGreen, fontSize = 11.sp,
                 fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
             Spacer(Modifier.weight(1f))
             Text(vm.linuxCwd, color = OllamaTextDim, fontSize = 10.sp,
@@ -97,7 +97,7 @@ fun TerminalScreen(vm: MainViewModel, context: Context) {
             if (vm.liveLogs.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
-                        "Welcome to Debian Linux Terminal!\n\nType commands below to run in Debian Linux.\nExample: ls, pwd, apt install, cat file.txt",
+                        "Welcome to Ubuntu Linux Terminal!\n\nType commands below to run in Ubuntu Linux.\nExample: ls, pwd, apt install, cat file.txt",
                         color = OllamaTextDim, textAlign = TextAlign.Center,
                         fontSize = 12.sp, fontFamily = FontFamily.Monospace
                     )

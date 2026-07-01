@@ -19,8 +19,8 @@ import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.xz.XZCompressorInputStream
 
 /**
- * Handles downloading and setting up the embedded Debian Linux environment.
- * Switched from Alpine to Debian to resolve SIGBUS (signal 7) errors on Android kernels.
+ * Handles downloading and setting up the embedded Ubuntu Linux environment.
+ * Switched from Alpine to Ubuntu Base to use a glibc rootfs with apt.
  */
 class LinuxSetupManager(private val context: Context) {
 
@@ -114,7 +114,7 @@ class LinuxSetupManager(private val context: Context) {
                 emit(Stage.DOWNLOADING_PROOT, "PRoot ready ✓", 100)
             }
 
-            val rootfsArchive = File(base, "debian-rootfs.tar.xz")
+            val rootfsArchive = File(base, "ubuntu-rootfs.tar.gz")
             val rootfsNeedsReinstall = rootfs.exists() &&
                 (!EmbeddedLinux.rootfsHealthy(context) ||
                     EmbeddedLinux.installedRootfsVersion(context) != EmbeddedLinux.ROOTFS_VERSION)
@@ -128,13 +128,13 @@ class LinuxSetupManager(private val context: Context) {
             }
 
             if (!EmbeddedLinux.rootfsHealthy(context)) {
-                emit(Stage.DOWNLOADING_ROOTFS, "Downloading Debian Linux rootfs…", 0)
-                val ok = downloadFile(EmbeddedLinux.debianRootfsUrl, rootfsArchive) { pct ->
-                    emit(Stage.DOWNLOADING_ROOTFS, "Downloading Debian… $pct%", pct)
+                emit(Stage.DOWNLOADING_ROOTFS, "Downloading Ubuntu Linux rootfs…", 0)
+                val ok = downloadFile(EmbeddedLinux.ubuntuRootfsUrl, rootfsArchive) { pct ->
+                    emit(Stage.DOWNLOADING_ROOTFS, "Downloading Ubuntu… $pct%", pct)
                 }
-                if (!ok) { emit(Stage.ERROR, "Failed to download Debian rootfs.", err = true); return@withContext }
+                if (!ok) { emit(Stage.ERROR, "Failed to download Ubuntu rootfs.", err = true); return@withContext }
 
-                emit(Stage.EXTRACTING, "Extracting Debian rootfs…")
+                emit(Stage.EXTRACTING, "Extracting Ubuntu rootfs…")
                 val extracted = extractTar(rootfsArchive, rootfs) { msg ->
                     emit(Stage.EXTRACTING, msg)
                 }
@@ -152,19 +152,19 @@ class LinuxSetupManager(private val context: Context) {
                 emit(Stage.CONFIGURING, "Warning: ${e.message}")
             }
 
-            emit(Stage.CONFIGURING, "Testing Debian shell under PRoot…")
+            emit(Stage.CONFIGURING, "Testing Ubuntu shell under PRoot…")
             val smokeTest = EmbeddedLinux.exec(
                 context,
-                "echo debian-ready",
+                "echo ubuntu-ready",
                 timeoutSec = 30,
                 allowIncompleteSetup = true
             )
-            if (!smokeTest.success || !smokeTest.output.contains("debian-ready")) {
+            if (!smokeTest.success || !smokeTest.output.contains("ubuntu-ready")) {
                 EmbeddedLinux.setupDone(context).delete()
                 EmbeddedLinux.runtimesFile(context).delete()
                 emit(
                     Stage.ERROR,
-                    "PRoot failed to start Debian: ${smokeTest.output.ifBlank { "exit ${smokeTest.exitCode}" }.take(300)}",
+                    "PRoot failed to start Ubuntu: ${smokeTest.output.ifBlank { "exit ${smokeTest.exitCode}" }.take(300)}",
                     err = true
                 )
                 return@withContext
