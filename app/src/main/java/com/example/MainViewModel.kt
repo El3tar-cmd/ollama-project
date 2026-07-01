@@ -1043,8 +1043,14 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
             // Handle `cd` natively without calling PRoot
             if (rawCmd == "cd" || rawCmd == "cd ~") {
                 linuxCwd = "/root"
-                liveLogs.add("> linux: $rawCmd")
-                liveLogs.add("✅ /root")
+                addLiveLog("> linux: $rawCmd")
+                addLiveLog("✅ /root")
+                return
+            }
+            if (rawCmd == "clear") {
+                liveLogs.clear()
+                addLiveLog("> linux: clear")
+                addLiveLog("✅")
                 return
             }
             if (rawCmd.startsWith("cd ")) {
@@ -1055,7 +1061,7 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
                     arg == "~"          -> "/root"
                     else                -> "$linuxCwd/$arg".replace("//", "/")
                 }
-                liveLogs.add("> linux: $rawCmd")
+                addLiveLog("> linux: $rawCmd")
                 // Verify the directory exists by running pwd inside PRoot
                 viewModelScope.launch(Dispatchers.IO) {
                     val check = EmbeddedLinux.exec(
@@ -1066,9 +1072,9 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
                     withContext(Dispatchers.Main) {
                         if (check.success && check.output.trim().startsWith("/")) {
                             linuxCwd = check.output.trim().lines().first().trim()
-                            liveLogs.add("✅ ${linuxCwd}")
+                            addLiveLog("✅ ${linuxCwd}")
                         } else {
-                            liveLogs.add("❌ cd: ${check.output.take(200).ifBlank { "no such directory: $newDir" }}")
+                            addLiveLog("❌ cd: ${check.output.take(200).ifBlank { "no such directory: $newDir" }}")
                         }
                     }
                 }
@@ -1079,19 +1085,23 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
 
             // ── Persistent server detection ────────────────────────────────────
             if (isServerCommand(cmd)) {
-                liveLogs.add("> linux [server]: $cmd")
-                liveLogs.add("🚀 Starting as persistent server (won't block terminal)…")
+                addLiveLog("> linux [server]: $cmd")
+                addLiveLog("Starting as persistent server (won't block terminal)...")
                 startPersistentServer(cmd, linuxCwd.takeIf { it != "/root" && it.isNotBlank() })
                 return
             }
 
+            val commandToRun = makeLinuxCommandNonInteractive(cmd)
             addLiveLog("> linux: $cmd")
+            if (commandToRun != cmd) {
+                addLiveLog("(running with non-interactive apt options)")
+            }
             viewModelScope.launch(Dispatchers.IO) {
                 // Prepend `cd <cwd> &&` so each command runs in the persisted directory
                 val fullCmd = if (linuxCwd != "/root" && linuxCwd.isNotBlank())
-                    "cd ${shellQuote(linuxCwd)} && $cmd"
-                else cmd
-                val timeout = linuxCommandTimeoutSec(cmd)
+                    "cd ${shellQuote(linuxCwd)} && $commandToRun"
+                else commandToRun
+                val timeout = linuxCommandTimeoutSec(commandToRun)
                 val streamedAnyOutput = AtomicBoolean(false)
                 val result = EmbeddedLinux.execStreaming(
                     context,
@@ -1131,6 +1141,28 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     }
 
     private fun shellQuote(path: String): String = "'${path.replace("'", "'\\''")}'"
+
+    private fun makeLinuxCommandNonInteractive(cmd: String): String {
+        val trimmed = cmd.trim()
+        val lower = trimmed.lowercase(Locale.US)
+        val aptPrefix = "DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1"
+        val dpkgOptions = "-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+        return when {
+            lower.startsWith("apt install ") ->
+                "$aptPrefix apt-get $EmbeddedLinux.APT_PROOT_OPTIONS $dpkgOptions install -y ${trimmed.removePrefix("apt install").trim()}"
+            lower.startsWith("apt-get install ") ->
+                "$aptPrefix apt-get $EmbeddedLinux.APT_PROOT_OPTIONS $dpkgOptions install -y ${trimmed.removePrefix("apt-get install").trim()}"
+            lower.startsWith("apt upgrade") ->
+                "$aptPrefix apt-get $EmbeddedLinux.APT_PROOT_OPTIONS $dpkgOptions upgrade -y ${trimmed.removePrefix("apt upgrade").trim()}"
+            lower.startsWith("apt-get upgrade") ->
+                "$aptPrefix apt-get $EmbeddedLinux.APT_PROOT_OPTIONS $dpkgOptions upgrade -y ${trimmed.removePrefix("apt-get upgrade").trim()}"
+            lower.startsWith("apt full-upgrade") ->
+                "$aptPrefix apt-get $EmbeddedLinux.APT_PROOT_OPTIONS $dpkgOptions full-upgrade -y ${trimmed.removePrefix("apt full-upgrade").trim()}"
+            lower.startsWith("apt-get full-upgrade") ->
+                "$aptPrefix apt-get $EmbeddedLinux.APT_PROOT_OPTIONS $dpkgOptions full-upgrade -y ${trimmed.removePrefix("apt-get full-upgrade").trim()}"
+            else -> trimmed
+        }
+    }
 
     private fun linuxCommandTimeoutSec(cmd: String): Long {
         val c = cmd.trim().lowercase(Locale.US)

@@ -620,7 +620,14 @@ fun BrowserScreen(vm: MainViewModel) {
         }
 
         val currentUrl = tabs.getOrNull(activeIdx)?.url ?: "about:blank"
-        Box(Modifier.weight(1f).fillMaxWidth()) {
+        if (currentUrl == "about:blank") {
+            BrowserStartPage(
+                shortcuts = shortcuts,
+                onOpen = ::navigate,
+                onOpenFiles = { showFileManager = true },
+                modifier = Modifier.weight(1f).fillMaxWidth()
+            )
+        } else {
             // ── WebView ────────────────────────────────────────────────────────────
             AndroidView(
                 factory = { ctx ->
@@ -661,6 +668,11 @@ fun BrowserScreen(vm: MainViewModel) {
                                 val curr = url ?: ""
                                 vm.updateBrowserTab(vm.browserActiveIdx, url = curr)
                                 vm.browserUrlInput = curr
+                                view.postInvalidate()
+                            }
+                            override fun onPageCommitVisible(view: WebView, url: String?) {
+                                super.onPageCommitVisible(view, url)
+                                view.postInvalidate()
                             }
                             override fun shouldOverrideUrlLoading(
                                 view: WebView, request: WebResourceRequest
@@ -686,24 +698,15 @@ fun BrowserScreen(vm: MainViewModel) {
                         if (!restored && currentUrl != "about:blank") loadUrl(currentUrl)
                     }
                 },
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.weight(1f).fillMaxWidth(),
                 update = { view ->
-                    if (currentUrl != "about:blank" &&
-                        view.url != currentUrl &&
+                    if (view.url != currentUrl &&
                         view.originalUrl != currentUrl
                     ) {
                         view.loadUrl(currentUrl)
                     }
                 }
             )
-            if (currentUrl == "about:blank") {
-                BrowserStartPage(
-                    shortcuts = shortcuts,
-                    onOpen = ::navigate,
-                    onOpenFiles = { showFileManager = true },
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
         }
     }
 }
