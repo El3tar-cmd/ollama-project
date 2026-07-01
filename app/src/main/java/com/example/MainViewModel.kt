@@ -1118,11 +1118,12 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
                     if (result.success) {
                         addLiveLog("✅")
                     } else {
-                        val out = result.output.takeLast(2000)
+                        val out = result.output.takeLast(4000).ifBlank { "(no output)" }
                         if (streamedAnyOutput.get()) {
                             addLiveLog("❌ Exit ${result.exitCode}")
+                            addLiveLog(out)
                         } else {
-                            addLiveLog("❌ Exit ${result.exitCode}: ${out.ifBlank { "(no output)" }}")
+                            addLiveLog("❌ Exit ${result.exitCode}: $out")
                         }
                     }
                 }
@@ -1146,22 +1147,26 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     private fun makeLinuxCommandNonInteractive(cmd: String): String {
         val trimmed = cmd.trim()
         val lower = trimmed.lowercase(Locale.US)
-        val aptPrefix = "DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1"
+        val aptPrefix = "DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1"
         val aptProotOptions = EmbeddedLinux.APT_PROOT_OPTIONS
         val dpkgOptions = "-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+        val repairDpkg = "$aptPrefix dpkg --force-confdef --force-confold --configure -a"
+        val fixBroken = "$aptPrefix apt-get $aptProotOptions $dpkgOptions -f install -y"
+        fun aptWithRepair(action: String): String =
+            "$repairDpkg || true; $fixBroken || true; $aptPrefix apt-get $aptProotOptions $dpkgOptions $action"
         return when {
             lower.startsWith("apt install ") ->
-                "$aptPrefix apt-get $aptProotOptions $dpkgOptions install -y ${trimmed.removePrefix("apt install").trim()}"
+                aptWithRepair("install -y ${trimmed.removePrefix("apt install").trim()}")
             lower.startsWith("apt-get install ") ->
-                "$aptPrefix apt-get $aptProotOptions $dpkgOptions install -y ${trimmed.removePrefix("apt-get install").trim()}"
+                aptWithRepair("install -y ${trimmed.removePrefix("apt-get install").trim()}")
             lower.startsWith("apt upgrade") ->
-                "$aptPrefix apt-get $aptProotOptions $dpkgOptions upgrade -y ${trimmed.removePrefix("apt upgrade").trim()}"
+                aptWithRepair("upgrade -y ${trimmed.removePrefix("apt upgrade").trim()}")
             lower.startsWith("apt-get upgrade") ->
-                "$aptPrefix apt-get $aptProotOptions $dpkgOptions upgrade -y ${trimmed.removePrefix("apt-get upgrade").trim()}"
+                aptWithRepair("upgrade -y ${trimmed.removePrefix("apt-get upgrade").trim()}")
             lower.startsWith("apt full-upgrade") ->
-                "$aptPrefix apt-get $aptProotOptions $dpkgOptions full-upgrade -y ${trimmed.removePrefix("apt full-upgrade").trim()}"
+                aptWithRepair("full-upgrade -y ${trimmed.removePrefix("apt full-upgrade").trim()}")
             lower.startsWith("apt-get full-upgrade") ->
-                "$aptPrefix apt-get $aptProotOptions $dpkgOptions full-upgrade -y ${trimmed.removePrefix("apt-get full-upgrade").trim()}"
+                aptWithRepair("full-upgrade -y ${trimmed.removePrefix("apt-get full-upgrade").trim()}")
             else -> trimmed
         }
     }

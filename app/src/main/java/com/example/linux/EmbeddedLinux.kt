@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicReference
  * No root required — PRoot implements chroot in userspace.
  */
 object EmbeddedLinux {
-    const val APT_PROOT_OPTIONS = "-o APT::Sandbox::User=root"
+    const val APT_PROOT_OPTIONS = "-o APT::Sandbox::User=root -o Dpkg::Use-Pty=0 -o APT::Color=0"
 
     // ── Architecture detection ────────────────────────────────────────────────
     val arch: String by lazy {
