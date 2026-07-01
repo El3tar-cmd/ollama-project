@@ -173,13 +173,13 @@ class LinuxSetupManager(private val context: Context) {
             if (!EmbeddedLinux.runtimesInstalled(context)) {
                 emit(Stage.INSTALLING_RUNTIMES, "Updating package list (apt)… (first run only)")
                 try {
-                    val updateResult = EmbeddedLinux.exec(context, "apt-get update 2>&1", timeoutSec = 120)
+                    val updateResult = EmbeddedLinux.exec(context, "apt-get ${EmbeddedLinux.APT_PROOT_OPTIONS} update 2>&1", timeoutSec = 120)
                     if (!updateResult.success) {
                         emit(Stage.INSTALLING_RUNTIMES, "apt update warning: ${updateResult.output.take(200)}")
                     }
 
                     emit(Stage.INSTALLING_RUNTIMES, "Installing Python 3, Node.js, git, curl…")
-                    val installResult = EmbeddedLinux.exec(context, "DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-pip nodejs npm git curl wget nano vim build-essential 2>&1", timeoutSec = 300)
+                    val installResult = EmbeddedLinux.exec(context, "DEBIAN_FRONTEND=noninteractive apt-get ${EmbeddedLinux.APT_PROOT_OPTIONS} install -y python3 python3-pip nodejs npm git curl wget nano vim build-essential 2>&1", timeoutSec = 300)
                     if (!installResult.success) {
                         emit(Stage.INSTALLING_RUNTIMES, "Install warning: ${installResult.output.takeLast(300)}")
                     }

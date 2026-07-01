@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicReference
  * No root required — PRoot implements chroot in userspace.
  */
 object EmbeddedLinux {
+    const val APT_PROOT_OPTIONS = "-o APT::Sandbox::User=root"
 
     // ── Architecture detection ────────────────────────────────────────────────
     val arch: String by lazy {
@@ -272,7 +273,7 @@ object EmbeddedLinux {
     fun install(context: Context, vararg packages: String): ExecResult {
         val pkgList = packages.joinToString(" ")
         return exec(context,
-            "DEBIAN_FRONTEND=noninteractive apt-get update 2>&1 && DEBIAN_FRONTEND=noninteractive apt-get install -y $pkgList 2>&1",
+            "DEBIAN_FRONTEND=noninteractive apt-get $APT_PROOT_OPTIONS update 2>&1 && DEBIAN_FRONTEND=noninteractive apt-get $APT_PROOT_OPTIONS install -y $pkgList 2>&1",
             timeoutSec = 300L
         )
     }
@@ -305,6 +306,12 @@ object EmbeddedLinux {
             hostsFile.writeText("127.0.0.1 localhost\n::1 localhost\n")
             Log.d("EmbeddedLinux", ">>> hosts file created")
         }
+
+        // Android/PRoot blocks the setresuid call used by APT's _apt sandbox.
+        // Keep APT's fetch methods running as root inside the fake-root container.
+        val aptSandboxConfig = File(rootfs, "etc/apt/apt.conf.d/99proot-no-sandbox")
+        aptSandboxConfig.parentFile?.mkdirs()
+        aptSandboxConfig.writeText("APT::Sandbox::User \"root\";\n")
         
         Log.d("EmbeddedLinux", ">>> configureSystem() finished")
     }
