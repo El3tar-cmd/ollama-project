@@ -1149,8 +1149,8 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         val lower = trimmed.lowercase(Locale.US)
         val aptPrefix = "DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1"
         val aptProotOptions = EmbeddedLinux.APT_PROOT_OPTIONS
-        val dpkgOptions = "-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
-        val repairDpkg = "$aptPrefix dpkg --force-confdef --force-confold --configure -a"
+        val dpkgOptions = "-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-unsafe-io"
+        val repairDpkg = "$aptPrefix dpkg --force-unsafe-io --force-confdef --force-confold --configure -a"
         val fixBroken = "$aptPrefix apt-get $aptProotOptions $dpkgOptions -f install -y"
         fun aptWithRepair(action: String): String =
             "$repairDpkg || true; $fixBroken || true; $aptPrefix apt-get $aptProotOptions $dpkgOptions $action"

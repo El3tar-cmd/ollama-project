@@ -179,15 +179,15 @@ class LinuxSetupManager(private val context: Context) {
                     }
 
                     emit(Stage.INSTALLING_RUNTIMES, "Installing Python 3, Node.js, git, curl…")
-                    val installResult = EmbeddedLinux.exec(context, "DEBIAN_FRONTEND=noninteractive apt-get ${EmbeddedLinux.APT_PROOT_OPTIONS} install -y python3 python3-pip nodejs npm git curl wget nano vim build-essential 2>&1", timeoutSec = 300)
+                    val installResult = EmbeddedLinux.exec(context, "DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none apt-get ${EmbeddedLinux.APT_PROOT_OPTIONS} -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install -y python3 python3-pip nodejs npm git curl wget nano vim build-essential 2>&1", timeoutSec = 300)
                     if (!installResult.success) {
                         emit(Stage.INSTALLING_RUNTIMES, "Install warning: ${installResult.output.takeLast(300)}")
+                    } else {
+                        try {
+                            EmbeddedLinux.runtimesFile(context).writeText("installed")
+                        } catch (e: Exception) {}
+                        emit(Stage.INSTALLING_RUNTIMES, "Runtimes installed ✓")
                     }
-
-                    try {
-                        EmbeddedLinux.runtimesFile(context).writeText("installed")
-                    } catch (e: Exception) {}
-                    emit(Stage.INSTALLING_RUNTIMES, "Runtimes installed ✓")
                 } catch (e: Exception) {
                     emit(Stage.INSTALLING_RUNTIMES, "Runtime installation error: ${e.message}")
                 }
@@ -196,7 +196,12 @@ class LinuxSetupManager(private val context: Context) {
             try {
                 EmbeddedLinux.setupDone(context).writeText("ok")
             } catch (e: Exception) {}
-            emit(Stage.DONE, "✅ Embedded Linux ready! Python, Node.js, and git available.", 100)
+            val doneMessage = if (EmbeddedLinux.runtimesInstalled(context)) {
+                "✅ Embedded Linux ready! Python, Node.js, and git available."
+            } else {
+                "✅ Embedded Linux ready. Runtime packages still need installation."
+            }
+            emit(Stage.DONE, doneMessage, 100)
 
         } catch (e: Exception) {
             Log.e("LinuxSetupManager", "Critical setup error", e)

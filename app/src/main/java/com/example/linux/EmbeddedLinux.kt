@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicReference
  * No root required — PRoot implements chroot in userspace.
  */
 object EmbeddedLinux {
-    const val APT_PROOT_OPTIONS = "-o APT::Sandbox::User=root -o Dpkg::Use-Pty=0 -o APT::Color=0"
+    const val APT_PROOT_OPTIONS = "-o APT::Sandbox::User=root -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Dpkg::Options::=--force-unsafe-io"
 
     // ── Architecture detection ────────────────────────────────────────────────
     val arch: String by lazy {
@@ -344,7 +344,7 @@ object EmbeddedLinux {
     fun install(context: Context, vararg packages: String): ExecResult {
         val pkgList = packages.joinToString(" ")
         return exec(context,
-            "DEBIAN_FRONTEND=noninteractive apt-get $APT_PROOT_OPTIONS update 2>&1 && DEBIAN_FRONTEND=noninteractive apt-get $APT_PROOT_OPTIONS install -y $pkgList 2>&1",
+            "DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none apt-get $APT_PROOT_OPTIONS update 2>&1 && DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none apt-get $APT_PROOT_OPTIONS install -y $pkgList 2>&1",
             timeoutSec = 300L
         )
     }
