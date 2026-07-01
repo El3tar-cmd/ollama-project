@@ -1146,20 +1146,21 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
         val trimmed = cmd.trim()
         val lower = trimmed.lowercase(Locale.US)
         val aptPrefix = "DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1"
+        val aptProotOptions = EmbeddedLinux.APT_PROOT_OPTIONS
         val dpkgOptions = "-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
         return when {
             lower.startsWith("apt install ") ->
-                "$aptPrefix apt-get $EmbeddedLinux.APT_PROOT_OPTIONS $dpkgOptions install -y ${trimmed.removePrefix("apt install").trim()}"
+                "$aptPrefix apt-get $aptProotOptions $dpkgOptions install -y ${trimmed.removePrefix("apt install").trim()}"
             lower.startsWith("apt-get install ") ->
-                "$aptPrefix apt-get $EmbeddedLinux.APT_PROOT_OPTIONS $dpkgOptions install -y ${trimmed.removePrefix("apt-get install").trim()}"
+                "$aptPrefix apt-get $aptProotOptions $dpkgOptions install -y ${trimmed.removePrefix("apt-get install").trim()}"
             lower.startsWith("apt upgrade") ->
-                "$aptPrefix apt-get $EmbeddedLinux.APT_PROOT_OPTIONS $dpkgOptions upgrade -y ${trimmed.removePrefix("apt upgrade").trim()}"
+                "$aptPrefix apt-get $aptProotOptions $dpkgOptions upgrade -y ${trimmed.removePrefix("apt upgrade").trim()}"
             lower.startsWith("apt-get upgrade") ->
-                "$aptPrefix apt-get $EmbeddedLinux.APT_PROOT_OPTIONS $dpkgOptions upgrade -y ${trimmed.removePrefix("apt-get upgrade").trim()}"
+                "$aptPrefix apt-get $aptProotOptions $dpkgOptions upgrade -y ${trimmed.removePrefix("apt-get upgrade").trim()}"
             lower.startsWith("apt full-upgrade") ->
-                "$aptPrefix apt-get $EmbeddedLinux.APT_PROOT_OPTIONS $dpkgOptions full-upgrade -y ${trimmed.removePrefix("apt full-upgrade").trim()}"
+                "$aptPrefix apt-get $aptProotOptions $dpkgOptions full-upgrade -y ${trimmed.removePrefix("apt full-upgrade").trim()}"
             lower.startsWith("apt-get full-upgrade") ->
-                "$aptPrefix apt-get $EmbeddedLinux.APT_PROOT_OPTIONS $dpkgOptions full-upgrade -y ${trimmed.removePrefix("apt-get full-upgrade").trim()}"
+                "$aptPrefix apt-get $aptProotOptions $dpkgOptions full-upgrade -y ${trimmed.removePrefix("apt-get full-upgrade").trim()}"
             else -> trimmed
         }
     }

@@ -4,9 +4,12 @@ import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.graphics.Color as AndroidColor
 import android.os.Bundle
+import android.view.View
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.BorderStroke
@@ -333,6 +336,7 @@ fun BrowserScreen(vm: MainViewModel) {
     if (vm.browserActiveIdx != activeIdx) vm.browserActiveIdx = activeIdx
     var progress  by remember { mutableFloatStateOf(0f) }
     var pageTitle by remember { mutableStateOf("New Tab") }
+    var pageError by remember { mutableStateOf<String?>(null) }
     var canGoBack    by remember { mutableStateOf(false) }
     var canGoForward by remember { mutableStateOf(false) }
     var showFileManager by remember { mutableStateOf(false) }
@@ -362,6 +366,7 @@ fun BrowserScreen(vm: MainViewModel) {
         }
         vm.browserUrlInput = url
         vm.updateBrowserTab(activeIdx, url = url)
+        pageError = null
         webView.value?.loadUrl(url)
         focusManager.clearFocus()
     }
@@ -533,6 +538,7 @@ fun BrowserScreen(vm: MainViewModel) {
                             .clickable {
                                 vm.browserActiveIdx = idx
                                 vm.browserUrlInput = tab.url
+                                pageError = null
                                 webView.value?.loadUrl(tab.url)
                             }
                             .padding(horizontal = 8.dp, vertical = 4.dp),
@@ -633,6 +639,7 @@ fun BrowserScreen(vm: MainViewModel) {
                 factory = { ctx ->
                     WebView(ctx).apply {
                         setBackgroundColor(AndroidColor.WHITE)
+                        setLayerType(View.LAYER_TYPE_SOFTWARE, null)
                         val cookieManager = CookieManager.getInstance()
                         cookieManager.setAcceptCookie(true)
                         cookieManager.setAcceptThirdPartyCookies(this, true)
@@ -650,15 +657,23 @@ fun BrowserScreen(vm: MainViewModel) {
                             allowFileAccessFromFileURLs = true
                             useWideViewPort             = true
                             loadWithOverviewMode        = true
+                            loadsImagesAutomatically    = true
+                            blockNetworkImage           = false
+                            cacheMode                   = WebSettings.LOAD_DEFAULT
                             builtInZoomControls         = true
                             displayZoomControls         = false
+                            mediaPlaybackRequiresUserGesture = false
+                            userAgentString = userAgentString
+                                .replace("; wv", "")
+                                .replace(" Version/4.0", "")
                             mixedContentMode            =
-                                android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                                WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                         }
 
                         webViewClient = object : WebViewClient() {
                             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                                 vm.browserUrlInput = url ?: ""
+                                pageError = null
                                 progress  = 0.1f
                             }
                             override fun onPageFinished(view: WebView, url: String?) {
@@ -673,6 +688,17 @@ fun BrowserScreen(vm: MainViewModel) {
                             override fun onPageCommitVisible(view: WebView, url: String?) {
                                 super.onPageCommitVisible(view, url)
                                 view.postInvalidate()
+                            }
+                            override fun onReceivedError(
+                                view: WebView,
+                                request: WebResourceRequest,
+                                error: WebResourceError
+                            ) {
+                                super.onReceivedError(view, request, error)
+                                if (request.isForMainFrame) {
+                                    progress = 0f
+                                    pageError = "Load failed: ${error.description}"
+                                }
                             }
                             override fun shouldOverrideUrlLoading(
                                 view: WebView, request: WebResourceRequest
@@ -694,8 +720,7 @@ fun BrowserScreen(vm: MainViewModel) {
                         }
 
                         webView.value = this
-                        val restored = vm.browserWebViewState?.let { restoreState(it) != null } == true
-                        if (!restored && currentUrl != "about:blank") loadUrl(currentUrl)
+                        loadUrl(currentUrl)
                     }
                 },
                 modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -703,10 +728,26 @@ fun BrowserScreen(vm: MainViewModel) {
                     if (view.url != currentUrl &&
                         view.originalUrl != currentUrl
                     ) {
+                        pageError = null
                         view.loadUrl(currentUrl)
                     }
                 }
             )
+            pageError?.let { error ->
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFF2A1F1F))
+                        .padding(horizontal = 10.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        error,
+                        color = Color(0xFFFFB4AB),
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+            }
         }
     }
 }
