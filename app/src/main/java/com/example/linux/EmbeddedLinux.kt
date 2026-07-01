@@ -133,6 +133,9 @@ object EmbeddedLinux {
     private fun prootTmpDir(context: Context): File =
         File(context.cacheDir, "proot-tmp").also { it.mkdirs() }
 
+    private fun prootL2sDir(context: Context): File =
+        File(rootfsDir(context), ".l2s").also { it.mkdirs() }
+
     fun repairProotPermissions(context: Context): Boolean {
         val downloaded = prootBin(context)
         if (!downloaded.exists()) return false
@@ -166,6 +169,7 @@ object EmbeddedLinux {
         File(rootfsDir(context), "proc").mkdirs()
         File(rootfsDir(context), "dev").mkdirs()
         File(rootfsDir(context), "sys").mkdirs()
+        prootL2sDir(context)
     }
 
     // ── PRoot command builder ─────────────────────────────────────────────────
@@ -175,11 +179,13 @@ object EmbeddedLinux {
         return listOf(
             proot,
             "--kill-on-exit",
+            "-L",
             "--link2symlink",
+            "--sysvipc",
             "-0",                  // Fake root uid=0 for package manager operations
             "-r", rootfs,
-            // Spoof kernel 4.9 to avoid syscall compatibility issues under PRoot.
-            "-k", "4.9.0",
+            // Keep glibc/dpkg on the same path Termux proot-distro uses.
+            "-k", "6.17.0-PRoot-Distro",
             "-b", "/dev:/dev",
             "-b", "/sys:/sys",
             "-b", "/proc:/proc",
@@ -226,6 +232,7 @@ object EmbeddedLinux {
             pb.environment().apply {
                 put("PROOT_NO_SECCOMP", "1")
                 put("PROOT_TMP_DIR", prootTmpDir(context).absolutePath)
+                put("PROOT_L2S_DIR", prootL2sDir(context).absolutePath)
                 // Termux proot loader — intercepts syscalls without ptrace (Android 14 safe)
                 put("PROOT_LOADER", loaderBin(context).absolutePath)
                 put("PROOT_LOADER_32", loader32Bin(context).absolutePath)
@@ -391,6 +398,7 @@ object EmbeddedLinux {
         pb.environment().apply {
             put("PROOT_NO_SECCOMP", "1")
             put("PROOT_TMP_DIR", prootTmpDir(context).absolutePath)
+            put("PROOT_L2S_DIR", prootL2sDir(context).absolutePath)
             put("PROOT_LOADER", loaderBin(context).absolutePath)
             put("PROOT_LOADER_32", loader32Bin(context).absolutePath)
             put("LD_LIBRARY_PATH", libsDir(context).absolutePath)
