@@ -267,6 +267,73 @@ object EmbeddedLinux {
         }
     }
 
+    fun execStreaming(
+        context: Context,
+        cmd: String,
+        hostCwd: String? = null,
+        timeoutSec: Long = 600L,
+        allowIncompleteSetup: Boolean = false,
+        onLine: (String) -> Unit
+    ): ExecResult {
+        Log.d("EmbeddedLinux", ">>> execStreaming() called with cmd: $cmd")
+        if (!isReady(context, requireSetupDone = !allowIncompleteSetup)) {
+            return ExecResult(-1, "Embedded Linux not ready. Please set it up first.")
+        }
+        return try {
+            prepareRuntimeDirs(context)
+            val fullCmd = if (hostCwd != null) "cd /workspace && $cmd" else cmd
+            val prootCmd = buildProotCommand(context, fullCmd).toMutableList()
+            if (hostCwd != null && File(hostCwd).exists()) {
+                val bindIdx = prootCmd.indexOfFirst { it == "-w" }
+                if (bindIdx >= 0) {
+                    prootCmd.add(bindIdx, "$hostCwd:/workspace")
+                    prootCmd.add(bindIdx, "-b")
+                }
+            }
+
+            val pb = ProcessBuilder(prootCmd)
+            pb.directory(context.filesDir)
+            configureProcessEnvironment(context, pb)
+            pb.redirectErrorStream(true)
+
+            val proc = pb.start()
+            val output = StringBuilder()
+            val readerThread = Thread {
+                try {
+                    proc.inputStream.bufferedReader().useLines { lines ->
+                        lines.forEach { line ->
+                            synchronized(output) {
+                                if (output.length < 16000) output.appendLine(line)
+                            }
+                            onLine(line)
+                        }
+                    }
+                } catch (e: Exception) {
+                    val msg = "Failed to read process output: ${e.message}"
+                    synchronized(output) { output.appendLine(msg) }
+                    onLine(msg)
+                }
+            }
+            readerThread.isDaemon = true
+            readerThread.start()
+
+            val timeout = !proc.waitFor(timeoutSec, TimeUnit.SECONDS)
+            if (timeout) {
+                proc.destroy()
+                if (proc.isAlive) proc.destroyForcibly()
+                readerThread.join(1000)
+                val text = synchronized(output) { output.toString() }
+                return ExecResult(-1, "Command timed out after ${timeoutSec}s\n${text.takeLast(2000)}".trimEnd())
+            }
+            readerThread.join(3000)
+            val text = synchronized(output) { output.toString() }
+            ExecResult(proc.exitValue(), text.take(16000).trimEnd())
+        } catch (e: Exception) {
+            Log.e("EmbeddedLinux", ">>> execStreaming() exception: ${e.message}", e)
+            ExecResult(-1, "PRoot exec error: ${e.message}")
+        }
+    }
+
     /**
      * Install packages inside Ubuntu via apt.
      */
@@ -314,6 +381,25 @@ object EmbeddedLinux {
         aptSandboxConfig.writeText("APT::Sandbox::User \"root\";\n")
         
         Log.d("EmbeddedLinux", ">>> configureSystem() finished")
+    }
+
+    private fun configureProcessEnvironment(context: Context, pb: ProcessBuilder) {
+        pb.environment().apply {
+            put("PROOT_NO_SECCOMP", "1")
+            put("PROOT_TMP_DIR", prootTmpDir(context).absolutePath)
+            put("PROOT_LOADER", loaderBin(context).absolutePath)
+            put("PROOT_LOADER_32", loader32Bin(context).absolutePath)
+            put("LD_LIBRARY_PATH", libsDir(context).absolutePath)
+            put("TMPDIR", context.cacheDir.absolutePath)
+            put("HOME", "/root")
+            put("USER", "root")
+            put("TERM", "xterm-256color")
+            put("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+            put("LANG", "C.UTF-8")
+            put("PYTHONHASHSEED", "0")
+            put("PYTHONDONTWRITEBYTECODE", "1")
+            put("PYTHONNOUSERSITE", "1")
+        }
     }
 
     data class ExecResult(val exitCode: Int, val output: String) {

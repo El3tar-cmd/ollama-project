@@ -2,6 +2,7 @@ package com.example
 
 import android.content.Context
 import android.content.Intent
+import android.os.Bundle
 import android.widget.Toast
 import androidx.compose.runtime.*
 import androidx.lifecycle.ViewModel
@@ -15,6 +16,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import com.example.agent.AgentEngine
 import com.example.data.api.LlamaCppApi
 import com.example.data.api.OllamaApi
@@ -27,6 +29,12 @@ import com.example.data.model.OllamaModel
 import com.example.data.model.ShellLine
 import com.example.data.model.ShellLineType
 import com.example.ui.editor.getLanguageFromExtension
+
+data class BrowserTabState(
+    val id: Int,
+    val url: String = "about:blank",
+    val title: String = "New Tab"
+)
 
 class MainViewModel(private val ctx: Context) : ViewModel() {
     private val api      = OllamaApi()
@@ -43,6 +51,19 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     }
 
     fun stopPersistentServer() = linuxSession.stopServer()
+
+    val browserTabs = mutableStateListOf(BrowserTabState(0, "about:blank", "New Tab"))
+    var browserActiveIdx by mutableIntStateOf(0)
+    var browserUrlInput by mutableStateOf("")
+    var browserWebViewState: Bundle? = null
+
+    fun updateBrowserTab(idx: Int, url: String? = null, title: String? = null) {
+        val tab = browserTabs.getOrNull(idx) ?: return
+        browserTabs[idx] = tab.copy(
+            url = url ?: tab.url,
+            title = title ?: tab.title
+        )
+    }
     
     // Track coroutines for proper cleanup
     private val initJob = viewModelScope.launch(Dispatchers.IO) {
@@ -998,6 +1019,11 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
 
     fun clearLogs() { synchronized(OllamaService.logBuffer) { OllamaService.logBuffer.clear() }; liveLogs.clear() }
 
+    private fun addLiveLog(line: String) {
+        liveLogs.add(line)
+        if (liveLogs.size > 1000) liveLogs.removeAt(0)
+    }
+
     var terminalMode by mutableStateOf("linux") // "ollama" or embedded Linux
 
     // Persistent embedded Linux working directory (absolute path inside the container)
@@ -1059,20 +1085,34 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
                 return
             }
 
-            liveLogs.add("> linux: $cmd")
+            addLiveLog("> linux: $cmd")
             viewModelScope.launch(Dispatchers.IO) {
                 // Prepend `cd <cwd> &&` so each command runs in the persisted directory
                 val fullCmd = if (linuxCwd != "/root" && linuxCwd.isNotBlank())
                     "cd ${shellQuote(linuxCwd)} && $cmd"
                 else cmd
-                val result = EmbeddedLinux.exec(context, fullCmd, timeoutSec = 120L)
+                val timeout = linuxCommandTimeoutSec(cmd)
+                val streamedAnyOutput = AtomicBoolean(false)
+                val result = EmbeddedLinux.execStreaming(
+                    context,
+                    fullCmd,
+                    timeoutSec = timeout
+                ) { line ->
+                    streamedAnyOutput.set(true)
+                    viewModelScope.launch(Dispatchers.Main) {
+                        addLiveLog(line)
+                    }
+                }
                 withContext(Dispatchers.Main) {
-                    val out = result.output.take(6000)
                     if (result.success) {
-                        if (out.isNotBlank()) liveLogs.add("✅ $out")
-                        else liveLogs.add("✅")
+                        addLiveLog("✅")
                     } else {
-                        liveLogs.add("❌ Exit ${result.exitCode}: ${out.ifBlank { "(no output)" }}")
+                        val out = result.output.takeLast(2000)
+                        if (streamedAnyOutput.get()) {
+                            addLiveLog("❌ Exit ${result.exitCode}")
+                        } else {
+                            addLiveLog("❌ Exit ${result.exitCode}: ${out.ifBlank { "(no output)" }}")
+                        }
                     }
                 }
             }
@@ -1091,6 +1131,17 @@ class MainViewModel(private val ctx: Context) : ViewModel() {
     }
 
     private fun shellQuote(path: String): String = "'${path.replace("'", "'\\''")}'"
+
+    private fun linuxCommandTimeoutSec(cmd: String): Long {
+        val c = cmd.trim().lowercase(Locale.US)
+        return when {
+            c.startsWith("apt ") || c.startsWith("apt-get ") -> 900L
+            c.contains(" apt ") || c.contains(" apt-get ") -> 900L
+            c.startsWith("pip ") || c.startsWith("pip3 ") -> 900L
+            c.startsWith("npm ") || c.startsWith("npx ") -> 900L
+            else -> 180L
+        }
+    }
 
     private fun isServerCommand(cmd: String): Boolean {
         val c = cmd.trim().lowercase()
